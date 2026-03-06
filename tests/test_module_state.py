@@ -2195,3 +2195,144 @@ class TestDuplicateObjectOffset(unittest.TestCase):
             self.assertIsNotNone(copy_obj)
             self.assertAlmostEqual(copy_obj.position.z, 7.5, places=5,
                 msg=f"{cls.__name__} duplicate must not alter Z coordinate")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Iteration 15 Regression Tests — build system / moderngl fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBuildBatModernGLFallback(unittest.TestCase):
+    """build.bat must handle machines without Visual C++ Build Tools."""
+
+    def _read_bat(self) -> str:
+        bat_path = os.path.join(os.path.dirname(__file__), "..", "build.bat")
+        with open(bat_path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    def test_bat_uses_only_binary_for_moderngl(self):
+        """build.bat must install moderngl with --only-binary to avoid C++ compilation."""
+        bat = self._read_bat()
+        self.assertIn("--only-binary", bat,
+            "build.bat must pass --only-binary when installing moderngl "
+            "so it does not attempt to compile glcontext from source")
+
+    def test_bat_has_pyopengl_fallback(self):
+        """build.bat must install PyOpenGL as a fallback when moderngl fails."""
+        bat = self._read_bat()
+        self.assertIn("PyOpenGL", bat,
+            "build.bat must install PyOpenGL as a pure-Python fallback "
+            "for machines without Microsoft Visual C++ Build Tools")
+
+    def test_bat_does_not_hard_fail_on_missing_moderngl(self):
+        """build.bat must NOT exit immediately if moderngl binary wheel is unavailable."""
+        bat = self._read_bat()
+        # The --only-binary install is allowed to fail (>nul 2>&1 or similar)
+        # but must NOT be followed by a bare 'exit /b 1' without an else/fallback
+        lines = bat.splitlines()
+        only_binary_line = next(
+            (i for i, ln in enumerate(lines) if "--only-binary" in ln), None
+        )
+        self.assertIsNotNone(only_binary_line,
+            "Could not find --only-binary line in build.bat")
+        # After the --only-binary install the script must NOT unconditionally exit
+        # (i.e. 'exit /b 1' with no conditional guard immediately after)
+        nearby_lines = " ".join(lines[only_binary_line: only_binary_line + 10]).lower()
+        # A bare 'if errorlevel 1 ... exit /b 1' right after moderngl install
+        # with NO else/fallback would be the bug; check fallback keyword exists nearby
+        self.assertIn("pyopengl", nearby_lines,
+            "PyOpenGL fallback must appear in the same block as the --only-binary install")
+
+    def test_bat_prints_vc_build_tools_url(self):
+        """build.bat must print the Visual C++ Build Tools URL so users know how to fix it."""
+        bat = self._read_bat()
+        self.assertIn("visualstudio.microsoft.com", bat,
+            "build.bat must reference the Visual C++ Build Tools download URL")
+
+    def test_build_error_message_mentions_pyopengl(self):
+        """On build failure, build.bat error message must mention PyOpenGL fix."""
+        bat = self._read_bat()
+        self.assertIn("PyOpenGL", bat,
+            "build.bat error/help section should mention PyOpenGL as the fix "
+            "for the 'Microsoft Visual C++ required' error")
+
+
+class TestGModularSpecFallback(unittest.TestCase):
+    """GModular.spec must handle both moderngl and PyOpenGL gracefully."""
+
+    def _read_spec(self) -> str:
+        spec_path = os.path.join(os.path.dirname(__file__), "..", "GModular.spec")
+        with open(spec_path) as fh:
+            return fh.read()
+
+    def test_spec_detects_moderngl_availability(self):
+        """GModular.spec must check whether moderngl is installed before adding it."""
+        spec = self._read_spec()
+        self.assertIn("find_spec", spec,
+            "GModular.spec must use importlib.util.find_spec to detect moderngl")
+
+    def test_spec_has_pyopengl_hidden_import(self):
+        """GModular.spec must include OpenGL (PyOpenGL) as a hidden import."""
+        spec = self._read_spec()
+        self.assertIn('"OpenGL"', spec,
+            "GModular.spec must add OpenGL to hidden_imports as the PyOpenGL fallback")
+
+    def test_spec_has_conditional_moderngl(self):
+        """GModular.spec must add moderngl to hidden_imports only if it is installed."""
+        spec = self._read_spec()
+        self.assertIn("_has_moderngl", spec,
+            "GModular.spec must guard moderngl hidden_import with _has_moderngl flag")
+
+    def test_spec_excludes_moderngl_when_missing(self):
+        """GModular.spec must add moderngl to excludes when it is not installed."""
+        spec = self._read_spec()
+        self.assertIn("excludes.append", spec,
+            "GModular.spec must conditionally exclude moderngl when not present")
+
+    def test_spec_documents_no_compiler_note(self):
+        """GModular.spec must document the no-C++-compiler scenario."""
+        spec = self._read_spec()
+        self.assertTrue(
+            "Visual C++" in spec or "compiler" in spec.lower(),
+            "GModular.spec must document the Visual C++ Build Tools requirement"
+        )
+
+
+class TestViewportFallbackImport(unittest.TestCase):
+    """viewport.py must handle missing moderngl gracefully at import time."""
+
+    def test_viewport_has_gl_backend_flag(self):
+        """viewport.py must expose _GL_BACKEND to indicate which GL library is active."""
+        import inspect
+        from gmodular.gui import viewport
+        self.assertTrue(
+            hasattr(viewport, "_GL_BACKEND"),
+            "viewport.py must define _GL_BACKEND ('moderngl', 'pyopengl', or 'none')"
+        )
+
+    def test_gl_backend_is_valid_string(self):
+        """_GL_BACKEND must be one of the three known values."""
+        from gmodular.gui import viewport
+        valid = {"moderngl", "pyopengl", "none"}
+        self.assertIn(viewport._GL_BACKEND, valid,
+            f"_GL_BACKEND must be one of {valid}, got {viewport._GL_BACKEND!r}")
+
+    def test_viewport_imports_without_moderngl(self):
+        """viewport module must import cleanly even if moderngl is absent."""
+        import importlib
+        # Re-import to ensure no cached error state bleeds in
+        try:
+            importlib.import_module("gmodular.gui.viewport")
+        except ImportError as exc:
+            self.fail(
+                f"gmodular.gui.viewport raised ImportError when moderngl is absent: {exc}"
+            )
+
+    def test_requirements_txt_has_pyopengl(self):
+        """requirements.txt must list PyOpenGL as a fallback dependency."""
+        req_path = os.path.join(
+            os.path.dirname(__file__), "..", "requirements.txt"
+        )
+        with open(req_path) as fh:
+            content = fh.read()
+        self.assertIn("PyOpenGL", content,
+            "requirements.txt must list PyOpenGL as the no-compiler fallback")

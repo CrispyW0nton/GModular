@@ -28,9 +28,21 @@ log = logging.getLogger(__name__)
 try:
     import moderngl
     _HAS_MODERNGL = True
+    _GL_BACKEND = "moderngl"
 except ImportError:
     _HAS_MODERNGL = False
-    log.warning("ModernGL not available — viewport will be disabled")
+    _GL_BACKEND = "none"
+    # Try PyOpenGL as a pure-Python fallback (no C++ compiler needed)
+    try:
+        import OpenGL.GL as _GL  # noqa: F401
+        _GL_BACKEND = "pyopengl"
+        log.info("ModernGL not available — using PyOpenGL fallback (pure Python)")
+    except ImportError:
+        log.warning(
+            "Neither ModernGL nor PyOpenGL is available. "
+            "The 3D viewport will show a placeholder grid. "
+            "Install PyOpenGL:  pip install PyOpenGL"
+        )
 
 try:
     from ..formats.gff_types import GITPlaceable, GITCreature, GITDoor, Vector3

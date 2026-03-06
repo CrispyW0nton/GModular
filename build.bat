@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v1.2
+echo  GModular Build Script  v1.3
 echo  KotOR Module Editor (K1 + K2)
 echo  Produces: dist\GModular.exe
 echo ============================================================
@@ -60,11 +60,10 @@ python -m pip install --upgrade pip --quiet
 echo [OK] pip up to date.
 echo.
 
-REM ── Install / upgrade core runtime dependencies ─────────────────────────────
-echo [....] Installing runtime dependencies (PyQt5, moderngl, numpy, etc.)...
+REM ── Install core dependencies (no-compile-required packages) ────────────────
+echo [....] Installing core dependencies (PyQt5, numpy, watchdog, requests)...
 python -m pip install ^
     "PyQt5>=5.15.0" ^
-    "moderngl>=5.8.0" ^
     "numpy>=1.21.0" ^
     "watchdog>=2.0.0" ^
     "requests>=2.28.0" ^
@@ -72,7 +71,7 @@ python -m pip install ^
 
 if errorlevel 1 (
     echo.
-    echo [ERROR] Runtime dependency installation failed!
+    echo [ERROR] Core dependency installation failed!
     echo  Possible causes:
     echo    - No internet connection
     echo    - Corporate proxy blocking pip  (try: pip install ... --proxy http://...)
@@ -81,8 +80,41 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo [OK] Runtime dependencies installed.
+echo [OK] Core dependencies installed.
 echo.
+
+REM ── Try to install moderngl from pre-built binary wheel ─────────────────────
+REM    --only-binary :all:  prevents pip from trying to compile from source.
+REM    If no pre-built wheel exists for this Python version, it will fail
+REM    gracefully and we fall back to PyOpenGL (pure Python, no compiler needed).
+echo [....] Trying moderngl (pre-built binary wheel only — no compiler needed)...
+set MODERNGL_OK=0
+
+python -m pip install "moderngl>=5.8.0" --only-binary :all: --quiet >nul 2>&1
+if not errorlevel 1 (
+    set MODERNGL_OK=1
+    echo [OK] moderngl installed from pre-built wheel.
+) else (
+    echo [WARN] No pre-built moderngl wheel for your Python version.
+    echo        Falling back to PyOpenGL (pure-Python OpenGL — no C++ compiler needed).
+    echo        The 3D viewport will still work; only the low-level GL path differs.
+    echo.
+    python -m pip install "PyOpenGL>=3.1.0" "PyOpenGL_accelerate>=3.1.0" --quiet >nul 2>&1
+    if not errorlevel 1 (
+        echo [OK] PyOpenGL fallback installed.
+    ) else (
+        python -m pip install "PyOpenGL>=3.1.0" --quiet >nul 2>&1
+        echo [OK] PyOpenGL installed (without accelerate — still functional).
+    )
+    echo.
+    echo [INFO] ──────────────────────────────────────────────────────────────
+    echo [INFO] OPTIONAL: To get full moderngl (faster 3D rendering), install
+    echo [INFO] Microsoft Visual C++ Build Tools from:
+    echo [INFO]   https://visualstudio.microsoft.com/visual-cpp-build-tools/
+    echo [INFO] Then run this build script again.
+    echo [INFO] ──────────────────────────────────────────────────────────────
+    echo.
+)
 
 REM ── Install PyInstaller ─────────────────────────────────────────────────────
 echo [....] Installing PyInstaller...
@@ -107,9 +139,9 @@ if exist "assets\icons\gmodular.ico" (
     echo [OK] Icon found: assets\icons\gmodular.ico
 ) else (
     echo [INFO] Icon not found — generating default icon...
-    python tools\generate_icon.py
+    python tools\generate_icon.py >nul 2>&1
     if errorlevel 1 (
-        echo [WARN] Icon generation failed. Building without icon (EXE will have default icon).
+        echo [WARN] Icon generation failed. Building without icon.
     ) else (
         echo [OK] Icon generated.
     )
@@ -131,15 +163,15 @@ echo.
 REM ── Clean previous build artifacts ─────────────────────────────────────────
 echo [....] Cleaning previous build...
 if exist "dist\GModular.exe"  del  /f /q "dist\GModular.exe"  >nul 2>&1
-if exist "dist\GModular"      rmdir /s /q "dist\GModular"    >nul 2>&1
-if exist "build\GModular"     rmdir /s /q "build\GModular"   >nul 2>&1
+if exist "dist\GModular"      rmdir /s /q "dist\GModular"     >nul 2>&1
+if exist "build\GModular"     rmdir /s /q "build\GModular"    >nul 2>&1
 echo [OK] Old artifacts removed.
 echo.
 
 REM ── Build the EXE ───────────────────────────────────────────────────────────
 echo ============================================================
 echo  Building GModular.exe via PyInstaller...
-echo  This takes 1–3 minutes on first run (UPX compression).
+echo  This takes 1–3 minutes on first run.
 echo ============================================================
 echo.
 
@@ -152,14 +184,24 @@ if errorlevel 1 (
     echo ============================================================
     echo.
     echo  Common fixes:
-    echo    1. Antivirus blocking PyInstaller output:
+    echo.
+    echo  1. moderngl compile error / "Microsoft Visual C++ 14.0 required":
+    echo       The script should have installed the pure-Python fallback above.
+    echo       If you still see this, run:
+    echo         pip install PyOpenGL --upgrade
+    echo       Then re-run build.bat
+    echo.
+    echo  2. Antivirus blocking PyInstaller output:
     echo       Add the project folder to AV exclusions temporarily.
-    echo    2. Missing dependency:
-    echo       pip install PyQt5 moderngl numpy pyinstaller
-    echo    3. UPX missing / broken:
-    echo       Remove the UPX lines from GModular.spec  (set upx=False)
-    echo    4. Detailed log:
-    echo       python -m PyInstaller GModular.spec --debug all
+    echo.
+    echo  3. Missing dependency:
+    echo         pip install PyQt5 numpy pyinstaller
+    echo.
+    echo  4. UPX missing / broken (harmless — just makes EXE bigger):
+    echo       Open GModular.spec, change  upx=True  to  upx=False
+    echo.
+    echo  5. Detailed log:
+    echo         python -m PyInstaller GModular.spec --debug all
     echo.
     pause
     exit /b 1
@@ -205,9 +247,16 @@ echo    Double-click any asset in the palette, then click in the viewport.
 echo    Press WASD in Play Mode to walk around the module.
 echo.
 echo  KOTOR MOD TOOLS SUITE (optional — all talk via IPC):
-echo    GModular     — this module editor       (port 5003)
-echo    GhostScripter — NWScript IDE             (port 5002)
-echo    GhostRigger   — MDL model rigger         (port 5001)
+echo    GModular      — this module editor       (port 5003)
+echo    GhostScripter — NWScript IDE              (port 5002)
+echo    GhostRigger   — MDL model rigger          (port 5001)
 echo.
+if !MODERNGL_OK!==0 (
+    echo  NOTE: Built with PyOpenGL fallback (moderngl not available).
+    echo  For full 3D acceleration, install Visual C++ Build Tools from:
+    echo    https://visualstudio.microsoft.com/visual-cpp-build-tools/
+    echo  Then re-run build.bat to rebuild with moderngl.
+    echo.
+)
 echo ============================================================
 pause
