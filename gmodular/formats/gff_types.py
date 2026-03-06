@@ -356,14 +356,26 @@ class GITData:
         Deep-copy a GIT object and add it to the appropriate list.
         Returns the new copy, or None if the type is unknown.
         The copy gets a clean _scene_id of -1.
+
+        The position offset is chosen per object class so the duplicate never
+        overlaps the original:
+          - GITDoor / GITPlaceable : ±1.0 unit  (typical footprint ≈ 1–2 m)
+          - GITTrigger             : ±2.0 units  (triggers are often wide)
+          - Everything else        : ±0.5 unit
         """
         import copy
         new_obj = copy.deepcopy(obj)
         new_obj._scene_id = -1
-        # Offset the copy slightly so it doesn't overlap the original
+        # Offset the copy so it does not overlap the original
         pos = getattr(new_obj, 'position', None)
         if pos is not None:
-            new_obj.position = Vector3(pos.x + 0.5, pos.y + 0.5, pos.z)
+            if isinstance(new_obj, (GITDoor, GITPlaceable)):
+                delta = 1.0
+            elif isinstance(new_obj, GITTrigger):
+                delta = 2.0
+            else:
+                delta = 0.5
+            new_obj.position = Vector3(pos.x + delta, pos.y + delta, pos.z)
         if self.add_object(new_obj):
             return new_obj
         return None

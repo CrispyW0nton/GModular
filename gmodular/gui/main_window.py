@@ -51,7 +51,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 APP_NAME    = "GModular"
-APP_VERSION = "1.0.0-MVP"
+APP_VERSION = "1.0.0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
