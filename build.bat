@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v1.4
+echo  GModular Build Script  v1.5
 echo  KotOR Module Editor (K1 + K2)
 echo  Produces: dist\GModular.exe
 echo ============================================================
@@ -18,9 +18,31 @@ python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found on PATH.
     echo.
-    echo  Install Python 3.12 from:
-    echo    https://www.python.org/downloads/release/python-3129/
-    echo  Tick "Add Python to PATH" during the installer wizard.
+    echo ============================================================
+    echo  HOW TO INSTALL PYTHON 3.12  (IMPORTANT: read carefully)
+    echo ============================================================
+    echo.
+    echo  STEP 1:  Open this URL in your browser:
+    echo.
+    echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
+    echo.
+    echo  STEP 2:  Run the downloaded  python-3.12.9-amd64.exe
+    echo.
+    echo  STEP 3:  On the FIRST installer screen, tick BOTH boxes:
+    echo             [x] Install launcher for all users
+    echo             [x] Add Python 3.12 to PATH        <-- IMPORTANT
+    echo           Then click "Install Now".
+    echo.
+    echo  IMPORTANT - DO NOT use the Microsoft Store version of Python.
+    echo  If you see "Python Install Manager" or "Get" in the Store,
+    echo  close it and use the direct .exe link above instead.
+    echo  The Store version is blocked on many work/school PCs.
+    echo.
+    echo  STEP 4:  Close this window and re-run build.bat.
+    echo ============================================================
+    echo.
+    echo  Want setup_python.bat to download Python 3.12 automatically?
+    echo  Run:  setup_python.bat
     echo.
     pause
     exit /b 1
@@ -33,34 +55,40 @@ REM ── Read the exact Python minor version ───────────
 for /f "tokens=*" %%V in ('python -c "import sys; print(sys.version_info.minor)"') do set PY_MINOR=%%V
 for /f "tokens=*" %%V in ('python -c "import sys; print(sys.version_info.major)"') do set PY_MAJOR=%%V
 
-REM ── Block Python 3.14+ — PyQt5 has no wheel for it yet ───────────────────────
-REM    PyQt5 ships binary wheels for Python 3.8 – 3.12 only.
-REM    Python 3.13 is marginal (wheels may exist); 3.14+ definitely no wheels.
+REM ── Block Python 3.13+ — PyQt5 has no wheel for it yet ───────────────────────
 if %PY_MAJOR% EQU 3 if %PY_MINOR% GEQ 13 (
     echo.
     echo ============================================================
-    echo  [ERROR]  PYTHON VERSION TOO NEW
+    echo  [ERROR]  PYTHON %PY_MAJOR%.%PY_MINOR% IS NOT SUPPORTED
     echo ============================================================
     echo.
-    echo  You are running Python %PY_MAJOR%.%PY_MINOR%.
+    echo  You have Python %PY_MAJOR%.%PY_MINOR% but GModular requires Python 3.12.
     echo.
-    echo  PyQt5 (the GUI library used by GModular) only ships
-    echo  pre-built wheels for Python 3.8 through 3.12.
+    echo  WHY: PyQt5 (the GUI library) only has pre-built packages
+    echo  for Python 3.8 through 3.12. Python 3.13 and 3.14 have
+    echo  no PyQt5 package available yet.
     echo.
-    echo  On Python 3.13 or 3.14, pip cannot find a compatible
-    echo  PyQt5 wheel and will fail — this is the error you saw.
+    echo  FIX — Install Python 3.12 using the DIRECT installer:
     echo.
-    echo  FIX: Install Python 3.12 alongside your current Python.
+    echo  STEP 1:  Open this link in your browser:
+    echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo.
-    echo  Download Python 3.12.9 (64-bit, Windows installer):
-    echo    https://www.python.org/downloads/release/python-3129/
+    echo  STEP 2:  Run python-3.12.9-amd64.exe
+    echo           Tick "Add Python 3.12 to PATH" and click Install Now.
     echo.
-    echo  After installing 3.12, run:
+    echo  !! DO NOT use the Microsoft Store / python-manager.msix !!
+    echo  !! The Store version is blocked on many PCs.             !!
+    echo  !! Always use the direct .exe from python.org            !!
+    echo.
+    echo  STEP 3:  After Python 3.12 installs, open a NEW cmd window
+    echo           and run build.bat again.
+    echo.
+    echo  TIP: If you need to keep Python %PY_MAJOR%.%PY_MINOR% as well, run:
     echo    py -3.12 -m venv venv
     echo    venv\Scripts\activate.bat
     echo    build.bat
     echo.
-    echo  OR set Python 3.12 as default and re-run build.bat.
+    echo  OR run  setup_python.bat  to auto-download Python 3.12.
     echo ============================================================
     echo.
     pause
@@ -73,8 +101,8 @@ if errorlevel 1 (
     echo [ERROR] Python 3.10 or higher is required (3.12 recommended).
     python --version
     echo.
-    echo  Download Python 3.12 from:
-    echo    https://www.python.org/downloads/release/python-3129/
+    echo  Download Python 3.12 direct installer (NOT the Store version):
+    echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo.
     pause
     exit /b 1
@@ -111,15 +139,16 @@ if errorlevel 1 (
     echo  [ERROR]  PyQt5 installation failed!
     echo ============================================================
     echo.
-    echo  PyQt5 pre-built wheels exist for Python 3.8 – 3.12 only.
+    echo  PyQt5 pre-built wheels exist for Python 3.8 to 3.12 only.
     echo  You are running Python %PY_MAJOR%.%PY_MINOR%.
     echo.
     if %PY_MINOR% GEQ 13 (
         echo  Python %PY_MAJOR%.%PY_MINOR% is NOT supported by PyQt5.
-        echo  You must use Python 3.12.
+        echo  Install Python 3.12 using the DIRECT .exe installer:
+        echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
         echo.
-        echo  Download Python 3.12.9:
-        echo    https://www.python.org/downloads/release/python-3129/
+        echo  DO NOT use the Microsoft Store / python-manager.msix
+        echo  — it may be blocked by policy on your PC.
     ) else (
         echo  Possible causes on Python %PY_MAJOR%.%PY_MINOR%:
         echo    - No internet connection
@@ -153,9 +182,6 @@ echo [OK] Core dependencies installed.
 echo.
 
 REM ── Try to install moderngl from pre-built binary wheel ─────────────────────
-REM    --only-binary :all:  prevents pip from trying to compile from source.
-REM    If no pre-built wheel exists for this Python version, we fall back to
-REM    PyOpenGL (pure Python — no C++ compiler needed).
 echo [....] Trying moderngl (pre-built binary wheel only — no compiler needed)...
 set MODERNGL_OK=0
 
@@ -165,8 +191,7 @@ if not errorlevel 1 (
     echo [OK] moderngl installed from pre-built wheel.
 ) else (
     echo [WARN] No pre-built moderngl wheel for Python %PY_MAJOR%.%PY_MINOR%.
-    echo        Falling back to PyOpenGL (pure-Python OpenGL — no C++ compiler needed).
-    echo        The 3D viewport will still work; only the low-level GL path differs.
+    echo        Falling back to PyOpenGL (pure-Python — no C++ compiler needed).
     echo.
     python -m pip install "PyOpenGL>=3.1.0" "PyOpenGL_accelerate>=3.1.0" --quiet >nul 2>&1
     if not errorlevel 1 (
@@ -176,12 +201,8 @@ if not errorlevel 1 (
         echo [OK] PyOpenGL installed (without accelerate — still functional).
     )
     echo.
-    echo [INFO] ──────────────────────────────────────────────────────────────
-    echo [INFO] OPTIONAL: To get full moderngl (faster 3D rendering), install
-    echo [INFO] Microsoft Visual C++ Build Tools from:
+    echo [INFO] OPTIONAL: For full moderngl, install Visual C++ Build Tools:
     echo [INFO]   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-    echo [INFO] Then run this build script again.
-    echo [INFO] ──────────────────────────────────────────────────────────────
     echo.
 )
 
@@ -190,31 +211,27 @@ echo [....] Installing PyInstaller...
 python -m pip install "pyinstaller>=5.13.0" --quiet
 if errorlevel 1 (
     echo [ERROR] PyInstaller installation failed!
-    echo  Try manually:  pip install pyinstaller
+    echo  Try:  pip install pyinstaller
     pause
     exit /b 1
 )
 echo [OK] PyInstaller installed.
 echo.
 
-REM ── Optional soft dependencies (IPC / Flask) ────────────────────────────────
-echo [....] Installing optional dependencies (flask, werkzeug — may skip)...
+REM ── Optional soft dependencies ──────────────────────────────────────────────
+echo [....] Installing optional dependencies (flask, werkzeug)...
 python -m pip install flask werkzeug jinja2 --quiet >nul 2>&1
 echo [OK] Optional dependencies done.
 echo.
 
-REM ── Verify the icon file (generate if missing) ──────────────────────────────
+REM ── Verify the icon file ─────────────────────────────────────────────────────
 echo [....] Checking icon file...
 if exist "assets\icons\gmodular.ico" (
     echo [OK] Icon found: assets\icons\gmodular.ico
 ) else (
-    echo [INFO] Icon not found — generating default icon...
+    echo [INFO] Generating default icon...
     python tools\generate_icon.py >nul 2>&1
-    if errorlevel 1 (
-        echo [WARN] Icon generation failed. Building without icon.
-    ) else (
-        echo [OK] Icon generated.
-    )
+    if errorlevel 1 (echo [WARN] Icon generation failed.) else (echo [OK] Icon generated.)
 )
 echo.
 
@@ -222,8 +239,7 @@ REM ── Run quick self-test before building ───────────
 echo [....] Running fast import self-test...
 python -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.walkmesh_editor import WOKFace; from gmodular.ipc.callback_server import GModularIPCServer; print('  imports OK')"
 if errorlevel 1 (
-    echo [ERROR] Self-test import failed — your code has a syntax/import error.
-    echo  Fix the error above before building the EXE.
+    echo [ERROR] Self-test import failed. Fix the error above first.
     pause
     exit /b 1
 )
@@ -250,24 +266,22 @@ python -m PyInstaller GModular.spec --clean --noconfirm
 if errorlevel 1 (
     echo.
     echo ============================================================
-    echo  [ERROR]  BUILD FAILED!
+    echo  [ERROR]  BUILD FAILED
     echo ============================================================
     echo.
-    echo  Common fixes:
-    echo.
     echo  1. Wrong Python version (most common):
-    echo       Use Python 3.12, NOT 3.13 or 3.14.
-    echo       https://www.python.org/downloads/release/python-3129/
+    echo       Use Python 3.12. Download direct installer (NOT Store):
+    echo       https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo.
-    echo  2. moderngl compile error / "Visual C++ 14.0 required":
-    echo       run:  pip install PyOpenGL --upgrade
-    echo       then: build.bat
+    echo  2. moderngl / "Visual C++ 14.0 required":
+    echo       pip install PyOpenGL --upgrade
+    echo       then re-run build.bat
     echo.
     echo  3. Antivirus blocking PyInstaller output:
-    echo       Add the project folder to AV exclusions temporarily.
+    echo       Add this folder to AV exclusions, then retry.
     echo.
-    echo  4. UPX missing / broken (makes EXE bigger, not broken):
-    echo       Open GModular.spec, change  upx=True  to  upx=False
+    echo  4. UPX error (makes EXE bigger, not broken):
+    echo       Open GModular.spec, change upx=True to upx=False
     echo.
     echo  5. Detailed log:
     echo       python -m PyInstaller GModular.spec --debug all
@@ -276,54 +290,39 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ── Validate the output ─────────────────────────────────────────────────────
+REM ── Validate output ──────────────────────────────────────────────────────────
 echo.
-echo [....] Validating output...
 if not exist "dist\GModular.exe" (
     echo [ERROR] dist\GModular.exe not found after build!
     pause
     exit /b 1
 )
-
 for %%F in ("dist\GModular.exe") do (
     set /a size_mb=%%~zF / 1048576
     echo [OK] dist\GModular.exe  (!size_mb! MB)
 )
 echo.
 
-REM ── Done ────────────────────────────────────────────────────────────────────
 echo ============================================================
 echo  BUILD COMPLETE!
 echo ============================================================
 echo.
-echo  EXECUTABLE:
-echo    dist\GModular.exe
+echo  EXECUTABLE:   dist\GModular.exe
 echo.
 echo  HOW TO RUN:
 echo    1. Double-click  dist\GModular.exe  (no install needed).
-echo    2. First run:
-echo         Tools  ^>  Set Game Directory
-echo         Point it at your KotOR 1 or 2 folder (the one with chitin.key).
-echo    3. Click  "Load Assets"  to populate the palette.
+echo    2. First run:  Tools ^> Set Game Directory
+echo       Point it at your KotOR folder (contains chitin.key).
+echo    3. Click "Load Assets" to fill the palette.
 echo.
-echo  CREATE A NEW MODULE:
-echo    File  ^>  New Module...
-echo    Fill in the module name and game version, then click Create.
-echo.
-echo  PLACE OBJECTS:
-echo    Double-click any asset in the palette, then click in the viewport.
-echo    Press WASD in Play Mode to walk around the module.
-echo.
-echo  KOTOR MOD TOOLS SUITE (optional - all talk via IPC):
-echo    GModular      - this module editor       (port 5003)
-echo    GhostScripter - NWScript IDE              (port 5002)
-echo    GhostRigger   - MDL model rigger          (port 5001)
+echo  NEW MODULE:   File ^> New Module...
+echo  PLACE ITEMS:  Double-click palette, click in viewport.
+echo  PLAY MODE:    Press WASD to walk around the module.
 echo.
 if !MODERNGL_OK!==0 (
-    echo  NOTE: Built with PyOpenGL fallback (moderngl not available).
-    echo  For full 3D acceleration, install Visual C++ Build Tools from:
+    echo  NOTE: Built with PyOpenGL fallback (no moderngl).
+    echo  Optional upgrade:
     echo    https://visualstudio.microsoft.com/visual-cpp-build-tools/
-    echo  Then re-run build.bat to rebuild with moderngl.
     echo.
 )
 echo ============================================================
