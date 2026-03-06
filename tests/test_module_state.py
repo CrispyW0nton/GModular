@@ -2399,7 +2399,7 @@ class TestBuildBatPythonVersionGuard(unittest.TestCase):
         """build.bat header must show v1.4 or higher (version that added the Python guard)."""
         bat = self._read_bat()
         self.assertTrue(
-            "v1.4" in bat or "v1.5" in bat or "v1.6" in bat or "v1.7" in bat,
+            "v1.4" in bat or "v1.5" in bat or "v1.6" in bat or "v1.7" in bat or "v1.8" in bat,
             "build.bat must be v1.4 or higher after adding the Python version guard"
         )
 
@@ -2443,11 +2443,11 @@ class TestBuildBatStoreWarning(unittest.TestCase):
             "build.bat must mention setup_python.bat as an alternative")
 
     def test_bat_version_is_v15(self):
-        """build.bat must be v1.5 or v1.6 (Store-warning / exe-fix update)."""
+        """build.bat must be v1.5, v1.6, or v1.7 (Store-warning / ascii-fix update)."""
         bat = self._read_bat()
         self.assertTrue(
-            "v1.5" in bat or "v1.6" in bat,
-            "build.bat must show version v1.5 or v1.6")
+            "v1.5" in bat or "v1.6" in bat or "v1.7" in bat,
+            "build.bat must show version v1.5, v1.6, or v1.7")
 
 
 class TestSetupPythonBat(unittest.TestCase):
