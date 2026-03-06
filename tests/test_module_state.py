@@ -2396,7 +2396,115 @@ class TestBuildBatPythonVersionGuard(unittest.TestCase):
             "to give a specific error instead of the generic message")
 
     def test_bat_version_string_updated_to_v14(self):
-        """build.bat header must show v1.4 (the version that added the Python guard)."""
+        """build.bat header must show v1.4 or higher (version that added the Python guard)."""
         bat = self._read_bat()
-        self.assertIn("v1.4", bat,
-            "build.bat must be updated to v1.4 after adding the Python version guard")
+        self.assertTrue(
+            "v1.4" in bat or "v1.5" in bat or "v1.6" in bat,
+            "build.bat must be v1.4 or higher after adding the Python version guard"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Iteration 17 Regression Tests — Microsoft Store block fix
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBuildBatStoreWarning(unittest.TestCase):
+    """build.bat must warn against the Microsoft Store Python and give a direct .exe link."""
+
+    def _read_bat(self) -> str:
+        bat_path = os.path.join(os.path.dirname(__file__), "..", "build.bat")
+        with open(bat_path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    def test_bat_warns_against_microsoft_store(self):
+        """build.bat must warn users NOT to use the Microsoft Store Python."""
+        bat = self._read_bat()
+        self.assertTrue(
+            "Microsoft Store" in bat or "Store" in bat,
+            "build.bat must explicitly warn against the Microsoft Store Python"
+        )
+
+    def test_bat_provides_direct_exe_url(self):
+        """build.bat must give the direct .exe download URL (not the Store URL)."""
+        bat = self._read_bat()
+        self.assertIn("python-3.12.9-amd64.exe", bat,
+            "build.bat must include the direct python.org .exe download URL")
+
+    def test_bat_references_ftp_python_org(self):
+        """build.bat must use the python.org/ftp direct download path."""
+        bat = self._read_bat()
+        self.assertIn("python.org/ftp/python", bat,
+            "build.bat must use the python.org/ftp direct download URL")
+
+    def test_bat_mentions_setup_python_bat(self):
+        """build.bat must reference setup_python.bat as the auto-download option."""
+        bat = self._read_bat()
+        self.assertIn("setup_python.bat", bat,
+            "build.bat must mention setup_python.bat as an alternative")
+
+    def test_bat_version_is_v15(self):
+        """build.bat must be v1.5 after the Store-warning update."""
+        bat = self._read_bat()
+        self.assertIn("v1.5", bat,
+            "build.bat must show version v1.5")
+
+
+class TestSetupPythonBat(unittest.TestCase):
+    """setup_python.bat must exist and contain the correct download logic."""
+
+    def _read_setup(self) -> str:
+        path = os.path.join(os.path.dirname(__file__), "..", "setup_python.bat")
+        self.assertTrue(os.path.exists(path),
+            "setup_python.bat must exist in the project root")
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    def test_setup_bat_exists(self):
+        """setup_python.bat must exist in the project root."""
+        path = os.path.join(os.path.dirname(__file__), "..", "setup_python.bat")
+        self.assertTrue(os.path.exists(path),
+            "setup_python.bat must be present in the repo root")
+
+    def test_setup_bat_downloads_from_python_org(self):
+        """setup_python.bat must download from python.org, not the Store."""
+        src = self._read_setup()
+        self.assertIn("python.org/ftp/python", src,
+            "setup_python.bat must use the official python.org/ftp download URL")
+
+    def test_setup_bat_uses_curl(self):
+        """setup_python.bat must use curl (built into Windows 10/11) to download."""
+        src = self._read_setup()
+        self.assertIn("curl", src,
+            "setup_python.bat must use curl to download the installer")
+
+    def test_setup_bat_warns_against_store(self):
+        """setup_python.bat must warn against the Microsoft Store Python."""
+        src = self._read_setup()
+        self.assertTrue(
+            "Microsoft Store" in src or "Store" in src,
+            "setup_python.bat must warn against the Microsoft Store Python"
+        )
+
+    def test_setup_bat_instructs_add_to_path(self):
+        """setup_python.bat must instruct the user to tick 'Add Python to PATH'."""
+        src = self._read_setup()
+        self.assertIn("PATH", src,
+            "setup_python.bat must remind users to tick 'Add Python to PATH'")
+
+    def test_setup_bat_handles_missing_curl(self):
+        """setup_python.bat must handle machines where curl is not available."""
+        src = self._read_setup()
+        self.assertIn("curl --version", src,
+            "setup_python.bat must check for curl availability before using it")
+
+    def test_setup_bat_has_next_steps(self):
+        """setup_python.bat must show next steps after installation."""
+        src = self._read_setup()
+        self.assertIn("build.bat", src,
+            "setup_python.bat must tell the user to run build.bat as the next step")
+
+    def test_setup_bat_checks_py312_already_installed(self):
+        """setup_python.bat must skip download if Python 3.12 is already installed."""
+        src = self._read_setup()
+        self.assertIn("py -3.12", src,
+            "setup_python.bat must check whether Python 3.12 is already installed")
