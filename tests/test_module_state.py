@@ -2336,3 +2336,67 @@ class TestViewportFallbackImport(unittest.TestCase):
             content = fh.read()
         self.assertIn("PyOpenGL", content,
             "requirements.txt must list PyOpenGL as the no-compiler fallback")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Iteration 16 Regression Tests — Python version guard in build.bat
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBuildBatPythonVersionGuard(unittest.TestCase):
+    """build.bat must block Python 3.13+ with a clear, actionable error message."""
+
+    def _read_bat(self) -> str:
+        bat_path = os.path.join(os.path.dirname(__file__), "..", "build.bat")
+        with open(bat_path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    def test_bat_blocks_python_313_plus(self):
+        """build.bat must detect Python 3.13+ and exit with a clear error."""
+        bat = self._read_bat()
+        # Must check PY_MINOR >= 13 (or similar) and call exit
+        self.assertTrue(
+            "GEQ 13" in bat or "13" in bat,
+            "build.bat must block Python 3.13+ which has no PyQt5 wheel"
+        )
+        self.assertIn("exit /b 1", bat,
+            "build.bat must exit with code 1 when Python is too new")
+
+    def test_bat_error_message_names_pyqt5_as_cause(self):
+        """The Python-too-new error must explain that PyQt5 has no wheel."""
+        bat = self._read_bat()
+        self.assertIn("PyQt5", bat,
+            "build.bat Python-version error must mention PyQt5 as the cause")
+
+    def test_bat_error_message_recommends_python_312(self):
+        """build.bat must specifically recommend Python 3.12 as the solution."""
+        bat = self._read_bat()
+        self.assertIn("3.12", bat,
+            "build.bat must recommend Python 3.12 as the known-good version")
+
+    def test_bat_provides_python_312_download_url(self):
+        """build.bat must include a direct Python 3.12 download link."""
+        bat = self._read_bat()
+        self.assertIn("python.org", bat,
+            "build.bat must include a python.org download URL for Python 3.12")
+
+    def test_bat_installs_pyqt5_separately_with_own_error(self):
+        """build.bat must install PyQt5 as a separate step with its own error handling."""
+        bat = self._read_bat()
+        lines = bat.splitlines()
+        # Find PyQt5 install line
+        pyqt5_line = next(
+            (i for i, ln in enumerate(lines) if "PyQt5" in ln and "pip install" in ln), None
+        )
+        self.assertIsNotNone(pyqt5_line,
+            "build.bat must have a dedicated pip install PyQt5 step")
+        # Within 10 lines after PyQt5 install, must have errorlevel check
+        nearby = " ".join(lines[pyqt5_line: pyqt5_line + 15])
+        self.assertIn("errorlevel", nearby,
+            "build.bat must check errorlevel after installing PyQt5 "
+            "to give a specific error instead of the generic message")
+
+    def test_bat_version_string_updated_to_v14(self):
+        """build.bat header must show v1.4 (the version that added the Python guard)."""
+        bat = self._read_bat()
+        self.assertIn("v1.4", bat,
+            "build.bat must be updated to v1.4 after adding the Python version guard")
