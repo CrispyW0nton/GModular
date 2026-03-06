@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self._rm    = get_resource_manager()
         self._game_dir: Optional[Path] = None
         self._placement_active = False
+        self._recent_files: list = []   # populated by _load_settings
 
         # IPC
         self._gs_bridge = GhostScripterBridge(self)
@@ -202,6 +203,7 @@ class MainWindow(QMainWindow):
         self._viewport.object_selected.connect(self._on_object_selected)
         self._viewport.object_placed.connect(self._on_object_placed)
         self._viewport.camera_moved.connect(self._on_camera_moved)
+        self._viewport.play_mode_changed.connect(self._on_play_mode_changed)
 
         # Viewport header bar (mode indicator + quick buttons)
         self._viewport_header = self._build_viewport_header()
@@ -270,7 +272,7 @@ class MainWindow(QMainWindow):
             return b
 
         frame_btn = quick_btn("⊡ Frame All", "Fit camera to all objects (F)")
-        frame_btn.clicked.connect(self._viewport.frame_selected)
+        frame_btn.clicked.connect(self._viewport.frame_all)
         layout.addWidget(frame_btn)
 
         validate_btn = quick_btn("✓ Validate", "Check for errors")
@@ -280,6 +282,19 @@ class MainWindow(QMainWindow):
         save_btn = quick_btn("💾 Save GIT", "Save .GIT to disk (Ctrl+S)", accent=True)
         save_btn.clicked.connect(self._save_module)
         layout.addWidget(save_btn)
+
+        layout.addStretch()
+
+        # ── Play / Stop button ────────────────────────────────────────────────
+        self._play_btn = quick_btn("▶  Play", "Start walk preview mode", accent=True)
+        self._play_btn.setStyleSheet(
+            "QPushButton{background:#1a8a3a;color:white;border:1px solid #2aaa4a;"
+            "border-radius:3px;padding:0 10px;font-size:8pt;font-weight:bold;}"
+            "QPushButton:hover{background:#2aaa4a;}"
+            "QPushButton:pressed{background:#0f6028;}"
+        )
+        self._play_btn.clicked.connect(self._toggle_play_mode)
+        layout.addWidget(self._play_btn)
 
         # IPC status dots
         self._gs_dot = QLabel("●")
@@ -348,6 +363,10 @@ class MainWindow(QMainWindow):
         area_widget = self._build_area_props_tab()
         tabs.addTab(area_widget, "Area Properties")
 
+        # ── IFO / Module Properties tab ────────────────────────────────────
+        ifo_widget = self._build_ifo_tab()
+        tabs.addTab(ifo_widget, "Module IFO")
+
         return tabs
 
     def _build_area_props_tab(self) -> QWidget:
@@ -399,6 +418,104 @@ class MainWindow(QMainWindow):
         frame.setFixedHeight(0)   # Hidden; bottom tabs used instead
         return frame
 
+    def _build_ifo_tab(self) -> QWidget:
+        """Module .IFO properties editor (entry area, scripts).
+
+        All editable string fields push a ModifyPropertyCommand onto the undo
+        stack via editingFinished so IFO changes integrate with undo/redo.
+        Read-only fields (entry position, counts) remain as QLabels.
+        """
+        widget = QScrollArea()
+        widget.setWidgetResizable(True)
+        widget.setStyleSheet("QScrollArea { border:none; background:#1e1e1e; }")
+
+        content = QWidget()
+        form = QFormLayout(content)
+        form.setContentsMargins(12, 8, 12, 8)
+        form.setSpacing(4)
+        form.setLabelAlignment(Qt.AlignRight)
+
+        _field_style = (
+            "QLineEdit { background:#3c3c3c; color:#9cdcfe; border:1px solid #555; "
+            "border-radius:2px; padding:1px 4px; font-family:Consolas; font-size:8pt; }"
+            "QLineEdit:focus { border:1px solid #007acc; }"
+        )
+
+        def _lbl(text):
+            l = QLabel(text)
+            l.setStyleSheet("color:#969696; font-size:8pt;")
+            return l
+
+        def _val(text=""):
+            l = QLabel(str(text))
+            l.setFont(QFont("Consolas", 8))
+            l.setStyleSheet("color:#9cdcfe;")
+            return l
+
+        def _edit(text="", max_len=0):
+            e = QLineEdit(str(text))
+            e.setFont(QFont("Consolas", 8))
+            e.setStyleSheet(_field_style)
+            if max_len:
+                e.setMaxLength(max_len)
+            return e
+
+        # Editable IFO fields
+        self._ifo_name_edit    = _edit()
+        self._ifo_desc_edit    = _edit()
+        self._ifo_area_edit    = _edit(max_len=16)
+        self._ifo_pos_lbl      = _val("-")          # read-only (position needs 3 spins)
+        self._ifo_onload_edit  = _edit(max_len=16)
+        self._ifo_onstart_edit = _edit(max_len=16)
+        self._ifo_onenter_edit = _edit(max_len=16)
+        self._ifo_onleave_edit = _edit(max_len=16)
+        self._ifo_onhb_edit    = _edit(max_len=16)
+        self._ifo_ondeath_edit = _edit(max_len=16)
+
+        form.addRow(_lbl("Module Name:"),      self._ifo_name_edit)
+        form.addRow(_lbl("Description:"),      self._ifo_desc_edit)
+        form.addRow(_lbl("Entry Area:"),       self._ifo_area_edit)
+        form.addRow(_lbl("Entry Position:"),   self._ifo_pos_lbl)
+        form.addRow(_lbl("On Module Load:"),   self._ifo_onload_edit)
+        form.addRow(_lbl("On Module Start:"),  self._ifo_onstart_edit)
+        form.addRow(_lbl("On Client Enter:"),  self._ifo_onenter_edit)
+        form.addRow(_lbl("On Client Leave:"),  self._ifo_onleave_edit)
+        form.addRow(_lbl("On Heartbeat:"),     self._ifo_onhb_edit)
+        form.addRow(_lbl("On Player Death:"),  self._ifo_ondeath_edit)
+
+        # Wire edits — push ModifyPropertyCommand to the IFO object
+        def _wire_ifo(widget, attr):
+            def on_finished():
+                ifo = self._state.ifo
+                if ifo is None:
+                    return
+                old = getattr(ifo, attr, "")
+                new = widget.text().strip()
+                if old == new:
+                    return
+                try:
+                    from ..core.module_state import ModifyPropertyCommand
+                    cmd = ModifyPropertyCommand(ifo, attr, old, new)
+                    self._state.execute(cmd)
+                    self.log(f"  IFO edit: {attr} = {new!r}")
+                except Exception as e:
+                    setattr(ifo, attr, new)
+                    log.debug(f"IFO edit fallback: {e}")
+            widget.editingFinished.connect(on_finished)
+
+        _wire_ifo(self._ifo_name_edit,    "mod_name")
+        _wire_ifo(self._ifo_desc_edit,    "mod_description")
+        _wire_ifo(self._ifo_area_edit,    "entry_area")
+        _wire_ifo(self._ifo_onload_edit,  "on_module_load")
+        _wire_ifo(self._ifo_onstart_edit, "on_module_start")
+        _wire_ifo(self._ifo_onenter_edit, "on_client_enter")
+        _wire_ifo(self._ifo_onleave_edit, "on_client_leave")
+        _wire_ifo(self._ifo_onhb_edit,    "on_heartbeat")
+        _wire_ifo(self._ifo_ondeath_edit, "on_player_death")
+
+        widget.setWidget(content)
+        return widget
+
     # ── Menus ─────────────────────────────────────────────────────────────────
 
     def _setup_menus(self):
@@ -413,6 +530,13 @@ class MainWindow(QMainWindow):
         fm.addAction(self._action("Save GIT",       self._save_module, "Ctrl+S"))
         fm.addAction(self._action("Save GIT As…",   self._save_as))
         fm.addSeparator()
+
+        # Recent Files submenu
+        self._recent_menu = fm.addMenu("Recent Files")
+        self._recent_files: list = []
+        self._rebuild_recent_menu()
+        fm.addSeparator()
+
         fm.addAction(self._action("Exit",            self.close, "Alt+F4"))
 
         # Edit
@@ -421,13 +545,13 @@ class MainWindow(QMainWindow):
         em.addAction(self._action("Redo",   self._redo, "Ctrl+Y"))
         em.addSeparator()
         em.addAction(self._action("Delete Selected", self._viewport._delete_selected, "Delete"))
-        em.addAction(self._action("Frame All",        self._viewport.frame_selected, "F"))
+        em.addAction(self._action("Frame All",        self._viewport.frame_all, "F"))
         em.addSeparator()
         em.addAction(self._action("Validate Module",  self._validate_module))
 
         # View
         vm = mb.addMenu("View")
-        vm.addAction(self._action("Frame All Objects",  self._viewport.frame_selected))
+        vm.addAction(self._action("Frame All Objects",  self._viewport.frame_all))
         vm.addAction(self._action("Frame Selected",     self._viewport.frame_selected))
 
         # Module
@@ -493,7 +617,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(btn("Undo",        self._undo,          "Undo last action (Ctrl+Z)"))
         tb.addWidget(btn("Redo",        self._redo,          "Redo (Ctrl+Y)"))
         tb.addSeparator()
-        tb.addWidget(btn("⊡ Frame All",  self._viewport.frame_selected, "Fit camera to scene (F)"))
+        tb.addWidget(btn("⊡ Frame All",  self._viewport.frame_all, "Fit camera to scene (F)"))
         tb.addWidget(btn("✓ Validate",  self._validate_module, "Check for errors"))
         tb.addSeparator()
         tb.addWidget(btn("Set Game Dir", self._set_game_dir, "Set KotOR game directory"))
@@ -648,6 +772,7 @@ class MainWindow(QMainWindow):
         self.log(f"✓ Opened GIT: {path}")
         self.log(f"  Objects: {self._state.git.object_count}")
         self._scene_outline._refresh()
+        self._add_recent_file(path)
         if self._ipc_server:
             self._ipc_server.update_module_info(path, self._state.git.object_count)
 
@@ -684,7 +809,17 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._state.save(git_path=path)
+            # Also save IFO alongside the GIT when using Save As
+            if self._state.ifo:
+                ifo_path = path.replace(".git", ".ifo").replace(".GIT", ".ifo")
+                try:
+                    from ..formats.gff_writer import save_ifo
+                    save_ifo(self._state.ifo, ifo_path)
+                    self.log(f"✓ IFO saved to: {ifo_path}")
+                except Exception as e:
+                    self.log(f"⚠ IFO save failed: {e}")
             self.log(f"✓ Saved to: {path}")
+            self._add_recent_file(path)
 
     # ── Edit Actions ──────────────────────────────────────────────────────────
 
@@ -771,11 +906,49 @@ class MainWindow(QMainWindow):
 
     def _on_place_asset(self, asset: AssetItem):
         """Called when user clicks 'Place' in the palette."""
-        self._viewport.set_placement_mode(True, asset.resref)
+        self._viewport.set_placement_mode(True, asset.resref,
+                                          getattr(asset, "asset_type", "placeable"))
         self._placement_active = True
-        self._mode_label.setText(f"PLACE MODE  [ {asset.resref} ]")
+        kind = getattr(asset, "asset_type", "placeable").capitalize()
+        self._mode_label.setText(f"PLACE MODE  [ {asset.resref} ({kind}) ]")
         self._mode_label.setStyleSheet("color:#ff8c00; font-weight:bold; font-size:8pt;")
-        self.log(f"Placement mode: {asset.resref} — click in viewport to place")
+        self.log(f"Placement mode: {asset.resref} ({kind}) — click in viewport to place")
+
+    def _toggle_play_mode(self):
+        """Start or stop walk preview mode."""
+        if self._viewport.is_play_mode:
+            self._viewport.stop_play_mode()
+        else:
+            # Pass game dir to viewport before starting
+            if self._game_dir:
+                self._viewport.set_game_dir(str(self._game_dir))
+            self._viewport.start_play_mode()
+
+    def _on_play_mode_changed(self, active: bool):
+        """Update UI when play mode starts or stops."""
+        if active:
+            self._play_btn.setText("■  Stop")
+            self._play_btn.setStyleSheet(
+                "QPushButton{background:#8a1a1a;color:white;border:1px solid #aa2a2a;"
+                "border-radius:3px;padding:0 10px;font-size:8pt;font-weight:bold;}"
+                "QPushButton:hover{background:#aa2a2a;}"
+            )
+            self._mode_label.setText(
+                "PLAY MODE  [ WASD = move · A/D = turn · Shift = run · Esc = exit ]")
+            self._mode_label.setStyleSheet(
+                "color:#2aff6a; font-weight:bold; font-size:8pt;")
+            self.log("▶ Play mode started — WASD to walk, A/D to turn, Esc to exit")
+        else:
+            self._play_btn.setText("▶  Play")
+            self._play_btn.setStyleSheet(
+                "QPushButton{background:#1a8a3a;color:white;border:1px solid #2aaa4a;"
+                "border-radius:3px;padding:0 10px;font-size:8pt;font-weight:bold;}"
+                "QPushButton:hover{background:#2aaa4a;}"
+                "QPushButton:pressed{background:#0f6028;}"
+            )
+            self._mode_label.setText("EDIT MODE")
+            self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
+            self.log("■ Play mode stopped — back to edit mode")
 
     def _on_object_selected(self, obj):
         """Called when user selects an object in the viewport."""
@@ -843,12 +1016,14 @@ class MainWindow(QMainWindow):
             self._viewport.frame_selected()
 
     def _on_outline_delete(self, obj):
-        """Called when outline deletes an object."""
+        """Called when outline deletes an object (command already executed by outline)."""
         self._viewport.select_object(None)
         self._inspector.inspect(None)
         self._update_object_count()
+        self._scene_outline._refresh()   # force refresh in case change callback is slow
         tag = getattr(obj, "tag", "")
-        self.log(f"✗ Deleted: {tag}")
+        kind = type(obj).__name__.replace("GIT", "")
+        self.log(f"✗ Deleted {kind}: {tag}")
 
     def _on_wok_loaded(self, wok):
         """Called when walkmesh panel loads a WOK file."""
@@ -861,7 +1036,7 @@ class MainWindow(QMainWindow):
                 break
 
     def _refresh_area_props(self):
-        """Update the Area Properties tab from current state."""
+        """Update the Area Properties and IFO tabs from current state."""
         try:
             state = self._state
             if not state.is_open:
@@ -869,6 +1044,13 @@ class MainWindow(QMainWindow):
                             self._are_tileset_lbl, self._are_skybox_lbl,
                             self._are_fog_lbl, self._are_ambient_lbl):
                     lbl.setText("-")
+                # Clear IFO editable fields
+                for edit in (self._ifo_name_edit, self._ifo_desc_edit, self._ifo_area_edit,
+                             self._ifo_onload_edit, self._ifo_onstart_edit,
+                             self._ifo_onenter_edit, self._ifo_onleave_edit,
+                             self._ifo_onhb_edit, self._ifo_ondeath_edit):
+                    edit.setText("")
+                self._ifo_pos_lbl.setText("-")
                 return
 
             are = state.are
@@ -881,6 +1063,28 @@ class MainWindow(QMainWindow):
                 fog = f"{'On' if are.fog_enabled else 'Off'}  near={are.fog_near:.0f}  far={are.fog_far:.0f}"
                 self._are_fog_lbl.setText(fog)
                 self._are_ambient_lbl.setText(f"#{are.ambient_color:06x}")
+
+            ifo = state.ifo
+            if ifo:
+                # Populate editable fields (suppress editingFinished by blockSignals)
+                for edit, val in [
+                    (self._ifo_name_edit,    ifo.mod_name or ""),
+                    (self._ifo_desc_edit,    ifo.mod_description or ""),
+                    (self._ifo_area_edit,    ifo.entry_area or ""),
+                    (self._ifo_onload_edit,  ifo.on_module_load or ""),
+                    (self._ifo_onstart_edit, ifo.on_module_start or ""),
+                    (self._ifo_onenter_edit, ifo.on_client_enter or ""),
+                    (self._ifo_onleave_edit, ifo.on_client_leave or ""),
+                    (self._ifo_onhb_edit,    ifo.on_heartbeat or ""),
+                    (self._ifo_ondeath_edit, ifo.on_player_death or ""),
+                ]:
+                    edit.blockSignals(True)
+                    edit.setText(val)
+                    edit.blockSignals(False)
+                pos = ifo.entry_position
+                self._ifo_pos_lbl.setText(
+                    f"{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}" if pos else "-"
+                )
         except AttributeError:
             pass   # Panels not yet created
 
@@ -892,6 +1096,17 @@ class MainWindow(QMainWindow):
             lambda: self._gs_dot.setStyleSheet("color:#555555; font-size:8pt; margin-left:8px;"))
         self._gs_bridge.scripts_updated.connect(self._on_scripts_updated)
         self._gs_bridge.compile_done.connect(self._on_compile_done)
+        # Wire callback server compile_result → same handler
+        if self._ipc_server:
+            self._ipc_server.compile_result.connect(
+                lambda ok, script, msg: self._on_compile_done(ok, f"{script}: {msg}")
+            )
+            self._ipc_server.model_ready.connect(
+                lambda name, mdl, mdx: self.log(f"📦 IPC model ready: {name}  mdl={mdl}")
+            )
+            self._ipc_server.git_updated.connect(
+                lambda path, n: self.log(f"⟳ IPC git_updated: {path} ({n} objects)")
+            )
 
         self._gr_bridge.connected.connect(
             lambda v: (self._gr_dot.setStyleSheet("color:#4ec9b0; font-size:8pt;"),
@@ -937,19 +1152,47 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Module Properties", "No module loaded.")
             return
         name = state.module_name
-        obj_count = state.git.object_count if state.git else 0
-        info = (
-            f"Module: {name}\n"
-            f"Objects: {obj_count}\n"
-            f"  Placeables:  {len(state.git.placeables)}\n"
-            f"  Creatures:   {len(state.git.creatures)}\n"
-            f"  Doors:       {len(state.git.doors)}\n"
-            f"  Triggers:    {len(state.git.triggers)}\n"
-            f"  Waypoints:   {len(state.git.waypoints)}\n"
-            f"Dirty: {state.is_dirty}\n"
-            f"Undo stack: {len(state._undo_stack)} steps"
-        )
-        QMessageBox.information(self, "Module Properties", info)
+        git  = state.git
+        obj_count = git.object_count if git else 0
+        ifo  = state.ifo
+        are  = state.are
+        info_lines = [
+            f"Module: {name}",
+            f"ResRef: {state.project.module_resref if state.project else '-'}",
+            f"Game:   {state.project.game if state.project else '-'}",
+            "",
+            f"Objects: {obj_count}",
+        ]
+        if git:
+            info_lines += [
+                f"  Placeables:  {len(git.placeables)}",
+                f"  Creatures:   {len(git.creatures)}",
+                f"  Doors:       {len(git.doors)}",
+                f"  Triggers:    {len(git.triggers)}",
+                f"  Sounds:      {len(git.sounds)}",
+                f"  Waypoints:   {len(git.waypoints)}",
+                f"  Stores:      {len(git.stores)}",
+            ]
+        if are:
+            info_lines += [
+                "",
+                f"Area tag:    {are.tag}",
+                f"Rooms:       {are.room_count}",
+                f"Tileset:     {are.tileset_resref}",
+            ]
+        if ifo:
+            info_lines += [
+                "",
+                f"Module name: {ifo.mod_name}",
+                f"Entry area:  {ifo.entry_area}",
+                f"On load:     {ifo.on_module_load or '-'}",
+            ]
+        info_lines += [
+            "",
+            f"Dirty:       {state.is_dirty}",
+            f"Undo steps:  {len(state._undo_stack)}",
+        ]
+        QMessageBox.information(self, "Module Properties", "\n".join(info_lines))
 
     def _show_about(self):
         QMessageBox.about(self, f"About {APP_NAME}",
@@ -972,6 +1215,11 @@ class MainWindow(QMainWindow):
                 gd = data.get("game_dir", "")
                 if gd and Path(gd).exists():
                     self._game_dir = Path(gd)
+                # Load recent files list
+                self._recent_files = [
+                    p for p in data.get("recent_files", [])
+                    if isinstance(p, str) and Path(p).exists()
+                ][:10]
         except Exception:
             pass
 
@@ -979,10 +1227,66 @@ class MainWindow(QMainWindow):
         settings_path = Path.home() / ".gmodular" / "settings.json"
         try:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"game_dir": str(self._game_dir) if self._game_dir else ""}
+            data = {
+                "game_dir": str(self._game_dir) if self._game_dir else "",
+                "recent_files": getattr(self, "_recent_files", [])[:10],
+            }
             settings_path.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
+
+    def _add_recent_file(self, path: str):
+        """Add a file path to the recent files list (max 10, deduped, newest first)."""
+        if not hasattr(self, "_recent_files"):
+            self._recent_files = []
+        path = str(path)
+        if path in self._recent_files:
+            self._recent_files.remove(path)
+        self._recent_files.insert(0, path)
+        self._recent_files = self._recent_files[:10]
+        self._rebuild_recent_menu()
+        self._save_settings()
+
+    def _rebuild_recent_menu(self):
+        """Repopulate the Recent Files submenu."""
+        if not hasattr(self, "_recent_menu"):
+            return
+        self._recent_menu.clear()
+        files = getattr(self, "_recent_files", [])
+        if not files:
+            no_act = self._recent_menu.addAction("(no recent files)")
+            no_act.setEnabled(False)
+        else:
+            for i, path in enumerate(files[:10]):
+                label = f"&{i+1}  {Path(path).name}"
+                act = self._recent_menu.addAction(label)
+                act.setData(path)
+                act.triggered.connect(lambda checked, p=path: self._open_recent(p))
+            self._recent_menu.addSeparator()
+            self._recent_menu.addAction("Clear Recent Files").triggered.connect(
+                self._clear_recent_files)
+
+    def _open_recent(self, path: str):
+        """Open a recently used GIT file."""
+        if not Path(path).exists():
+            QMessageBox.warning(self, "File Not Found",
+                                f"File no longer exists:\n{path}")
+            if path in self._recent_files:
+                self._recent_files.remove(path)
+            self._rebuild_recent_menu()
+            return
+        self._state.load_from_files(path)
+        self._update_title()
+        self._update_object_count()
+        self._add_recent_file(path)
+        self.log(f"✓ Opened (recent): {path}")
+        self._scene_outline._refresh()
+
+    def _clear_recent_files(self):
+        """Clear the recent files list."""
+        self._recent_files = []
+        self._rebuild_recent_menu()
+        self._save_settings()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

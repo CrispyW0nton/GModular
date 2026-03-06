@@ -78,6 +78,30 @@ _COMMON_WAYPOINTS = [
     ("Shop Entry",       "wp_shopentry",  "wp_shopentry"),
 ]
 
+_COMMON_TRIGGERS = [
+    ("Area Transition",  "trg_trans01",   "trg_trans01"),
+    ("Trap (Moderate)",  "trg_trap01",    "trg_trap01"),
+    ("Trap (Strong)",    "trg_trap02",    "trg_trap02"),
+    ("Trigger (Generic)","trg_generic01", "trg_generic01"),
+    ("Cut-scene Trigger","trg_cutscene01","trg_cutscene01"),
+]
+
+_COMMON_SOUNDS = [
+    ("Ambient Forest",   "as_an_forest1", "as_an_forest1"),
+    ("Ambient Caves",    "as_an_cave1",   "as_an_cave1"),
+    ("Ambient Space",    "as_an_space1",  "as_an_space1"),
+    ("Ambient Cantina",  "as_mu_cantina1","as_mu_cantina1"),
+    ("Ambient Wind",     "as_an_wind1",   "as_an_wind1"),
+]
+
+_COMMON_STORES = [
+    ("General Store",    "shop_general",  "shop_general"),
+    ("Weapons Dealer",   "shop_weapons",  "shop_weapons"),
+    ("Armor Dealer",     "shop_armor",    "shop_armor"),
+    ("Medical Supplies", "shop_medical",  "shop_medical"),
+    ("Jawa Trader",      "shop_jawa01",   "shop_jawa01"),
+]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Asset Palette Widget
@@ -111,6 +135,9 @@ class AssetPalette(QWidget):
             "creature":  [],
             "door":      [],
             "waypoint":  [],
+            "trigger":   [],
+            "sound":     [],
+            "store":     [],
         }
         self._search_text = ""
         self._setup_ui()
@@ -138,11 +165,17 @@ class AssetPalette(QWidget):
         self._creatures_list  = self._make_list()
         self._doors_list      = self._make_list()
         self._waypoints_list  = self._make_list()
+        self._triggers_list   = self._make_list()
+        self._sounds_list     = self._make_list()
+        self._stores_list     = self._make_list()
 
         self._tabs.addTab(self._placeables_list,  "Placeables")
         self._tabs.addTab(self._creatures_list,   "Creatures")
         self._tabs.addTab(self._doors_list,       "Doors")
         self._tabs.addTab(self._waypoints_list,   "Waypoints")
+        self._tabs.addTab(self._triggers_list,    "Triggers")
+        self._tabs.addTab(self._sounds_list,      "Sounds")
+        self._tabs.addTab(self._stores_list,      "Stores")
         layout.addWidget(self._tabs)
 
         # Bottom action buttons
@@ -196,6 +229,12 @@ class AssetPalette(QWidget):
             self._add_item("door", AssetItem(name, resref, template, "door"))
         for name, resref, template in _COMMON_WAYPOINTS:
             self._add_item("waypoint", AssetItem(name, resref, template, "waypoint"))
+        for name, resref, template in _COMMON_TRIGGERS:
+            self._add_item("trigger", AssetItem(name, resref, template, "trigger"))
+        for name, resref, template in _COMMON_SOUNDS:
+            self._add_item("sound", AssetItem(name, resref, template, "sound"))
+        for name, resref, template in _COMMON_STORES:
+            self._add_item("store", AssetItem(name, resref, template, "store"))
 
     def _add_item(self, asset_type: str, asset: AssetItem):
         self._assets[asset_type].append(asset)
@@ -214,6 +253,9 @@ class AssetPalette(QWidget):
             "creature":  self._creatures_list,
             "door":      self._doors_list,
             "waypoint":  self._waypoints_list,
+            "trigger":   self._triggers_list,
+            "sound":     self._sounds_list,
+            "store":     self._stores_list,
         }.get(asset_type)
 
     def _color_for_type(self, asset_type: str) -> str:
@@ -222,13 +264,23 @@ class AssetPalette(QWidget):
             "creature":  "#ffaa88",
             "door":      "#ffff88",
             "waypoint":  "#aa88ff",
+            "trigger":   "#88ffaa",
+            "sound":     "#aaffff",
+            "store":     "#aaffaa",
         }.get(asset_type, "#d4d4d4")
 
     def _current_item(self) -> Optional[AssetItem]:
         """Get the currently selected asset from whichever tab is active."""
+        _all_lists = [
+            self._placeables_list, self._creatures_list,
+            self._doors_list,      self._waypoints_list,
+            self._triggers_list,   self._sounds_list,
+            self._stores_list,
+        ]
         idx = self._tabs.currentIndex()
-        lst = [self._placeables_list, self._creatures_list,
-               self._doors_list, self._waypoints_list][idx]
+        if idx < 0 or idx >= len(_all_lists):
+            return None
+        lst = _all_lists[idx]
         sel = lst.selectedItems()
         if sel:
             return sel[0].data(Qt.UserRole)
@@ -257,14 +309,23 @@ class AssetPalette(QWidget):
         )
         if ok and resref.strip():
             resref = resref.strip()[:16]
-            asset = AssetItem(resref, resref, resref, "placeable")
+            # Detect type from active tab
+            _type_map = [
+                "placeable", "creature", "door", "waypoint",
+                "trigger", "sound", "store"
+            ]
+            idx = self._tabs.currentIndex()
+            asset_type = _type_map[idx] if 0 <= idx < len(_type_map) else "placeable"
+            asset = AssetItem(resref, resref, resref, asset_type)
             self.place_asset.emit(asset)
-            self._status_lbl.setText(f"Placing custom: {resref} — click in viewport")
+            self._status_lbl.setText(f"Placing custom {asset_type}: {resref} — click in viewport")
 
     def _on_search(self, text: str):
         self._search_text = text.lower()
         for lst in [self._placeables_list, self._creatures_list,
-                    self._doors_list, self._waypoints_list]:
+                    self._doors_list, self._waypoints_list,
+                    self._triggers_list, self._sounds_list,
+                    self._stores_list]:
             for i in range(lst.count()):
                 item = lst.item(i)
                 asset = item.data(Qt.UserRole)
@@ -279,8 +340,11 @@ class AssetPalette(QWidget):
         lst = self._list_for_type(asset_type)
         if lst is None:
             return
-        # Add any new ResRefs not already in the list
-        existing = {self._assets[asset_type][i].resref
+        # Add any new ResRefs not already in the list.
+        # Build the set with .lower() so the membership test (also .lower())
+        # is case-insensitive — prevents duplicate entries when the game
+        # returns uppercase ResRefs (e.g. "PLC_CHAIR01") for existing items.
+        existing = {self._assets[asset_type][i].resref.lower()
                     for i in range(len(self._assets[asset_type]))}
         added = 0
         for resref in sorted(resrefs):

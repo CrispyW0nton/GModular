@@ -4,6 +4,7 @@ Central data store for the currently open module.
 Manages loading, autosave, undo/redo, and dirty tracking.
 """
 from __future__ import annotations
+import math
 import os
 import json
 import shutil
@@ -13,9 +14,14 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Callable, Any
 
-from ..formats.gff_types import GITData, AREData, IFOData, GITPlaceable, Vector3
+from ..formats.gff_types import (
+    GITData, AREData, IFOData,
+    GITPlaceable, GITCreature, GITDoor, GITTrigger,
+    GITSoundObject, GITWaypoint, GITStoreObject,
+    Vector3,
+)
 from ..formats.gff_reader import load_git, load_are, load_ifo
-from ..formats.gff_writer import save_git
+from ..formats.gff_writer import save_git, save_ifo
 from ..formats.archives import ResourceManager, get_resource_manager
 
 log = logging.getLogger(__name__)
@@ -30,43 +36,68 @@ class Command:
     def undo(self): pass
 
 
+def _obj_type_label(obj) -> str:
+    """Return a human-readable type label for any GIT object."""
+    return type(obj).__name__.replace("GIT", "")
+
+
 class PlaceObjectCommand(Command):
-    def __init__(self, git: GITData, obj: GITPlaceable):
+    """
+    Generic placement command — works for all GIT object types
+    (GITPlaceable, GITCreature, GITDoor, GITTrigger, GITWaypoint, etc.).
+    Delegates add/remove to GITData.add_object / GITData.remove_object.
+    """
+    def __init__(self, git: GITData, obj):
         self.git = git
         self.obj = obj
-        self.description = f"Place {obj.resref or 'object'}"
+        label = _obj_type_label(obj)
+        self.description = f"Place {label} '{getattr(obj, 'resref', '') or 'object'}'"
 
     def execute(self):
-        self.git.placeables.append(self.obj)
+        self.git.add_object(self.obj)
 
     def undo(self):
-        if self.obj in self.git.placeables:
-            self.git.placeables.remove(self.obj)
+        self.git.remove_object(self.obj)
 
 
 class DeleteObjectCommand(Command):
-    def __init__(self, git: GITData, obj: GITPlaceable):
-        self.git = git
-        self.obj = obj
+    """
+    Generic delete command — works for all GIT object types.
+    Records the list index so undo can restore insertion order.
+    """
+    def __init__(self, git: GITData, obj):
+        self.git  = git
+        self.obj  = obj
+        self._list: Optional[List] = None   # which sub-list the obj lived in
         self._index: int = -1
-        self.description = f"Delete {obj.resref or 'object'}"
+        label = _obj_type_label(obj)
+        self.description = f"Delete {label} '{getattr(obj, 'tag', '') or 'object'}'"
+
+    def _target_list(self) -> Optional[List]:
+        """Return the specific sub-list that holds self.obj."""
+        for lst in (self.git.placeables, self.git.creatures, self.git.doors,
+                    self.git.waypoints, self.git.triggers,
+                    self.git.sounds, self.git.stores):
+            if self.obj in lst:
+                return lst
+        return None
 
     def execute(self):
-        try:
-            self._index = self.git.placeables.index(self.obj)
-            self.git.placeables.remove(self.obj)
-        except ValueError:
-            pass
+        lst = self._target_list()
+        if lst is not None:
+            self._list  = lst
+            self._index = lst.index(self.obj)
+            lst.remove(self.obj)
 
     def undo(self):
-        if self._index >= 0:
-            self.git.placeables.insert(self._index, self.obj)
-        else:
-            self.git.placeables.append(self.obj)
+        if self._list is not None and self._index >= 0:
+            self._list.insert(self._index, self.obj)
+        elif self._list is not None:
+            self._list.append(self.obj)
 
 
 class MoveObjectCommand(Command):
-    def __init__(self, obj: GITPlaceable, old_pos: Vector3, new_pos: Vector3):
+    def __init__(self, obj, old_pos: Vector3, new_pos: Vector3):
         self.obj     = obj
         self.old_pos = Vector3(old_pos.x, old_pos.y, old_pos.z)
         self.new_pos = Vector3(new_pos.x, new_pos.y, new_pos.z)
@@ -80,7 +111,7 @@ class MoveObjectCommand(Command):
 
 
 class RotateObjectCommand(Command):
-    def __init__(self, obj: GITPlaceable, old_bearing: float, new_bearing: float):
+    def __init__(self, obj, old_bearing: float, new_bearing: float):
         self.obj        = obj
         self.old_bearing = old_bearing
         self.new_bearing = new_bearing
@@ -318,17 +349,26 @@ class ModuleState:
         self._emit_change()
 
     def save(self, git_path: Optional[str] = None):
-        """Save GIT to disk."""
+        """Save GIT (and IFO if project open) to disk."""
         if self.git is None:
             log.warning("Nothing to save")
             return
         target = git_path or (self.project.git_path if self.project else None)
         if not target:
             raise ValueError("No save path specified")
-        os.makedirs(os.path.dirname(target), exist_ok=True)
+        target_dir = os.path.dirname(target)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
         save_git(self.git, target)
+        # Also save IFO when project is open and IFO has been loaded/edited
+        if self.project and self.ifo:
+            try:
+                os.makedirs(os.path.dirname(self.project.ifo_path), exist_ok=True)
+                save_ifo(self.ifo, self.project.ifo_path)
+            except Exception as e:
+                log.warning(f"IFO save failed: {e}")
         self._dirty = False
-        log.info(f"Saved GIT: {target}")
+        log.info(f"Saved: {target}")
 
     def autosave(self):
         """Write an autosave backup."""
@@ -350,6 +390,9 @@ class ModuleState:
         self._autosave_timer.start()
 
     def _autosave_tick(self):
+        # Stop and don't reschedule if module has been closed since timer was armed
+        if self.git is None or self.project is None:
+            return
         if self._dirty:
             self.autosave()
         self._start_autosave()
@@ -423,26 +466,64 @@ class ModuleState:
     # ── Validation ────────────────────────────────────────────────────────
 
     def validate(self) -> List[str]:
-        """Check for common issues. Returns list of warning strings."""
+        """Check for common issues across ALL object types. Returns list of warning strings."""
         issues = []
         if self.git is None:
             return ["No GIT loaded"]
 
-        # Duplicate tags
-        tags: Dict[str, int] = {}
-        for p in self.git.placeables:
-            if p.tag:
-                tags[p.tag] = tags.get(p.tag, 0) + 1
-        for tag, count in tags.items():
-            if count > 1:
-                issues.append(f"Duplicate tag: '{tag}' ({count} objects)")
+        # ── Duplicate tags (across all object types) ───────────────────────
+        tags: Dict[str, List[str]] = {}  # tag → list of type labels
+        for obj in self.git.all_objects():
+            tag = getattr(obj, 'tag', '').strip()
+            if tag:
+                label = _obj_type_label(obj)
+                tags.setdefault(tag, []).append(label)
+        for tag, labels in tags.items():
+            if len(labels) > 1:
+                issues.append(
+                    f"Duplicate tag '{tag}' used by {len(labels)} objects "
+                    f"({', '.join(labels)})"
+                )
 
-        # Empty ResRefs
-        for i, p in enumerate(self.git.placeables):
-            if not p.resref:
-                issues.append(f"Placeable [{i}] '{p.tag}' has no ResRef")
-            if len(p.resref) > 16:
-                issues.append(f"Placeable '{p.tag}' ResRef too long (>16): {p.resref!r}")
+        # ── Per-type checks ────────────────────────────────────────────────
+        def _check_list(lst, kind: str, max_resref: int = 16):
+            for i, obj in enumerate(lst):
+                resref = getattr(obj, 'resref', '')
+                tag    = getattr(obj, 'tag', '')
+                if not resref:
+                    issues.append(f"{kind} [{i}] '{tag}' has no ResRef")
+                elif len(resref) > max_resref:
+                    issues.append(
+                        f"{kind} [{i}] '{tag}' ResRef too long (>{max_resref}): {resref!r}"
+                    )
+                # Check for NaN / Inf in position
+                pos = getattr(obj, 'position', None)
+                if pos is not None:
+                    for axis, val in (("X", pos.x), ("Y", pos.y), ("Z", pos.z)):
+                        if not math.isfinite(val):
+                            issues.append(
+                                f"{kind} [{i}] '{tag}' has invalid position.{axis}: {val}"
+                            )
+
+        _check_list(self.git.placeables, "Placeable")
+        _check_list(self.git.creatures,  "Creature")
+        _check_list(self.git.doors,      "Door")
+        _check_list(self.git.waypoints,  "Waypoint")
+        _check_list(self.git.triggers,   "Trigger")
+        _check_list(self.git.sounds,     "Sound")
+        _check_list(self.git.stores,     "Store")
+
+        # ── Trigger geometry check ─────────────────────────────────────────
+        for i, trig in enumerate(self.git.triggers):
+            if len(trig.geometry) < 3:
+                issues.append(
+                    f"Trigger [{i}] '{trig.tag}' has fewer than 3 geometry points "
+                    f"({len(trig.geometry)})"
+                )
+
+        # ── IFO entry area ────────────────────────────────────────────────
+        if self.ifo and not self.ifo.entry_area:
+            issues.append("IFO: entry_area is empty — module has no starting area")
 
         return issues
 

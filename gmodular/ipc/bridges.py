@@ -298,6 +298,7 @@ class GhostRiggerBridge(QObject):
         if self._worker:
             self._worker.stop()
             self._worker.join(timeout=1.0)
+            self._worker = None
         if self._fg:
             self._fg.close()
             self._fg = None
@@ -377,22 +378,6 @@ try:
     _HAS_WATCHDOG = True
 except ImportError:
     _HAS_WATCHDOG = False
-
-
-class _ProjectFileHandler:
-    """Wrapper around watchdog handler that emits Qt signals."""
-    def __init__(self, on_script_changed, on_model_changed):
-        self._on_script  = on_script_changed
-        self._on_model   = on_model_changed
-
-    def dispatch(self, event):
-        if event.is_directory:
-            return
-        path = event.src_path
-        if path.endswith(".ncs"):
-            self._on_script(path)
-        elif path.endswith((".mdl", ".mdx")):
-            self._on_model(path)
 
 
 class ProjectFileWatcher(QObject):

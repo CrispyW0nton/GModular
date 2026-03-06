@@ -292,13 +292,12 @@ def _git_placeable(s: GFFStruct) -> GITPlaceable:
     p.template_resref = _get_s(s, "TemplateResRef")
     p.resref          = _get_s(s, "ResRef")
     p.tag             = _get_s(s, "Tag")
-    p.position        = _get_vec(s, "XPosition") or Vector3(
-        _get_f(s, "XPosition"), _get_f(s, "YPosition"), _get_f(s, "ZPosition"))
     # Position stored as three separate float fields in real GIT files
-    x = _get_f(s, "XPosition")
-    y = _get_f(s, "YPosition")
-    z = _get_f(s, "ZPosition")
-    p.position = Vector3(x, y, z)
+    p.position = Vector3(
+        _get_f(s, "XPosition"),
+        _get_f(s, "YPosition"),
+        _get_f(s, "ZPosition"),
+    )
     p.bearing  = _get_f(s, "Bearing")
     p.on_used                  = _get_s(s, "OnUsed")
     p.on_heartbeat             = _get_s(s, "OnHeartbeat")
@@ -356,6 +355,7 @@ def _git_door(s: GFFStruct) -> GITDoor:
     d.on_open2   = _get_s(s, "OnOpen2")
     d.on_unlock  = _get_s(s, "OnUnlock")
     d.on_fail_to_open = _get_s(s, "OnFailToOpen")
+    d.on_user_defined = _get_s(s, "OnUserDefined")
     return d
 
 def _git_trigger(s: GFFStruct) -> GITTrigger:
@@ -392,6 +392,7 @@ def _git_waypoint(s: GFFStruct) -> GITWaypoint:
     w.resref = _get_s(s, "ResRef")
     w.tag    = _get_s(s, "Tag")
     w.position = Vector3(_get_f(s, "XPosition"), _get_f(s, "YPosition"), _get_f(s, "ZPosition"))
+    w.bearing  = _get_f(s, "XOrientation")   # KotOR stores bearing as XOrientation
     w.map_note = _get_s(s, "MapNote")
     w.map_note_enabled = _get_i(s, "MapNoteEnabled")
     return w
@@ -521,8 +522,16 @@ def load_ifo(path: str) -> IFOData:
     ifo.on_module_load  = root.get("Mod_OnModLoad", "")
     ifo.on_module_start = root.get("Mod_OnModStart", "")
     ifo.on_player_death = root.get("Mod_OnPlrDeath", "")
+    ifo.on_player_dying = root.get("Mod_OnPlrDying", "")
+    ifo.on_player_levelup  = root.get("Mod_OnPlrLvlUp", "")
+    ifo.on_player_respawn  = root.get("Mod_OnSpawnBtnDn", "")
+    ifo.on_player_rest     = root.get("Mod_OnPlrRest", "")
     ifo.on_heartbeat    = root.get("Mod_OnHeartbeat", "")
     ifo.on_client_enter = root.get("Mod_OnClientEntr", "")
-    ifo.on_client_leave = root.get("Mod_OnClientLeave", "")
+    ifo.on_client_leave = root.get("Mod_OnClientLeav", "")   # 16-char label in binary GFF
+    ifo.on_cutscene_abort   = root.get("Mod_OnCutsnAbort", "")
+    ifo.on_unacquire_item   = root.get("Mod_OnUnAqreItem", "")
+    ifo.on_acquire_item     = root.get("Mod_OnAcquireIte", "")  # 16-char truncation
+    ifo.on_activate_item    = root.get("Mod_OnActvtItem", "")
     log.info(f"Loaded IFO: name={ifo.mod_name!r}, entry={ifo.entry_area!r}")
     return ifo

@@ -15,14 +15,16 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPushButton, QFrame,
     QMenu, QAction, QMessageBox, QInputDialog, QAbstractItemView,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint
+from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush, QIcon
 
 from ..formats.gff_types import (
     GITPlaceable, GITCreature, GITDoor, GITTrigger,
     GITSoundObject, GITWaypoint, GITStoreObject,
 )
-from ..core.module_state import get_module_state, DeleteObjectCommand
+from ..core.module_state import (
+    get_module_state, DeleteObjectCommand, ModifyPropertyCommand,
+)
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +53,11 @@ class SceneOutlinePanel(QWidget):
         super().__init__(parent)
         self._building = False
         self._selected_obj = None
+        # Debounce timer: waits 150 ms after last keystroke before refreshing tree
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._refresh)
         self._setup_ui()
         # Subscribe to module changes
         try:
@@ -277,7 +284,8 @@ class SceneOutlinePanel(QWidget):
         self.object_selected.emit(obj)
 
     def _on_search(self, text: str):
-        self._refresh()
+        # Debounce: restart the timer on each keystroke; only fire _refresh once idle
+        self._search_timer.start()
 
     def _on_context_menu(self, pos: QPoint):
         item = self._tree.itemAt(pos)
@@ -311,32 +319,26 @@ class SceneOutlinePanel(QWidget):
         menu.exec_(self._tree.viewport().mapToGlobal(pos))
 
     def _rename_tag(self, obj):
+        """Rename an object's tag using the command pattern (supports undo)."""
         old_tag = getattr(obj, "tag", "")
         new_tag, ok = QInputDialog.getText(
             self, "Rename Tag",
             f"New tag for '{old_tag}':",
             text=old_tag,
         )
-        if ok and new_tag.strip():
-            obj.tag = new_tag.strip()
+        if ok and new_tag.strip() and new_tag.strip() != old_tag:
             state = get_module_state()
-            state._dirty = True
-            state._emit_change()
+            cmd = ModifyPropertyCommand(obj, "tag", old_tag, new_tag.strip())
+            state.execute(cmd)   # marks dirty and emits change
 
     def _delete_obj(self, obj):
+        """Delete an object using the command pattern (supports undo/redo)."""
         state = get_module_state()
         if not state.git:
             return
-        # Find which list contains this object
-        for lst in (state.git.placeables, state.git.creatures, state.git.doors,
-                    state.git.triggers, state.git.sounds, state.git.waypoints,
-                    state.git.stores):
-            if obj in lst:
-                lst.remove(obj)
-                state._dirty = True
-                state._emit_change()
-                self.request_delete.emit(obj)
-                return
+        cmd = DeleteObjectCommand(state.git, obj)
+        state.execute(cmd)   # marks dirty and emits change
+        self.request_delete.emit(obj)
 
     # ── External API ──────────────────────────────────────────────────────────
 

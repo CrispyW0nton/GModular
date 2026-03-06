@@ -86,7 +86,8 @@ class ResourceEntry:
     source:   str           # "bif", "erf", "file"
     # For BIF-backed resources:
     bif_path: str = ""
-    offset:   int = 0
+    offset:   int = 0    # For BIF resources: resource table index (not raw file offset)
+                         # Passed as res_idx to _read_bif() which handles the lookup
     size:     int = 0
     # For file-backed resources:
     file_path: str = ""
@@ -113,8 +114,18 @@ class KEYReader:
     chitin.key maps ResRef → BIF file + offset.
     """
 
-    _KEY_HEADER_FMT = "<4s4sIIII"   # file_type, version, bif_count, key_count, bif_offset, key_offset
-    _KEY_HEADER_SIZE = 64
+    # Real chitin.key header is 64 bytes:
+    # 4s  file_type ("KEY ")
+    # 4s  version   ("V1  ")
+    # I   bif_count
+    # I   key_count
+    # I   bif_table_offset
+    # I   key_table_offset
+    # I   build_year
+    # I   build_day
+    # 32s reserved
+    _KEY_HEADER_FMT  = "<4s4sIIIIII32s"
+    _KEY_HEADER_SIZE = struct.calcsize("<4s4sIIIIII32s")  # == 64
 
     def __init__(self, key_path: str):
         self.key_path = key_path
@@ -135,8 +146,18 @@ class KEYReader:
             log.error("KEY file too small")
             return 0
 
-        file_type, version, bif_count, key_count, bif_offset, key_offset = \
+        (file_type, version,
+         bif_count, key_count,
+         bif_offset, key_offset,
+         _build_year, _build_day, _reserved) = \
             struct.unpack_from(self._KEY_HEADER_FMT, data, 0)
+
+        ftype_s = file_type.rstrip(b"\x00 ").decode("ascii", errors="replace")
+        ver_s   = version.rstrip(b"\x00 ").decode("ascii", errors="replace")
+        if ftype_s not in ("KEY", "KEY "):
+            log.warning(f"Unexpected KEY file_type: {ftype_s!r}")
+        if ver_s not in ("V1", "V1  ", "V1.0"):
+            log.warning(f"Unexpected KEY version: {ver_s!r}")
 
         # Parse BIF file table
         self._bif_paths = []
@@ -144,9 +165,11 @@ class KEYReader:
         for _ in range(bif_count):
             file_size, name_offset, name_size, drives = struct.unpack_from("<IIHH", data, pos)
             pos += 12
-            bif_name = data[name_offset:name_offset + name_size - 1]
+            # name_size includes the null terminator; guard against 0
+            read_len = max(0, name_size - 1) if name_size > 0 else name_size
+            bif_name = data[name_offset:name_offset + read_len]
             bif_name = bif_name.decode("ascii", errors="replace").replace("\\", "/")
-            full_bif = os.path.join(self.game_dir, bif_name)
+            full_bif = self._resolve_bif_path(bif_name)
             self._bif_paths.append(full_bif)
 
         # Parse key table: each entry is (resref[16], res_type[2], res_id[4])
@@ -179,6 +202,35 @@ class KEYReader:
 
         log.info(f"KEY loaded: {count} resources, {len(self._bif_paths)} BIF files")
         return count
+
+    def _resolve_bif_path(self, rel_path: str) -> str:
+        """
+        Resolve a BIF path relative to game_dir, performing a case-insensitive
+        file-system search on Linux.  Returns the best match found, or the
+        original joined path if nothing is located.
+        """
+        direct = os.path.join(self.game_dir, rel_path)
+        if os.path.exists(direct):
+            return direct
+        # Try lower-case (common on Linux installs)
+        lower = os.path.join(self.game_dir, rel_path.lower())
+        if os.path.exists(lower):
+            return lower
+        # Walk the components and match case-insensitively
+        parts = rel_path.replace("\\", "/").split("/")
+        current = self.game_dir
+        for part in parts:
+            if not part:
+                continue
+            try:
+                entries = os.listdir(current)
+            except OSError:
+                return direct
+            match = next((e for e in entries if e.lower() == part.lower()), None)
+            if match is None:
+                return direct
+            current = os.path.join(current, match)
+        return current
 
     def read_resource(self, entry: ResourceEntry) -> Optional[bytes]:
         """Read a BIF resource by opening the .bif file."""
