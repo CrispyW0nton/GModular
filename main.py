@@ -77,7 +77,7 @@ def main():
         logging.getLogger().handlers[0].setLevel(logging.DEBUG)
 
     log.info("=" * 60)
-    log.info("GModular — KotOR Module Editor  v1.0.0-MVP")
+    log.info("GModular — KotOR Module Editor  v1.0.0")
     log.info("=" * 60)
 
     # Import Qt after argument parsing
