@@ -471,18 +471,21 @@ class ModuleState:
         if self.git is None:
             return ["No GIT loaded"]
 
-        # ── Duplicate tags (across all object types) ───────────────────────
-        tags: Dict[str, List[str]] = {}  # tag → list of type labels
+        # ── Duplicate tags (across all object types, case-insensitive) ───────
+        # Keys are lowercased for detection; we report the original casing.
+        tags_lower: Dict[str, List[str]] = {}  # lower(tag) → list of "TYPE:OrigTag"
         for obj in self.git.all_objects():
             tag = getattr(obj, 'tag', '').strip()
             if tag:
                 label = _obj_type_label(obj)
-                tags.setdefault(tag, []).append(label)
-        for tag, labels in tags.items():
-            if len(labels) > 1:
+                tags_lower.setdefault(tag.lower(), []).append(f"{label}:{tag}")
+        for _key, entries in tags_lower.items():
+            if len(entries) > 1:
+                orig_tags = ", ".join(e.split(":", 1)[1] for e in entries)
+                labels    = ", ".join(e.split(":", 1)[0] for e in entries)
                 issues.append(
-                    f"Duplicate tag '{tag}' used by {len(labels)} objects "
-                    f"({', '.join(labels)})"
+                    f"Duplicate tag (case-insensitive) '{orig_tags}' used by "
+                    f"{len(entries)} objects ({labels})"
                 )
 
         # ── Per-type checks ────────────────────────────────────────────────

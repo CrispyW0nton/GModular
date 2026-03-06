@@ -416,8 +416,8 @@ def _waypoint_struct(w: GITWaypoint) -> GFFStruct:
 
 
 def _sound_struct(so: GITSoundObject) -> GFFStruct:
-    """Build a GFFStruct for a GIT SoundObject entry."""
-    s = GFFStruct(struct_id=6)
+    """Build a GFFStruct for a GIT SoundObject entry (struct_id=7 per KotOR GFF spec)."""
+    s = GFFStruct(struct_id=7)
     s.fields["ResRef"]         = _resref_field("ResRef",         so.resref)
     s.fields["TemplateResRef"] = _resref_field("TemplateResRef", so.template_resref)
     s.fields["Tag"]            = _string_field("Tag",            so.tag)
@@ -428,8 +428,8 @@ def _sound_struct(so: GITSoundObject) -> GFFStruct:
 
 
 def _store_struct(st: GITStoreObject) -> GFFStruct:
-    """Build a GFFStruct for a GIT StoreObject entry."""
-    s = GFFStruct(struct_id=6)
+    """Build a GFFStruct for a GIT StoreObject entry (struct_id=10 per KotOR GFF spec)."""
+    s = GFFStruct(struct_id=10)
     s.fields["ResRef"]         = _resref_field("ResRef",         st.resref)
     s.fields["TemplateResRef"] = _resref_field("TemplateResRef", st.template_resref)
     s.fields["Tag"]            = _string_field("Tag",            st.tag)

@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
+import unittest
 
 from gmodular.formats.gff_types import (
     GITData, GITPlaceable, GITCreature, GITDoor,
@@ -1974,3 +1975,223 @@ class TestCallbackServerJsonParsing:
         assert "400" in src, (
             "do_POST does not send a 400 response when body is unparseable"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Iteration 14 Regression Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestValidateCaseInsensitiveDuplicateTags(unittest.TestCase):
+    """validate() must flag tags that differ only in case as duplicates."""
+
+    def _make_state_with_tags(self, tag_a: str, tag_b: str):
+        from gmodular.core.module_state import ModuleState
+        from gmodular.formats.gff_types import (
+            GITData, GITPlaceable, GITCreature, Vector3
+        )
+        state = ModuleState.__new__(ModuleState)
+        # ModuleState.git is a plain instance attribute (not a property)
+        state.git = GITData()
+        state.are = None
+        state.ifo = None
+        p = GITPlaceable()
+        p.resref = "plc001"
+        p.tag = tag_a
+        p.position = Vector3(0, 0, 0)
+        c = GITCreature()
+        c.resref = "cre001"
+        c.tag = tag_b
+        c.position = Vector3(1, 1, 0)
+        state.git.placeables.append(p)
+        state.git.creatures.append(c)
+        return state
+
+    def test_exact_case_duplicate_still_detected(self):
+        """Tags with identical case must still be flagged."""
+        state = self._make_state_with_tags("MYTAG", "MYTAG")
+        issues = state.validate()
+        dup = [i for i in issues if "Duplicate" in i]
+        self.assertTrue(len(dup) >= 1, f"Expected duplicate warning, got: {issues}")
+
+    def test_mixed_case_duplicate_detected(self):
+        """Tags differing only in case (e.g. 'mytag' vs 'MYTAG') must be flagged."""
+        state = self._make_state_with_tags("mytag", "MYTAG")
+        issues = state.validate()
+        dup = [i for i in issues if "Duplicate" in i]
+        self.assertTrue(len(dup) >= 1,
+            f"Case-insensitive duplicate 'mytag'/'MYTAG' not detected. Issues: {issues}")
+
+    def test_different_tags_not_flagged(self):
+        """Objects with genuinely different tags must NOT produce a duplicate warning."""
+        state = self._make_state_with_tags("alpha", "beta")
+        issues = state.validate()
+        dup = [i for i in issues if "Duplicate" in i]
+        self.assertEqual(len(dup), 0,
+            f"False positive: distinct tags flagged as duplicates. Issues: {issues}")
+
+    def test_mixed_case_duplicate_message_contains_original_casing(self):
+        """The warning message should contain the original tag strings."""
+        state = self._make_state_with_tags("Door_01", "door_01")
+        issues = state.validate()
+        dup_msgs = [i for i in issues if "Duplicate" in i]
+        self.assertTrue(len(dup_msgs) >= 1)
+        # At least one original form should appear in the message
+        combined = " ".join(dup_msgs)
+        self.assertTrue("Door_01" in combined or "door_01" in combined,
+            f"Original casing not preserved in warning: {combined}")
+
+
+class TestGFFWriterStructIDs(unittest.TestCase):
+    """GFF writer must use the correct struct_id for each GIT list entry."""
+
+    def _writer_src(self, fn_name: str) -> str:
+        import inspect
+        import importlib
+        mod = importlib.import_module("gmodular.formats.gff_writer")
+        fn = getattr(mod, fn_name)
+        return inspect.getsource(fn)
+
+    def test_sound_struct_id_is_7(self):
+        src = self._writer_src("_sound_struct")
+        self.assertIn("struct_id=7", src,
+            "_sound_struct must use struct_id=7 (KotOR GFF spec). "
+            "Found source:\n" + src)
+
+    def test_store_struct_id_is_10(self):
+        src = self._writer_src("_store_struct")
+        self.assertIn("struct_id=10", src,
+            "_store_struct must use struct_id=10 (KotOR GFF spec). "
+            "Found source:\n" + src)
+
+    def test_waypoint_struct_id_is_6(self):
+        """Waypoint should remain struct_id=6 — sanity-check we didn't break it."""
+        src = self._writer_src("_waypoint_struct")
+        self.assertIn("struct_id=6", src,
+            "_waypoint_struct must still use struct_id=6. Found source:\n" + src)
+
+    def test_placeable_struct_id_is_9(self):
+        src = self._writer_src("_placeable_struct")
+        self.assertIn("struct_id=9", src,
+            "_placeable_struct must use struct_id=9. Found source:\n" + src)
+
+    def test_door_struct_id_is_8(self):
+        src = self._writer_src("_door_struct")
+        self.assertIn("struct_id=8", src,
+            "_door_struct must use struct_id=8. Found source:\n" + src)
+
+    def test_creature_struct_id_is_4(self):
+        src = self._writer_src("_creature_struct")
+        self.assertIn("struct_id=4", src,
+            "_creature_struct must use struct_id=4. Found source:\n" + src)
+
+
+class TestAppVersion(unittest.TestCase):
+    """APP_VERSION in main_window.py must not carry the -MVP suffix."""
+
+    def test_version_is_release_format(self):
+        import re
+        src_path = os.path.join(
+            os.path.dirname(__file__), "..", "gmodular", "gui", "main_window.py"
+        )
+        with open(src_path) as fh:
+            content = fh.read()
+        m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', content)
+        self.assertIsNotNone(m, "APP_VERSION not found in main_window.py")
+        version = m.group(1)
+        self.assertNotIn("-MVP", version,
+            f"APP_VERSION still contains '-MVP' suffix: {version!r}")
+        # Must match semver: MAJOR.MINOR.PATCH (optional pre-release is fine,
+        # but the -MVP marketing tag should be gone)
+        semver_re = r'^\d+\.\d+\.\d+'
+        self.assertRegex(version, semver_re,
+            f"APP_VERSION {version!r} does not start with MAJOR.MINOR.PATCH")
+
+
+class TestDuplicateObjectOffset(unittest.TestCase):
+    """duplicate_object() must apply a per-type position offset."""
+
+    def _make_git(self):
+        from gmodular.formats.gff_types import GITData
+        return GITData()
+
+    def test_placeable_offset_is_1(self):
+        from gmodular.formats.gff_types import GITData, GITPlaceable, Vector3
+        git = GITData()
+        p = GITPlaceable()
+        p.resref = "plc001"
+        p.tag = "orig_plc"
+        p.position = Vector3(0.0, 0.0, 0.0)
+        git.placeables.append(p)
+        copy_obj = git.duplicate_object(p)
+        self.assertIsNotNone(copy_obj)
+        self.assertAlmostEqual(copy_obj.position.x, 1.0, places=5,
+            msg="Placeable duplicate should be offset by 1.0 on X")
+        self.assertAlmostEqual(copy_obj.position.y, 1.0, places=5,
+            msg="Placeable duplicate should be offset by 1.0 on Y")
+        self.assertAlmostEqual(copy_obj.position.z, 0.0, places=5,
+            msg="Placeable duplicate Z should be unchanged")
+
+    def test_door_offset_is_1(self):
+        from gmodular.formats.gff_types import GITData, GITDoor, Vector3
+        git = GITData()
+        d = GITDoor()
+        d.resref = "door001"
+        d.tag = "orig_door"
+        d.position = Vector3(5.0, 3.0, 0.0)
+        git.doors.append(d)
+        copy_obj = git.duplicate_object(d)
+        self.assertIsNotNone(copy_obj)
+        self.assertAlmostEqual(copy_obj.position.x, 6.0, places=5)
+        self.assertAlmostEqual(copy_obj.position.y, 4.0, places=5)
+
+    def test_trigger_offset_is_2(self):
+        from gmodular.formats.gff_types import GITData, GITTrigger, Vector3
+        git = GITData()
+        t = GITTrigger()
+        t.resref = "trig001"
+        t.tag = "orig_trig"
+        t.position = Vector3(0.0, 0.0, 0.0)
+        git.triggers.append(t)
+        copy_obj = git.duplicate_object(t)
+        self.assertIsNotNone(copy_obj)
+        self.assertAlmostEqual(copy_obj.position.x, 2.0, places=5,
+            msg="Trigger duplicate should be offset by 2.0 on X")
+        self.assertAlmostEqual(copy_obj.position.y, 2.0, places=5,
+            msg="Trigger duplicate should be offset by 2.0 on Y")
+
+    def test_creature_offset_is_half(self):
+        from gmodular.formats.gff_types import GITData, GITCreature, Vector3
+        git = GITData()
+        c = GITCreature()
+        c.resref = "cre001"
+        c.tag = "orig_cre"
+        c.position = Vector3(2.0, 2.0, 0.0)
+        git.creatures.append(c)
+        copy_obj = git.duplicate_object(c)
+        self.assertIsNotNone(copy_obj)
+        self.assertAlmostEqual(copy_obj.position.x, 2.5, places=5,
+            msg="Creature duplicate should be offset by 0.5 on X")
+        self.assertAlmostEqual(copy_obj.position.y, 2.5, places=5,
+            msg="Creature duplicate should be offset by 0.5 on Y")
+
+    def test_duplicate_z_unchanged_for_all_types(self):
+        """Z coordinate must never be shifted by duplicate_object."""
+        from gmodular.formats.gff_types import (
+            GITData, GITPlaceable, GITDoor, GITTrigger, GITCreature, Vector3
+        )
+        git = GITData()
+        for cls, lst_name in [
+            (GITPlaceable, "placeables"),
+            (GITDoor, "doors"),
+            (GITTrigger, "triggers"),
+            (GITCreature, "creatures"),
+        ]:
+            obj = cls()
+            obj.resref = "res001"
+            obj.tag = f"z_test_{cls.__name__}"
+            obj.position = Vector3(0.0, 0.0, 7.5)
+            getattr(git, lst_name).append(obj)
+            copy_obj = git.duplicate_object(obj)
+            self.assertIsNotNone(copy_obj)
+            self.assertAlmostEqual(copy_obj.position.z, 7.5, places=5,
+                msg=f"{cls.__name__} duplicate must not alter Z coordinate")
