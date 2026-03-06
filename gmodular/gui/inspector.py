@@ -1,0 +1,476 @@
+"""
+GModular — Inspector Panel
+Displays and edits properties of selected GIT objects.
+Updates the underlying GITPlaceable/GITCreature/GITDoor in real-time.
+"""
+from __future__ import annotations
+import logging
+from typing import Optional, Any
+
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QDoubleSpinBox, QGroupBox, QFormLayout,
+    QComboBox, QPlainTextEdit, QScrollArea, QSizePolicy,
+    QTabWidget, QFrame, QSpacerItem,
+)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont
+
+from ..formats.gff_types import GITPlaceable, GITCreature, GITDoor, GITWaypoint
+
+log = logging.getLogger(__name__)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _section_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt; "
+                      "padding-bottom:2px; border-bottom:1px solid #3c3c3c;")
+    return lbl
+
+
+def _form_row(label: str, widget: QWidget) -> QHBoxLayout:
+    row = QHBoxLayout()
+    lbl = QLabel(label + ":")
+    lbl.setStyleSheet("color:#969696; font-size:8pt;")
+    lbl.setFixedWidth(90)
+    row.addWidget(lbl)
+    row.addWidget(widget)
+    return row
+
+
+class ResRefEdit(QLineEdit):
+    """LineEdit that enforces 16-char ASCII ResRef."""
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setMaxLength(16)
+        self.setFont(QFont("Consolas", 9))
+
+
+class ScriptCombo(QComboBox):
+    """ComboBox for script ResRef dropdown (populated from GhostScripter IPC)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.addItem("(none)")
+        self.setFont(QFont("Consolas", 8))
+        self.setInsertPolicy(QComboBox.InsertAtTop)
+
+    def set_scripts(self, scripts: list):
+        current = self.currentText()
+        self.clear()
+        self.addItem("(none)")
+        for s in sorted(scripts):
+            # Strip .ncs extension if present
+            name = s.replace(".ncs", "").replace(".nss", "")
+            self.addItem(name)
+        idx = self.findText(current)
+        if idx >= 0:
+            self.setCurrentIndex(idx)
+
+    def selected_script(self) -> str:
+        t = self.currentText()
+        return "" if t in ("(none)", "") else t[:16]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Inspector Panel
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InspectorPanel(QWidget):
+    """
+    Right-side inspector panel.
+    Shows editable properties for any selected GIT object.
+    """
+
+    property_changed = pyqtSignal(object, str, object, object)  # obj, attr, old, new
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._obj = None
+        self._scripts: list = []
+        self._building = False  # suppress signals during rebuild
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        # Header
+        self._type_label = QLabel("Nothing selected")
+        self._type_label.setStyleSheet("color:#9cdcfe; font-weight:bold; font-size:10pt;"
+                                        " padding:4px;")
+        layout.addWidget(self._type_label)
+
+        # Scrollable content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border:none; }")
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(2, 2, 2, 2)
+        self._content_layout.setSpacing(4)
+        scroll.setWidget(self._content)
+        layout.addWidget(scroll)
+
+        # Bottom: quick actions
+        self._actions_frame = QFrame()
+        actions_layout = QVBoxLayout(self._actions_frame)
+        actions_layout.setContentsMargins(4, 4, 4, 4)
+        actions_layout.setSpacing(3)
+
+        self._open_script_btn = QPushButton("Open Script in GhostScripter")
+        self._open_script_btn.setToolTip("Open the assigned script in GhostScripter editor")
+        self._open_script_btn.clicked.connect(self._open_in_ghostscripter)
+        self._open_script_btn.hide()
+        actions_layout.addWidget(self._open_script_btn)
+
+        self._compile_btn = QPushButton("Compile Script (via GhostScripter)")
+        self._compile_btn.clicked.connect(self._compile_script)
+        self._compile_btn.hide()
+        actions_layout.addWidget(self._compile_btn)
+
+        layout.addWidget(self._actions_frame)
+
+        self._show_empty()
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def set_scripts(self, scripts: list):
+        """Update script dropdown options from GhostScripter IPC."""
+        self._scripts = scripts
+        # Update all visible script combos
+        for combo in self._content.findChildren(ScriptCombo):
+            combo.set_scripts(scripts)
+
+    def inspect(self, obj):
+        """Display properties for the given GIT object."""
+        self._obj = obj
+        self._rebuild()
+
+    # ── Internal ────────────────────────────────────────────────────────────
+
+    def _clear_content(self):
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _show_empty(self):
+        self._clear_content()
+        self._type_label.setText("Nothing selected")
+        lbl = QLabel("Select an object in the viewport\nto view its properties.")
+        lbl.setStyleSheet("color:#555555; font-size:9pt;")
+        lbl.setAlignment(Qt.AlignCenter)
+        self._content_layout.addWidget(lbl)
+        self._content_layout.addStretch()
+        self._open_script_btn.hide()
+        self._compile_btn.hide()
+
+    def _rebuild(self):
+        obj = self._obj
+        if obj is None:
+            self._show_empty()
+            return
+
+        self._building = True
+        self._clear_content()
+
+        if isinstance(obj, GITPlaceable):
+            self._type_label.setText("Placeable")
+            self._build_placeable(obj)
+        elif isinstance(obj, GITCreature):
+            self._type_label.setText("Creature")
+            self._build_creature(obj)
+        elif isinstance(obj, GITDoor):
+            self._type_label.setText("Door")
+            self._build_door(obj)
+        elif isinstance(obj, GITWaypoint):
+            self._type_label.setText("Waypoint")
+            self._build_waypoint(obj)
+        else:
+            self._type_label.setText(type(obj).__name__)
+
+        self._content_layout.addStretch()
+        self._building = False
+
+    def _spin(self, value: float, minimum=-9999.0, maximum=9999.0,
+              decimals=3, step=0.1) -> QDoubleSpinBox:
+        s = QDoubleSpinBox()
+        s.setRange(minimum, maximum)
+        s.setDecimals(decimals)
+        s.setSingleStep(step)
+        s.setValue(value)
+        s.setFont(QFont("Consolas", 9))
+        return s
+
+    def _line(self, value: str) -> QLineEdit:
+        e = QLineEdit(str(value))
+        e.setFont(QFont("Consolas", 9))
+        return e
+
+    def _resref(self, value: str) -> ResRefEdit:
+        return ResRefEdit(str(value))
+
+    def _script_combo(self, value: str) -> ScriptCombo:
+        c = ScriptCombo()
+        c.set_scripts(self._scripts)
+        idx = c.findText(value)
+        if idx >= 0:
+            c.setCurrentIndex(idx)
+        else:
+            c.setEditText(value)
+        return c
+
+    def _connect_resref(self, widget: ResRefEdit, obj, attr: str):
+        def on_changed():
+            if self._building:
+                return
+            old = getattr(obj, attr, "")
+            new = widget.text()[:16]
+            if old != new:
+                setattr(obj, attr, new)
+                self.property_changed.emit(obj, attr, old, new)
+        widget.editingFinished.connect(on_changed)
+
+    def _connect_spin(self, widget: QDoubleSpinBox, obj, attr: str):
+        def on_changed(val):
+            if self._building:
+                return
+            old = getattr(obj, attr, 0.0)
+            if abs(float(old) - val) > 1e-6:
+                setattr(obj, attr, val)
+                self.property_changed.emit(obj, attr, old, val)
+        widget.valueChanged.connect(on_changed)
+
+    def _connect_script(self, widget: ScriptCombo, obj, attr: str):
+        def on_changed():
+            if self._building:
+                return
+            old = getattr(obj, attr, "")
+            new = widget.selected_script()
+            if old != new:
+                setattr(obj, attr, new)
+                self.property_changed.emit(obj, attr, old, new)
+                self._open_script_btn.setVisible(bool(new))
+                self._compile_btn.setVisible(bool(new))
+        widget.currentTextChanged.connect(on_changed)
+        widget.editTextChanged.connect(on_changed)
+
+    def _connect_line(self, widget: QLineEdit, obj, attr: str):
+        def on_changed():
+            if self._building:
+                return
+            old = getattr(obj, attr, "")
+            new = widget.text()
+            if old != new:
+                setattr(obj, attr, new)
+                self.property_changed.emit(obj, attr, old, new)
+        widget.editingFinished.connect(on_changed)
+
+    # ── Object-specific builders ─────────────────────────────────────────────
+
+    def _build_common(self, obj):
+        """Build Identity section (Tag, ResRef, Template ResRef)."""
+        grp = QGroupBox("Identity")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setSpacing(4)
+
+        tag_edit = self._line(obj.tag)
+        form.addRow("Tag:", tag_edit)
+        self._connect_line(tag_edit, obj, "tag")
+
+        resref_edit = self._resref(obj.resref)
+        form.addRow("ResRef:", resref_edit)
+        self._connect_resref(resref_edit, obj, "resref")
+
+        tpl_edit = self._resref(obj.template_resref)
+        form.addRow("Template:", tpl_edit)
+        self._connect_resref(tpl_edit, obj, "template_resref")
+
+        self._content_layout.addWidget(grp)
+
+    def _build_position(self, obj):
+        """Build Position section."""
+        grp = QGroupBox("Position & Rotation")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setSpacing(4)
+
+        px = self._spin(obj.position.x)
+        py = self._spin(obj.position.y)
+        pz = self._spin(obj.position.z)
+        br = self._spin(obj.bearing, minimum=-7.0, maximum=7.0, decimals=4, step=0.1)
+
+        form.addRow("X:", px)
+        form.addRow("Y:", py)
+        form.addRow("Z:", pz)
+        form.addRow("Bearing (rad):", br)
+
+        def on_pos(val):
+            if self._building:
+                return
+            obj.position.x = px.value()
+            obj.position.y = py.value()
+            obj.position.z = pz.value()
+            self.property_changed.emit(obj, "position", None, obj.position)
+
+        def on_bearing(val):
+            if self._building:
+                return
+            old = obj.bearing
+            obj.bearing = val
+            self.property_changed.emit(obj, "bearing", old, val)
+
+        px.valueChanged.connect(on_pos)
+        py.valueChanged.connect(on_pos)
+        pz.valueChanged.connect(on_pos)
+        br.valueChanged.connect(on_bearing)
+
+        self._content_layout.addWidget(grp)
+
+    def _build_scripts_section(self, obj, script_attrs: list):
+        """Build Scripts section with a combo per event."""
+        grp = QGroupBox("Scripts")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setSpacing(4)
+
+        for attr, label in script_attrs:
+            val   = getattr(obj, attr, "")
+            combo = self._script_combo(val)
+            self._connect_script(combo, obj, attr)
+            form.addRow(label + ":", combo)
+
+            # Show action buttons if any script is assigned
+            if val:
+                self._open_script_btn.show()
+                self._compile_btn.show()
+
+        self._content_layout.addWidget(grp)
+
+    def _build_placeable(self, obj: GITPlaceable):
+        self._build_common(obj)
+        self._build_position(obj)
+        script_events = [
+            ("on_used",              "OnUsed"),
+            ("on_heartbeat",         "OnHeartbeat"),
+            ("on_closed",            "OnClosed"),
+            ("on_damaged",           "OnDamaged"),
+            ("on_death",             "OnDeath"),
+            ("on_end_conversation",  "OnEndConversation"),
+            ("on_inventory_disturbed","OnInvDisturbed"),
+            ("on_lock",              "OnLock"),
+            ("on_melee_attacked",    "OnMeleeAtk"),
+            ("on_open",              "OnOpen"),
+            ("on_user_defined",      "OnUserDef"),
+        ]
+        self._build_scripts_section(obj, script_events)
+
+    def _build_creature(self, obj: GITCreature):
+        self._build_common(obj)
+        self._build_position(obj)
+        script_events = [
+            ("on_heartbeat",         "OnHeartbeat"),
+            ("on_death",             "OnDeath"),
+            ("on_end_conversation",  "OnEndConvers"),
+            ("on_disturbed",         "OnDisturbed"),
+            ("on_blocked",           "OnBlocked"),
+            ("on_attacked",          "OnAttacked"),
+            ("on_damaged",           "OnDamaged"),
+            ("on_notice",            "OnNotice"),
+            ("on_user_defined",      "OnUserDef"),
+            ("on_spawn",             "OnSpawn"),
+        ]
+        self._build_scripts_section(obj, script_events)
+
+    def _build_door(self, obj: GITDoor):
+        self._build_common(obj)
+        self._build_position(obj)
+
+        # Link section
+        grp = QGroupBox("Link")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+
+        linked_to = self._line(obj.linked_to)
+        form.addRow("LinkedTo:", linked_to)
+        self._connect_line(linked_to, obj, "linked_to")
+
+        trans_dest = self._resref(obj.transition_destination)
+        form.addRow("Transition:", trans_dest)
+        self._connect_resref(trans_dest, obj, "transition_destination")
+
+        self._content_layout.addWidget(grp)
+
+        script_events = [
+            ("on_open",          "OnOpen"),
+            ("on_closed",        "OnClosed"),
+            ("on_fail_to_open",  "OnFailToOpen"),
+            ("on_damaged",       "OnDamaged"),
+            ("on_death",         "OnDeath"),
+            ("on_heartbeat",     "OnHeartbeat"),
+            ("on_lock",          "OnLock"),
+            ("on_melee_attacked","OnMeleeAtk"),
+            ("on_user_defined",  "OnUserDef"),
+        ]
+        self._build_scripts_section(obj, script_events)
+
+    def _build_waypoint(self, obj: GITWaypoint):
+        self._build_common(obj)
+        self._build_position(obj)
+
+        grp = QGroupBox("Map Note")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+        note = self._line(obj.map_note)
+        form.addRow("Map Note:", note)
+        self._connect_line(note, obj, "map_note")
+        self._content_layout.addWidget(grp)
+
+    # ── GhostScripter integration ────────────────────────────────────────────
+
+    def _get_first_script(self) -> str:
+        """Get the first non-empty script from the current object."""
+        obj = self._obj
+        if obj is None:
+            return ""
+        for attr in ("on_used", "on_heartbeat", "on_open", "on_enter",
+                     "on_death", "on_conversation", "on_spawn"):
+            val = getattr(obj, attr, "")
+            if val:
+                return val
+        return ""
+
+    def _open_in_ghostscripter(self):
+        script = self._get_first_script()
+        if not script:
+            return
+        try:
+            from ..ipc.bridges import GhostScripterBridge
+            # The bridge is managed by MainWindow; we emit a signal or call directly
+            # For now just log — MainWindow wires up the actual call
+            log.info(f"Request: open {script} in GhostScripter")
+            # Emit a generic signal that MainWindow connects to
+            self.property_changed.emit(self._obj, "_open_script", None, script)
+        except Exception as e:
+            log.debug(f"Open script error: {e}")
+
+    def _compile_script(self):
+        script = self._get_first_script()
+        if not script:
+            return
+        log.info(f"Request: compile {script}")
+        self.property_changed.emit(self._obj, "_compile_script", None, script)
