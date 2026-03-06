@@ -4,9 +4,15 @@
 # Core GUI
 PyQt5>=5.15.0
 
-# 3D Viewport
+# 3D Viewport — primary backend (requires Microsoft Visual C++ Build Tools on Windows)
+# build.bat installs this via --only-binary (pre-built wheel, no compiler).
+# If no pre-built wheel exists for your Python version, PyOpenGL is used instead.
 moderngl>=5.8.0
 numpy>=1.21.0
+
+# 3D Viewport — pure-Python fallback (no C++ compiler needed)
+# Automatically installed by build.bat if moderngl cannot be built from source.
+PyOpenGL>=3.1.0
 
 # File system watcher (for IPC auto-reload)
 watchdog>=2.0.0

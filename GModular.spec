@@ -8,14 +8,26 @@ Produces: dist/GModular.exe  (single-file, windowed, ~50–80 MB)
 Usage:
     python -m PyInstaller GModular.spec --clean --noconfirm
 
-Matches the build pattern used by GhostRigger-K1-K2.spec and GhostScripter-K1-K2.spec.
+NOTE on moderngl:
+    moderngl requires Microsoft Visual C++ Build Tools to compile from source.
+    If moderngl is not installed, the build still succeeds using the PyOpenGL
+    fallback. The viewport remains fully functional via PyOpenGL (pure Python).
+    To install moderngl later:
+        pip install moderngl --only-binary :all:
+    Or install VC++ Build Tools from:
+        https://visualstudio.microsoft.com/visual-cpp-build-tools/
 """
 
 import sys
+import importlib.util
 from pathlib import Path
 
 # ── Source directory ─────────────────────────────────────────────────────────
 HERE = Path(SPECPATH)  # noqa: F821  (PyInstaller global)
+
+# ── Detect which OpenGL backend is available ──────────────────────────────────
+_has_moderngl  = importlib.util.find_spec("moderngl")  is not None
+_has_pyopengl  = importlib.util.find_spec("OpenGL")    is not None
 
 # ── Data files bundled into the EXE ─────────────────────────────────────────
 datas = [
@@ -25,8 +37,6 @@ datas = [
 ]
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
-# PyQt5, moderngl, numpy and optional packages that PyInstaller misses via
-# static analysis.
 hidden_imports = [
     # GModular package — all sub-packages
     "gmodular",
@@ -60,8 +70,7 @@ hidden_imports = [
     "PyQt5.QtGui",
     "PyQt5.QtOpenGL",
     "PyQt5.sip",
-    # OpenGL / moderngl
-    "moderngl",
+    # numpy
     "numpy",
     "numpy.core",
     "numpy.core._multiarray_umath",
@@ -80,6 +89,27 @@ hidden_imports = [
     "werkzeug",
     "jinja2",
 ]
+
+# Add moderngl only if it is actually installed (requires VC++ Build Tools)
+if _has_moderngl:
+    hidden_imports.append("moderngl")
+    print("[spec] moderngl detected — bundling full GL backend")
+else:
+    print("[spec] moderngl NOT found — using PyOpenGL fallback")
+
+# Add PyOpenGL if available (pure-Python fallback, no compiler needed)
+if _has_pyopengl:
+    hidden_imports += [
+        "OpenGL",
+        "OpenGL.GL",
+        "OpenGL.GLU",
+        "OpenGL.GLUT",
+        "OpenGL.arrays",
+        "OpenGL.arrays.numpymodule",
+        "OpenGL.platform",
+        "OpenGL.platform.win32",
+    ]
+    print("[spec] PyOpenGL detected — bundling as GL fallback")
 
 # ── Excludes (reduce EXE size) ────────────────────────────────────────────────
 excludes = [
@@ -105,6 +135,12 @@ excludes = [
     "PyQt5.QtHelp",
     "PyQt5.QtDesigner",
 ]
+
+# Exclude whichever GL backend is NOT present
+if not _has_moderngl:
+    excludes.append("moderngl")
+if not _has_pyopengl:
+    excludes += ["OpenGL", "OpenGL.GL"]
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
 a = Analysis(
