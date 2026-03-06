@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# App data
+~/.gmodular/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temp / scratch
+*.tmp
+*.bak
+/tmp/

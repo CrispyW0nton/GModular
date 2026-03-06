@@ -1,0 +1,15 @@
+# GModular — KotOR Module Editor
+# Python 3.8+ required
+
+# Core GUI
+PyQt5>=5.15.0
+
+# 3D Viewport
+moderngl>=5.8.0
+numpy>=1.21.0
+
+# File system watcher (for IPC auto-reload)
+watchdog>=2.0.0
+
+# HTTP requests (for GhostScripter/GhostRigger IPC)
+requests>=2.28.0
