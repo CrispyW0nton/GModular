@@ -1,44 +1,52 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 GModular — KotOR Module Editor
-PyInstaller spec file.
+PyInstaller spec file  (Windows + Linux)
 
-Produces: dist/GModular.exe  (single-file, windowed, ~50–80 MB)
+Produces: dist/GModular.exe  (Windows)  or  dist/GModular  (Linux)
+Size: ~60-100 MB (single-file, no console window)
 
 Usage:
     python -m PyInstaller GModular.spec --clean --noconfirm
 
 NOTE on moderngl:
     moderngl requires Microsoft Visual C++ Build Tools to compile from source.
-    If moderngl is not installed, the build still succeeds using the PyOpenGL
-    fallback. The viewport remains fully functional via PyOpenGL (pure Python).
-    To install moderngl later:
-        pip install moderngl --only-binary :all:
-    Or install VC++ Build Tools from:
-        https://visualstudio.microsoft.com/visual-cpp-build-tools/
+    build.bat installs it via --only-binary so no compiler is needed.
+    If moderngl is absent the viewport falls back to PyOpenGL (pure Python).
+
+NOTE on Python version:
+    PyQt5 wheels exist for Python 3.8 – 3.12 only.
+    Do NOT use Python 3.13 or 3.14.  Use Python 3.12.
 """
 
 import sys
 import importlib.util
 from pathlib import Path
 
-# ── Source directory ─────────────────────────────────────────────────────────
-HERE = Path(SPECPATH)  # noqa: F821  (PyInstaller global)
+# ── Paths ─────────────────────────────────────────────────────────────────────
+HERE = Path(SPECPATH)   # noqa: F821  (PyInstaller built-in)
 
-# ── Detect which OpenGL backend is available ──────────────────────────────────
-_has_moderngl  = importlib.util.find_spec("moderngl")  is not None
-_has_pyopengl  = importlib.util.find_spec("OpenGL")    is not None
+# ── Detect available optional backends ───────────────────────────────────────
+_has_moderngl = importlib.util.find_spec("moderngl") is not None
+_has_pyopengl = importlib.util.find_spec("OpenGL")   is not None
+_has_flask     = importlib.util.find_spec("flask")    is not None
+_has_watchdog  = importlib.util.find_spec("watchdog") is not None
+
+print(f"[spec] moderngl  : {'YES' if _has_moderngl else 'NO (will use PyOpenGL fallback)'}")
+print(f"[spec] PyOpenGL  : {'YES' if _has_pyopengl else 'NO'}")
+print(f"[spec] flask     : {'YES' if _has_flask    else 'NO (optional — skipped)'}")
+print(f"[spec] watchdog  : {'YES' if _has_watchdog else 'NO (optional — skipped)'}")
 
 # ── Data files bundled into the EXE ─────────────────────────────────────────
-datas = [
-    # Assets and resources
-    (str(HERE / "assets"),    "assets"),
-    (str(HERE / "resources"), "resources"),
-]
+datas = []
+if (HERE / "assets").exists():
+    datas.append((str(HERE / "assets"), "assets"))
+if (HERE / "resources").exists():
+    datas.append((str(HERE / "resources"), "resources"))
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
 hidden_imports = [
-    # GModular package — all sub-packages
+    # ── GModular package ──────────────────────────────────────────────────
     "gmodular",
     "gmodular.core",
     "gmodular.core.module_state",
@@ -63,84 +71,85 @@ hidden_imports = [
     "gmodular.ipc.callback_server",
     "gmodular.utils",
     "gmodular.utils.resource_manager",
-    # PyQt5 essentials
+    # ── PyQt5 ────────────────────────────────────────────────────────────
     "PyQt5",
     "PyQt5.QtWidgets",
     "PyQt5.QtCore",
     "PyQt5.QtGui",
     "PyQt5.QtOpenGL",
-    "PyQt5.sip",
-    # numpy
+    "PyQt5.QtPrintSupport",   # needed for print dialogs on Windows
+    "PyQt5.sip",              # correct name (not bare 'sip')
+    # ── numpy ────────────────────────────────────────────────────────────
     "numpy",
     "numpy.core",
     "numpy.core._multiarray_umath",
-    # Requests (for IPC bridges)
+    # ── requests (IPC) ───────────────────────────────────────────────────
     "requests",
     "urllib3",
     "certifi",
     "charset_normalizer",
     "idna",
-    # Watchdog (optional — file watcher)
-    "watchdog",
-    "watchdog.observers",
-    "watchdog.events",
-    # Optional extras (soft imports in bridges/IPC)
-    "flask",
-    "werkzeug",
-    "jinja2",
 ]
 
-# Add moderngl only if it is actually installed (requires VC++ Build Tools)
+# Optional: moderngl (preferred GL backend)
 if _has_moderngl:
     hidden_imports.append("moderngl")
-    print("[spec] moderngl detected — bundling full GL backend")
-else:
-    print("[spec] moderngl NOT found — using PyOpenGL fallback")
 
-# Add PyOpenGL if available (pure-Python fallback, no compiler needed)
+# Optional: PyOpenGL (pure-Python fallback)
 if _has_pyopengl:
     hidden_imports += [
         "OpenGL",
         "OpenGL.GL",
         "OpenGL.GLU",
-        "OpenGL.GLUT",
         "OpenGL.arrays",
         "OpenGL.arrays.numpymodule",
         "OpenGL.platform",
         "OpenGL.platform.win32",
     ]
-    print("[spec] PyOpenGL detected — bundling as GL fallback")
 
-# ── Excludes (reduce EXE size) ────────────────────────────────────────────────
+# Optional: watchdog (file watcher)
+if _has_watchdog:
+    hidden_imports += [
+        "watchdog",
+        "watchdog.observers",
+        "watchdog.events",
+    ]
+
+# Optional: flask / werkzeug (soft IPC dependency)
+if _has_flask:
+    hidden_imports += ["flask", "werkzeug", "jinja2"]
+
+# ── Excludes (keep EXE small) ─────────────────────────────────────────────────
 excludes = [
-    "tkinter",
-    "matplotlib",
-    "scipy",
-    "pandas",
-    "notebook",
-    "IPython",
-    "pytest",
-    "PyQt5.QtWebEngine",
-    "PyQt5.QtWebEngineWidgets",
-    "PyQt5.QtWebEngineCore",
-    "PyQt5.QtMultimedia",
-    "PyQt5.QtSql",
-    "PyQt5.QtBluetooth",
-    "PyQt5.QtNfc",
-    "PyQt5.QtLocation",
-    "PyQt5.QtPositioning",
-    "PyQt5.QtSensors",
-    "PyQt5.QtXml",
-    "PyQt5.QtXmlPatterns",
-    "PyQt5.QtHelp",
-    "PyQt5.QtDesigner",
+    "tkinter", "_tkinter",
+    "matplotlib", "scipy", "pandas",
+    "notebook", "IPython",
+    "pytest", "_pytest",
+    "PyQt5.QtWebEngine", "PyQt5.QtWebEngineWidgets", "PyQt5.QtWebEngineCore",
+    "PyQt5.QtMultimedia", "PyQt5.QtSql",
+    "PyQt5.QtBluetooth", "PyQt5.QtNfc",
+    "PyQt5.QtLocation", "PyQt5.QtPositioning", "PyQt5.QtSensors",
+    "PyQt5.QtXml", "PyQt5.QtXmlPatterns",
+    "PyQt5.QtHelp", "PyQt5.QtDesigner",
+    "unittest", "doctest", "pdb",
+    "email", "html", "http.server", "xmlrpc",
+    # NOTE: multiprocessing intentionally NOT excluded — PyInstaller Windows
+    #       bootloader requires it for the freeze_support() call on Windows.
+    "sip",   # bare 'sip' is obsolete; PyQt5.sip is used instead (suppresses warning)
 ]
 
-# Exclude whichever GL backend is NOT present
 if not _has_moderngl:
     excludes.append("moderngl")
 if not _has_pyopengl:
     excludes += ["OpenGL", "OpenGL.GL"]
+if not _has_flask:
+    excludes += ["flask", "werkzeug", "jinja2"]
+if not _has_watchdog:
+    excludes += ["watchdog"]
+
+# ── Icon path ─────────────────────────────────────────────────────────────────
+_icon = str(HERE / "assets" / "icons" / "gmodular.ico")
+_icon_arg = _icon if (HERE / "assets" / "icons" / "gmodular.ico").exists() else None
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
 a = Analysis(
@@ -172,16 +181,13 @@ exe = EXE(  # noqa: F821
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=["vcruntime*.dll", "msvcp*.dll", "python*.dll"],
+    upx=False,          # disabled — UPX often absent on fresh Windows, causes errors
     runtime_tmpdir=None,
-    console=False,   # windowed — no console window
+    console=False,      # no console window
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(HERE / "assets" / "icons" / "gmodular.ico")
-    if (HERE / "assets" / "icons" / "gmodular.ico").exists()
-    else None,
+    icon=_icon_arg,
 )
