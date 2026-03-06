@@ -219,6 +219,7 @@ class GITWaypoint:
     resref: str = ""
     tag: str = ""
     position: Vector3 = field(default_factory=Vector3)
+    bearing: float = 0.0          # Yaw in radians (XOrientation in GFF)
     map_note: str = ""
     map_note_enabled: int = 0
     _scene_id: int = field(default=-1, repr=False, compare=False)
@@ -260,17 +261,112 @@ class GITData:
     env_audio: int = 0
 
     def all_objects(self):
-        """Yield all placeable instances (for viewport selection)."""
+        """Yield all placed GIT objects (placeables, creatures, doors, waypoints, triggers)."""
         yield from self.placeables
         yield from self.creatures
         yield from self.doors
         yield from self.waypoints
+        yield from self.triggers
+        yield from self.sounds
+        yield from self.stores
+
+    def iter_all(self):
+        """Alias for all_objects()."""
+        return self.all_objects()
+
+    def add_object(self, obj) -> bool:
+        """
+        Add any GIT object to the correct list by type.
+        Returns True on success, False if type is unknown.
+        """
+        if isinstance(obj, GITPlaceable):
+            self.placeables.append(obj)
+        elif isinstance(obj, GITCreature):
+            self.creatures.append(obj)
+        elif isinstance(obj, GITDoor):
+            self.doors.append(obj)
+        elif isinstance(obj, GITWaypoint):
+            self.waypoints.append(obj)
+        elif isinstance(obj, GITTrigger):
+            self.triggers.append(obj)
+        elif isinstance(obj, GITSoundObject):
+            self.sounds.append(obj)
+        elif isinstance(obj, GITStoreObject):
+            self.stores.append(obj)
+        else:
+            return False
+        return True
+
+    def remove_object(self, obj) -> bool:
+        """
+        Remove a GIT object from its list.
+        Returns True on success, False if not found or unknown type.
+        """
+        for lst in (self.placeables, self.creatures, self.doors,
+                    self.waypoints, self.triggers, self.sounds, self.stores):
+            if obj in lst:
+                lst.remove(obj)
+                return True
+        return False
+
+    def find_by_tag(self, tag: str):
+        """Find the first object with a matching tag (case-insensitive)."""
+        tag_lower = tag.lower()
+        for obj in self.all_objects():
+            if getattr(obj, 'tag', '').lower() == tag_lower:
+                return obj
+        return None
+
+    def find_all_by_tag(self, tag: str) -> list:
+        """Find all objects with a matching tag (case-insensitive)."""
+        tag_lower = tag.lower()
+        return [obj for obj in self.all_objects()
+                if getattr(obj, 'tag', '').lower() == tag_lower]
 
     @property
     def object_count(self) -> int:
         return (len(self.placeables) + len(self.creatures) +
                 len(self.doors) + len(self.triggers) +
                 len(self.sounds) + len(self.waypoints) + len(self.stores))
+
+    def clear(self):
+        """Remove all objects from every list (keeps ambient settings)."""
+        self.placeables.clear()
+        self.creatures.clear()
+        self.doors.clear()
+        self.triggers.clear()
+        self.sounds.clear()
+        self.waypoints.clear()
+        self.stores.clear()
+
+    def counts_by_type(self) -> Dict[str, int]:
+        """Return a dict mapping object type name → count."""
+        return {
+            "placeables": len(self.placeables),
+            "creatures":  len(self.creatures),
+            "doors":      len(self.doors),
+            "triggers":   len(self.triggers),
+            "sounds":     len(self.sounds),
+            "waypoints":  len(self.waypoints),
+            "stores":     len(self.stores),
+        }
+
+    def duplicate_object(self, obj):
+        """
+        Deep-copy a GIT object and add it to the appropriate list.
+        Returns the new copy, or None if the type is unknown.
+        The copy gets a clean _scene_id of -1.
+        """
+        import copy
+        new_obj = copy.deepcopy(obj)
+        new_obj._scene_id = -1
+        # Offset the copy slightly so it doesn't overlap the original
+        pos = getattr(new_obj, 'position', None)
+        if pos is not None:
+            new_obj.position = Vector3(pos.x + 0.5, pos.y + 0.5, pos.z)
+        if self.add_object(new_obj):
+            return new_obj
+        return None
 
 
 # ── ARE (Area) Data ────────────────────────────────────────────────────────

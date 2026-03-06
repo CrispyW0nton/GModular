@@ -1,5 +1,5 @@
 # GModular — KotOR Module Editor
-# Python 3.8+ required
+# Python 3.10+ required
 
 # Core GUI
 PyQt5>=5.15.0
@@ -13,3 +13,7 @@ watchdog>=2.0.0
 
 # HTTP requests (for GhostScripter/GhostRigger IPC)
 requests>=2.28.0
+
+# Build tool — generates dist/GModular.exe via build.bat
+# Run: pip install pyinstaller  OR  use build.bat which installs it automatically
+pyinstaller>=5.13.0

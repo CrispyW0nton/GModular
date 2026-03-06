@@ -16,7 +16,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
-from ..formats.gff_types import GITPlaceable, GITCreature, GITDoor, GITWaypoint
+from ..formats.gff_types import (
+    GITPlaceable, GITCreature, GITDoor, GITWaypoint,
+    GITTrigger, GITSoundObject, GITStoreObject,
+)
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +192,15 @@ class InspectorPanel(QWidget):
         elif isinstance(obj, GITWaypoint):
             self._type_label.setText("Waypoint")
             self._build_waypoint(obj)
+        elif isinstance(obj, GITTrigger):
+            self._type_label.setText("Trigger")
+            self._build_trigger(obj)
+        elif isinstance(obj, GITSoundObject):
+            self._type_label.setText("Sound")
+            self._build_sound(obj)
+        elif isinstance(obj, GITStoreObject):
+            self._type_label.setText("Store")
+            self._build_store(obj)
         else:
             self._type_label.setText(type(obj).__name__)
 
@@ -235,14 +247,29 @@ class InspectorPanel(QWidget):
         widget.editingFinished.connect(on_changed)
 
     def _connect_spin(self, widget: QDoubleSpinBox, obj, attr: str):
-        def on_changed(val):
+        """Connect a spin box to a plain float attribute via editingFinished.
+
+        Uses editingFinished (fires only when the user presses Enter or moves
+        focus away) rather than valueChanged (fires on every increment click /
+        key stroke).  This avoids flooding the undo stack and the property_changed
+        signal bus with dozens of near-identical events while the user types a
+        number.
+        """
+        def on_finished():
             if self._building:
                 return
+            val = widget.value()
             old = getattr(obj, attr, 0.0)
             if abs(float(old) - val) > 1e-6:
-                setattr(obj, attr, val)
+                try:
+                    from ..core.module_state import get_module_state, ModifyPropertyCommand
+                    state = get_module_state()
+                    cmd = ModifyPropertyCommand(obj, attr, old, val)
+                    state.execute(cmd)
+                except Exception:
+                    setattr(obj, attr, val)
                 self.property_changed.emit(obj, attr, old, val)
-        widget.valueChanged.connect(on_changed)
+        widget.editingFinished.connect(on_finished)
 
     def _connect_script(self, widget: ScriptCombo, obj, attr: str):
         def on_changed():
@@ -255,7 +282,9 @@ class InspectorPanel(QWidget):
                 self.property_changed.emit(obj, attr, old, new)
                 self._open_script_btn.setVisible(bool(new))
                 self._compile_btn.setVisible(bool(new))
-        widget.currentTextChanged.connect(on_changed)
+        # Use only editTextChanged: covers both combo selection and manual typing.
+        # Do NOT also connect currentTextChanged — that would fire on_changed twice
+        # per selection change, doubling property_changed emissions and undo entries.
         widget.editTextChanged.connect(on_changed)
 
     def _connect_line(self, widget: QLineEdit, obj, attr: str):
@@ -295,7 +324,7 @@ class InspectorPanel(QWidget):
         self._content_layout.addWidget(grp)
 
     def _build_position(self, obj):
-        """Build Position section."""
+        """Build Position section (bearing row only shown when object has it)."""
         grp = QGroupBox("Position & Rotation")
         grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
         form = QFormLayout(grp)
@@ -303,35 +332,66 @@ class InspectorPanel(QWidget):
         form.setContentsMargins(8, 8, 8, 8)
         form.setSpacing(4)
 
-        px = self._spin(obj.position.x)
-        py = self._spin(obj.position.y)
-        pz = self._spin(obj.position.z)
-        br = self._spin(obj.bearing, minimum=-7.0, maximum=7.0, decimals=4, step=0.1)
+        pos = obj.position
+        px = self._spin(pos.x)
+        py = self._spin(pos.y)
+        pz = self._spin(pos.z)
 
         form.addRow("X:", px)
         form.addRow("Y:", py)
         form.addRow("Z:", pz)
-        form.addRow("Bearing (rad):", br)
+
+        has_bearing = hasattr(obj, "bearing")
+        if has_bearing:
+            br = self._spin(obj.bearing, minimum=-7.0, maximum=7.0, decimals=4, step=0.1)
+            form.addRow("Bearing (rad):", br)
+        else:
+            br = None
 
         def on_pos(val):
             if self._building:
                 return
-            obj.position.x = px.value()
-            obj.position.y = py.value()
-            obj.position.z = pz.value()
-            self.property_changed.emit(obj, "position", None, obj.position)
+            try:
+                from ..core.module_state import get_module_state, MoveObjectCommand
+                from ..formats.gff_types import Vector3
+                old_pos = Vector3(obj.position.x, obj.position.y, obj.position.z)
+                new_pos = Vector3(px.value(), py.value(), pz.value())
+                # Only push a command if position actually changed
+                if (abs(old_pos.x - new_pos.x) > 1e-6 or
+                        abs(old_pos.y - new_pos.y) > 1e-6 or
+                        abs(old_pos.z - new_pos.z) > 1e-6):
+                    state = get_module_state()
+                    cmd = MoveObjectCommand(obj, old_pos, new_pos)
+                    state.execute(cmd)
+                    self.property_changed.emit(obj, "position", old_pos, new_pos)
+            except Exception:
+                # Fallback: direct update without command
+                obj.position.x = px.value()
+                obj.position.y = py.value()
+                obj.position.z = pz.value()
+                self.property_changed.emit(obj, "position", None, obj.position)
 
-        def on_bearing(val):
-            if self._building:
-                return
-            old = obj.bearing
-            obj.bearing = val
-            self.property_changed.emit(obj, "bearing", old, val)
+        px.editingFinished.connect(lambda: on_pos(None))
+        py.editingFinished.connect(lambda: on_pos(None))
+        pz.editingFinished.connect(lambda: on_pos(None))
 
-        px.valueChanged.connect(on_pos)
-        py.valueChanged.connect(on_pos)
-        pz.valueChanged.connect(on_pos)
-        br.valueChanged.connect(on_bearing)
+        if br is not None:
+            def on_bearing(val):
+                if self._building:
+                    return
+                try:
+                    from ..core.module_state import get_module_state, RotateObjectCommand
+                    old = obj.bearing
+                    if abs(old - val) > 1e-6:
+                        state = get_module_state()
+                        cmd = RotateObjectCommand(obj, old, val)
+                        state.execute(cmd)
+                        self.property_changed.emit(obj, "bearing", old, val)
+                except Exception:
+                    old = obj.bearing
+                    obj.bearing = val
+                    self.property_changed.emit(obj, "bearing", old, val)
+            br.editingFinished.connect(lambda: on_bearing(br.value()))
 
         self._content_layout.addWidget(grp)
 
@@ -387,6 +447,7 @@ class InspectorPanel(QWidget):
             ("on_attacked",          "OnAttacked"),
             ("on_damaged",           "OnDamaged"),
             ("on_notice",            "OnNotice"),
+            ("on_conversation",      "OnConversation"),
             ("on_user_defined",      "OnUserDef"),
             ("on_spawn",             "OnSpawn"),
         ]
@@ -415,12 +476,14 @@ class InspectorPanel(QWidget):
 
         script_events = [
             ("on_open",          "OnOpen"),
+            ("on_open2",         "OnOpen2"),
             ("on_closed",        "OnClosed"),
             ("on_fail_to_open",  "OnFailToOpen"),
             ("on_damaged",       "OnDamaged"),
             ("on_death",         "OnDeath"),
             ("on_heartbeat",     "OnHeartbeat"),
             ("on_lock",          "OnLock"),
+            ("on_unlock",        "OnUnlock"),
             ("on_melee_attacked","OnMeleeAtk"),
             ("on_user_defined",  "OnUserDef"),
         ]
@@ -439,6 +502,36 @@ class InspectorPanel(QWidget):
         form.addRow("Map Note:", note)
         self._connect_line(note, obj, "map_note")
         self._content_layout.addWidget(grp)
+
+    def _build_trigger(self, obj: GITTrigger):
+        self._build_common(obj)
+        self._build_position(obj)
+        # Geometry vertex count
+        grp = QGroupBox("Geometry")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setContentsMargins(8, 8, 8, 8)
+        n_verts = QLabel(str(len(getattr(obj, "geometry", []))))
+        n_verts.setStyleSheet("color:#9cdcfe; font-family:Consolas;")
+        form.addRow("Vertices:", n_verts)
+        self._content_layout.addWidget(grp)
+        script_events = [
+            ("on_enter",        "OnEnter"),
+            ("on_exit",         "OnExit"),
+            ("on_heartbeat",    "OnHeartbeat"),
+            ("on_user_defined", "OnUserDef"),
+        ]
+        self._build_scripts_section(obj, script_events)
+
+    def _build_sound(self, obj: GITSoundObject):
+        self._build_common(obj)
+        self._build_position(obj)
+        # No scripts for ambient sounds in KotOR GIT
+
+    def _build_store(self, obj: GITStoreObject):
+        self._build_common(obj)
+        self._build_position(obj)
 
     # ── GhostScripter integration ────────────────────────────────────────────
 

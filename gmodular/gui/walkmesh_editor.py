@@ -88,7 +88,9 @@ class WOKFace:
 
     @property
     def is_walkable(self) -> bool:
-        return self.walk_type in (1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15)
+        # 0=Non-Walk, 6=Water (swim), 7=Trigger (walk-through), 8=Trigger (non-walk)
+        # 16=Quicksand, 17=Lava, 18=Hot Ground — passable terrain types in KotOR
+        return self.walk_type in (1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
 
 @dataclass
@@ -183,25 +185,131 @@ class WOKParser:
 
     def _parse_geometry(self, wok: WOKData):
         """
-        Attempt to extract geometry from WOK by parsing MDL node arrays.
-        KotOR MDL node geometry offset is at a fixed relative position within each mesh node.
+        Attempt to extract geometry from a KotOR binary WOK / MDL file.
+
+        KotOR WOK files share the MDL binary format. The geometry data lives in
+        a mesh node whose header is located at:
+          data[mdl_data_off + 80]  = geometry header array pointer (not used directly)
+          data[mdl_data_off + 84]  = node count
+          data[mdl_data_off + 88]  = node offset array (array of node offsets, 4 bytes each)
+
+        Each walkmesh node (type 0x20 == WALKMESH) contains:
+          +0x60  vertex count      (uint32)
+          +0x64  vertex offset     (uint32, file-relative)
+          +0x68  face count        (uint32)
+          +0x6C  face offset       (uint32, file-relative)
+          +0x70  walk-type array   (uint32, file-relative)
+
+        This is a best-effort parser; falls back to synthetic geometry if
+        the binary layout cannot be validated.
         """
         data = self._data
-        
-        # Try to find AABBs as a heuristic bounding box
-        min_x = min_y = min_z = float("inf")
-        max_x = max_y = max_z = float("-inf")
+        if len(data) < 12:
+            return
 
-        # Simple face extraction using stride patterns
-        # Real WOK geometry nodes have:
-        #   - vertex count (uint32)
-        #   - vertex offset (uint32, relative to geometry data)
-        #   - face count (uint32)
-        #   - face offset (uint32)
-        #   - walk type array
-        
-        # Fallback: create synthetic geometry for testing purposes
-        # when we can't fully parse the binary
+        try:
+            # KotOR MDL/WOK binary layout:
+            #   bytes 0-3:  reserved (0)
+            #   bytes 4-7:  model data section offset (absolute file offset)
+            #   bytes 8-11: model data section size
+            # All geometry pointers inside the model data section are
+            # RELATIVE to BASE=12, NOT to the model data section offset.
+            BASE = 12
+            mdl_data_off = struct.unpack_from("<I", data, 4)[0]
+            if mdl_data_off + 100 > len(data):
+                raise ValueError("model data offset out of range")
+
+            # Number of geometry nodes and offset array
+            # These offsets are stored relative to BASE=12
+            node_count   = struct.unpack_from("<I", data, mdl_data_off + 84)[0]
+            node_arr_rel = struct.unpack_from("<I", data, mdl_data_off + 88)[0]
+            node_arr_off = BASE + node_arr_rel  # absolute file offset
+
+            if node_count == 0 or node_arr_rel == 0 or node_count > 1000:
+                raise ValueError("no nodes or invalid node count")
+
+            # Collect vertices and faces from all mesh nodes
+            for ni in range(min(node_count, 256)):
+                node_rel = struct.unpack_from("<I", data, node_arr_off + ni * 4)[0]
+                if node_rel == 0:
+                    continue
+                node_off = BASE + node_rel   # absolute file offset
+                if node_off + 0x80 > len(data):
+                    continue
+
+                # Node type is at +0x00 (first field in node header)
+                node_type = struct.unpack_from("<H", data, node_off)[0]
+                # Walk-type indicator: type & 0x0020 == mesh; 0x0200 == AABB/walkmesh
+                if node_type & 0x0020 == 0:
+                    continue
+
+                vert_count = struct.unpack_from("<I", data, node_off + 0x60)[0]
+                vert_rel   = struct.unpack_from("<I", data, node_off + 0x64)[0]
+                face_count = struct.unpack_from("<I", data, node_off + 0x68)[0]
+                face_rel   = struct.unpack_from("<I", data, node_off + 0x6C)[0]
+                wtype_rel  = struct.unpack_from("<I", data, node_off + 0x70)[0]
+
+                # Offsets within geometry data are also BASE-relative
+                vert_off  = BASE + vert_rel  if vert_rel  else 0
+                face_off  = BASE + face_rel  if face_rel  else 0
+                wtype_off = BASE + wtype_rel if wtype_rel else 0
+
+                if vert_count == 0 or face_count == 0:
+                    continue
+                if vert_count > 100_000 or face_count > 100_000:
+                    continue
+
+                # Read vertices (3 floats each)
+                verts = []
+                for vi in range(vert_count):
+                    pos = vert_off + vi * 12
+                    if pos + 12 > len(data):
+                        break
+                    x, y, z = struct.unpack_from("<fff", data, pos)
+                    verts.append((x, y, z))
+                    wok.vertices.append((x, y, z))
+
+                # Track AABB
+                if verts:
+                    xs = [v[0] for v in verts]
+                    ys = [v[1] for v in verts]
+                    zs = [v[2] for v in verts]
+                    cur_min = wok.aabb_min
+                    cur_max = wok.aabb_max
+                    wok.aabb_min = (
+                        min(cur_min[0], min(xs)),
+                        min(cur_min[1], min(ys)),
+                        min(cur_min[2], min(zs)),
+                    )
+                    wok.aabb_max = (
+                        max(cur_max[0], max(xs)),
+                        max(cur_max[1], max(ys)),
+                        max(cur_max[2], max(zs)),
+                    )
+
+                # Read faces (3 uint16 vertex indices each)
+                for fi in range(face_count):
+                    pos = face_off + fi * 6
+                    if pos + 6 > len(data):
+                        break
+                    i0, i1, i2 = struct.unpack_from("<HHH", data, pos)
+                    if i0 >= len(verts) or i1 >= len(verts) or i2 >= len(verts):
+                        continue
+
+                    # Walk type
+                    wtype = 0
+                    if wtype_off and (wtype_off + fi * 4 + 4 <= len(data)):
+                        wtype = struct.unpack_from("<I", data, wtype_off + fi * 4)[0]
+
+                    wok.faces.append(WOKFace(
+                        v0=verts[i0], v1=verts[i1], v2=verts[i2],
+                        walk_type=wtype,
+                    ))
+
+        except Exception as e:
+            log.debug(f"WOK geometry parse attempt failed: {e}")
+
+        # Fall back to synthetic geometry when real parsing yields nothing
         if len(wok.faces) == 0 and len(data) > 200:
             self._synthetic_demo_geometry(wok)
     
@@ -508,25 +616,86 @@ class WalkmeshPanel(QWidget):
                                 f"Failed to export:\n{e}")
 
     def _write_wok(self, path: str):
-        """Write a simplified WOK file (ASCII format for readability)."""
+        """
+        Write walkmesh geometry to disk in **GModular's own GWOK format**.
+
+        ⚠ WARNING: This is NOT a native KotOR .WOK file.
+        KotOR's engine cannot load GWOK files directly.
+        GWOK is a compact interchange format used internally by GModular tools
+        (GhostRigger can read it to rebuild KotOR-compatible MDL/WOK geometry).
+
+        Binary layout:
+          4B  magic "GWOK"  (GModular WOK identifier)
+          4B  version 0x0100
+          4B  vertex_count
+          4B  face_count
+          32B model_name (ASCII, null-padded)
+          Vertices: vertex_count × 12 bytes (3 × float32 x,y,z)
+          Faces:    face_count   × 6  bytes (3 × uint16  vertex indices)
+          Wtypes:   face_count   × 4  bytes (uint32 walk-type per face)
+          Bounds:   6 × float32  (aabb_min xyz, aabb_max xyz)
+        """
         wok = self._wok
-        with open(path, "w") as f:
-            f.write(f"# GModular WOK Export\n")
-            f.write(f"# Model: {wok.model_name}\n")
-            f.write(f"# Faces: {wok.face_count}\n")
-            f.write(f"# Walkable: {wok.walkable_face_count}\n\n")
-            f.write(f"walkmesh\n")
-            f.write(f"  model_name {wok.model_name}\n")
-            f.write(f"  face_count {wok.face_count}\n\n")
-            f.write(f"  vertices {len(wok.vertices)}\n")
-            for vx, vy, vz in wok.vertices:
-                f.write(f"    {vx:.6f} {vy:.6f} {vz:.6f}\n")
-            f.write(f"\n  faces {wok.face_count}\n")
-            for face in wok.faces:
-                f.write(f"    walk_type={face.walk_type} "
-                        f"v0={face.v0[0]:.3f},{face.v0[1]:.3f},{face.v0[2]:.3f} "
-                        f"v1={face.v1[0]:.3f},{face.v1[1]:.3f},{face.v1[2]:.3f} "
-                        f"v2={face.v2[0]:.3f},{face.v2[1]:.3f},{face.v2[2]:.3f}\n")
+
+        # Collect unique vertices and build face index list
+        vert_map: Dict[Tuple, int] = {}
+        verts: List[Tuple[float, float, float]] = []
+        faces_idx: List[Tuple[int, int, int]] = []
+        wtypes: List[int] = []
+
+        for face in wok.faces:
+            idxs = []
+            for v in (face.v0, face.v1, face.v2):
+                key = (round(v[0], 6), round(v[1], 6), round(v[2], 6))
+                if key not in vert_map:
+                    vert_map[key] = len(verts)
+                    verts.append(v)
+                idxs.append(vert_map[key])
+            faces_idx.append(tuple(idxs))
+            wtypes.append(face.walk_type)
+
+        # Binary layout:
+        #   4B  magic "GWOK" (GModular WOK)
+        #   4B  version 0x0100
+        #   4B  vertex_count
+        #   4B  face_count
+        #   4B  model_name (32 bytes, null-padded)
+        #   Vertices: vert_count × 12 bytes (3 × float32)
+        #   Faces:    face_count × 6  bytes (3 × uint16)
+        #   Wtypes:   face_count × 4  bytes (uint32 each)
+        #   Bounds:   6 × float32 (aabb_min xyz, aabb_max xyz)
+
+        vc = len(verts)
+        fc = len(faces_idx)
+        name_raw = (wok.model_name or "").encode("ascii", errors="replace")[:31]
+        name_raw = name_raw.ljust(32, b"\x00")
+
+        header = struct.pack("<4sIII32s",
+                             b"GWOK", 0x0100, vc, fc, name_raw)
+
+        vert_blob = b"".join(
+            struct.pack("<fff", float(v[0]), float(v[1]), float(v[2]))
+            for v in verts
+        )
+        face_blob = b"".join(
+            struct.pack("<HHH", i0, i1, i2)
+            for i0, i1, i2 in faces_idx
+        )
+        wtype_blob = b"".join(struct.pack("<I", wt) for wt in wtypes)
+
+        mn, mx = wok.aabb_min, wok.aabb_max
+        bounds_blob = struct.pack("<6f",
+                                  float(mn[0]), float(mn[1]), float(mn[2]),
+                                  float(mx[0]), float(mx[1]), float(mx[2]))
+
+        with open(path, "wb") as fout:
+            fout.write(header)
+            fout.write(vert_blob)
+            fout.write(face_blob)
+            fout.write(wtype_blob)
+            fout.write(bounds_blob)
+
+        log.debug(f"WOK written: {vc} vertices, {fc} faces → {path}")
 
     def get_walkable_geometry(self):
         """Return list of (v0, v1, v2, walk_type) tuples for viewport overlay."""

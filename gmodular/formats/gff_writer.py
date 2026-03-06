@@ -339,11 +339,17 @@ def _creature_struct(c: GITCreature) -> GFFStruct:
     s.fields["ZPosition"] = _float_field("ZPosition", c.position.z)
     s.fields["XOrientation"] = _float_field("XOrientation", c.bearing)
     s.fields["YOrientation"] = _float_field("YOrientation", 0.0)
-    if c.on_heartbeat:       s.fields["OnHeartbeat"]       = _resref_field("OnHeartbeat",       c.on_heartbeat)
-    if c.on_death:           s.fields["OnDeath"]           = _resref_field("OnDeath",           c.on_death)
-    if c.on_end_conversation: s.fields["OnEndConversation"] = _resref_field("OnEndConversation", c.on_end_conversation)
-    if c.on_spawn:           s.fields["OnSpawn"]           = _resref_field("OnSpawn",           c.on_spawn)
-    if c.on_notice:          s.fields["OnNotice"]          = _resref_field("OnNotice",          c.on_notice)
+    if c.on_heartbeat:         s.fields["OnHeartbeat"]       = _resref_field("OnHeartbeat",       c.on_heartbeat)
+    if c.on_death:             s.fields["OnDeath"]           = _resref_field("OnDeath",           c.on_death)
+    if c.on_end_conversation:  s.fields["OnEndConversation"] = _resref_field("OnEndConversation", c.on_end_conversation)
+    if c.on_spawn:             s.fields["OnSpawn"]           = _resref_field("OnSpawn",           c.on_spawn)
+    if c.on_notice:            s.fields["OnNotice"]          = _resref_field("OnNotice",          c.on_notice)
+    if c.on_disturbed:         s.fields["OnDisturbed"]       = _resref_field("OnDisturbed",       c.on_disturbed)
+    if c.on_blocked:           s.fields["OnBlocked"]         = _resref_field("OnBlocked",         c.on_blocked)
+    if c.on_attacked:          s.fields["OnAttacked"]        = _resref_field("OnAttacked",        c.on_attacked)
+    if c.on_damaged:           s.fields["OnDamaged"]         = _resref_field("OnDamaged",         c.on_damaged)
+    if c.on_user_defined:      s.fields["OnUserDefined"]     = _resref_field("OnUserDefined",     c.on_user_defined)
+    if c.on_conversation:      s.fields["Conversation"]      = _resref_field("Conversation",      c.on_conversation)
     return s
 
 
@@ -359,12 +365,17 @@ def _door_struct(d: GITDoor) -> GFFStruct:
     s.fields["LinkedTo"]  = _string_field("LinkedTo", d.linked_to)
     s.fields["LinkedToFlags"] = _byte_field("LinkedToFlags", d.linked_to_flags)
     s.fields["TransitionDestin"] = _resref_field("TransitionDestin", d.transition_destination)
-    if d.on_open:         s.fields["OnOpen"]        = _resref_field("OnOpen",        d.on_open)
-    if d.on_closed:       s.fields["OnClosed"]      = _resref_field("OnClosed",      d.on_closed)
-    if d.on_fail_to_open: s.fields["OnFailToOpen"]  = _resref_field("OnFailToOpen",  d.on_fail_to_open)
-    if d.on_damaged:      s.fields["OnDamaged"]     = _resref_field("OnDamaged",     d.on_damaged)
-    if d.on_death:        s.fields["OnDeath"]       = _resref_field("OnDeath",       d.on_death)
-    if d.on_heartbeat:    s.fields["OnHeartbeat"]   = _resref_field("OnHeartbeat",   d.on_heartbeat)
+    if d.on_open:            s.fields["OnOpen"]           = _resref_field("OnOpen",           d.on_open)
+    if d.on_closed:          s.fields["OnClosed"]         = _resref_field("OnClosed",         d.on_closed)
+    if d.on_fail_to_open:    s.fields["OnFailToOpen"]     = _resref_field("OnFailToOpen",     d.on_fail_to_open)
+    if d.on_damaged:         s.fields["OnDamaged"]        = _resref_field("OnDamaged",        d.on_damaged)
+    if d.on_death:           s.fields["OnDeath"]          = _resref_field("OnDeath",          d.on_death)
+    if d.on_heartbeat:       s.fields["OnHeartbeat"]      = _resref_field("OnHeartbeat",      d.on_heartbeat)
+    if d.on_lock:            s.fields["OnLock"]           = _resref_field("OnLock",           d.on_lock)
+    if d.on_melee_attacked:  s.fields["OnMeleeAttacked"]  = _resref_field("OnMeleeAttacked",  d.on_melee_attacked)
+    if d.on_open2:           s.fields["OnOpen2"]          = _resref_field("OnOpen2",          d.on_open2)
+    if d.on_unlock:          s.fields["OnUnlock"]         = _resref_field("OnUnlock",         d.on_unlock)
+    if d.on_user_defined:    s.fields["OnUserDefined"]    = _resref_field("OnUserDefined",    d.on_user_defined)
     return s
 
 
@@ -383,9 +394,10 @@ def _trigger_struct(t: GITTrigger) -> GFFStruct:
         gs.fields["Point"] = GFFField("Point", GFFFieldType.VECTOR, pt)
         geo_structs.append(gs)
     s.fields["Geometry"] = GFFField("Geometry", GFFFieldType.LIST, geo_structs)
-    if t.on_enter:       s.fields["OnEnter"]     = _resref_field("OnEnter",     t.on_enter)
-    if t.on_exit:        s.fields["OnExit"]      = _resref_field("OnExit",      t.on_exit)
-    if t.on_heartbeat:   s.fields["OnHeartbeat"] = _resref_field("OnHeartbeat", t.on_heartbeat)
+    if t.on_enter:           s.fields["OnEnter"]       = _resref_field("OnEnter",       t.on_enter)
+    if t.on_exit:            s.fields["OnExit"]        = _resref_field("OnExit",        t.on_exit)
+    if t.on_heartbeat:       s.fields["OnHeartbeat"]   = _resref_field("OnHeartbeat",   t.on_heartbeat)
+    if t.on_user_defined:    s.fields["OnUserDefined"] = _resref_field("OnUserDefined", t.on_user_defined)
     return s
 
 
@@ -397,8 +409,34 @@ def _waypoint_struct(w: GITWaypoint) -> GFFStruct:
     s.fields["XPosition"] = _float_field("XPosition", w.position.x)
     s.fields["YPosition"] = _float_field("YPosition", w.position.y)
     s.fields["ZPosition"] = _float_field("ZPosition", w.position.z)
+    s.fields["XOrientation"] = _float_field("XOrientation", getattr(w, "bearing", 0.0))
     s.fields["MapNote"]   = GFFField("MapNote", GFFFieldType.CEXOLOCSTRING, w.map_note)
     s.fields["MapNoteEnabled"] = _byte_field("MapNoteEnabled", w.map_note_enabled)
+    return s
+
+
+def _sound_struct(so: GITSoundObject) -> GFFStruct:
+    """Build a GFFStruct for a GIT SoundObject entry."""
+    s = GFFStruct(struct_id=6)
+    s.fields["ResRef"]         = _resref_field("ResRef",         so.resref)
+    s.fields["TemplateResRef"] = _resref_field("TemplateResRef", so.template_resref)
+    s.fields["Tag"]            = _string_field("Tag",            so.tag)
+    s.fields["XPosition"]      = _float_field("XPosition", so.position.x)
+    s.fields["YPosition"]      = _float_field("YPosition", so.position.y)
+    s.fields["ZPosition"]      = _float_field("ZPosition", so.position.z)
+    return s
+
+
+def _store_struct(st: GITStoreObject) -> GFFStruct:
+    """Build a GFFStruct for a GIT StoreObject entry."""
+    s = GFFStruct(struct_id=6)
+    s.fields["ResRef"]         = _resref_field("ResRef",         st.resref)
+    s.fields["TemplateResRef"] = _resref_field("TemplateResRef", st.template_resref)
+    s.fields["Tag"]            = _string_field("Tag",            st.tag)
+    s.fields["XPosition"]      = _float_field("XPosition", st.position.x)
+    s.fields["YPosition"]      = _float_field("YPosition", st.position.y)
+    s.fields["ZPosition"]      = _float_field("ZPosition", st.position.z)
+    s.fields["Bearing"]        = _float_field("Bearing",   getattr(st, "bearing", 0.0))
     return s
 
 
@@ -435,7 +473,8 @@ def save_git(git: GITData, path: str, game: str = "K1"):
 
     # Sound List
     root.fields["SoundList"] = GFFField(
-        "SoundList", GFFFieldType.LIST, []
+        "SoundList", GFFFieldType.LIST,
+        [_sound_struct(so) for so in git.sounds]
     )
 
     # Waypoint List
@@ -446,7 +485,8 @@ def save_git(git: GITData, path: str, game: str = "K1"):
 
     # Store List
     root.fields["StoreList"] = GFFField(
-        "StoreList", GFFFieldType.LIST, []
+        "StoreList", GFFFieldType.LIST,
+        [_store_struct(st) for st in git.stores]
     )
 
     # Ambient audio
@@ -462,3 +502,57 @@ def save_git(git: GITData, path: str, game: str = "K1"):
     writer = GFFWriter(root)
     writer.write_file(path)
     log.info(f"Saved GIT: {path} ({git.object_count} objects)")
+
+
+def _locstring_field(label: str, value: str) -> "GFFField":
+    """Build a CExoLocString field (used for Mod_Name, Mod_Description in IFO)."""
+    return GFFField(label, GFFFieldType.CEXOLOCSTRING, value)
+
+
+def save_ifo(ifo: "IFOData", path: str):
+    """
+    Write an IFOData object to a .IFO binary file (GFF V3.2).
+    Covers all KotOR module script hooks and entry-point data.
+    """
+    root = GFFRoot(file_type="IFO ")
+    root.struct_id = 0xFFFFFFFF
+
+    # Module identity
+    root.fields["Mod_Name"]        = _locstring_field("Mod_Name",        ifo.mod_name)
+    root.fields["Mod_Description"] = _locstring_field("Mod_Description", ifo.mod_description)
+
+    # Entry area / position
+    root.fields["Mod_Entry_Area"]  = _resref_field("Mod_Entry_Area",  ifo.entry_area)
+    pos = ifo.entry_position
+    root.fields["Mod_Entry_X"]     = _float_field("Mod_Entry_X",  pos.x if pos else 0.0)
+    root.fields["Mod_Entry_Y"]     = _float_field("Mod_Entry_Y",  pos.y if pos else 0.0)
+    root.fields["Mod_Entry_Z"]     = _float_field("Mod_Entry_Z",  pos.z if pos else 0.0)
+    root.fields["Mod_Entry_Dir_X"] = _float_field("Mod_Entry_Dir_X", ifo.entry_direction)
+
+    # Script hooks — only write non-empty
+    _script_map = {
+        "Mod_OnModLoad":    ifo.on_module_load,
+        "Mod_OnModStart":   ifo.on_module_start,
+        "Mod_OnPlrDeath":   ifo.on_player_death,
+        "Mod_OnPlrDying":   ifo.on_player_dying,
+        "Mod_OnPlrLvlUp":   ifo.on_player_levelup,
+        "Mod_OnSpawnBtnDn": ifo.on_player_respawn,
+        "Mod_OnPlrRest":    ifo.on_player_rest,
+        "Mod_OnHeartbeat":  ifo.on_heartbeat,
+        "Mod_OnClientEntr": ifo.on_client_enter,
+        "Mod_OnClientLeav": ifo.on_client_leave,    # 16-char truncation of Mod_OnClientLeave
+        "Mod_OnCutsnAbort": ifo.on_cutscene_abort,
+        "Mod_OnUnAqreItem": ifo.on_unacquire_item,
+        "Mod_OnAcquireIte": ifo.on_acquire_item,    # 16-char truncation of Mod_OnAcquireItem
+        "Mod_OnActvtItem":  ifo.on_activate_item,
+    }
+    for label, value in _script_map.items():
+        if value:
+            root.fields[label] = _resref_field(label, value[:16])
+
+    # Expansion list (empty is fine)
+    root.fields["Mod_Expan_List"] = GFFField("Mod_Expan_List", GFFFieldType.LIST, [])
+
+    writer = GFFWriter(root)
+    writer.write_file(path)
+    log.info(f"Saved IFO: {path}")

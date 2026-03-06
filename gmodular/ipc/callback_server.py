@@ -55,14 +55,19 @@ class _GModularRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json(self) -> Optional[dict]:
+        """Read and parse the request body as JSON.
+        Returns the parsed dict, an empty dict when Content-Length is 0,
+        or None when the body is present but unparseable.
+        """
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > 0:
                 raw = self.rfile.read(length)
                 return json.loads(raw)
+            return {}   # No body — treat as empty dict (not an error)
         except Exception as e:
             log.debug(f"JSON parse error: {e}")
-        return {}
+            return None   # Explicitly None so callers can detect parse failure
 
     def do_OPTIONS(self):
         """CORS preflight."""
@@ -89,6 +94,10 @@ class _GModularRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         data = self._read_json()
+        if data is None:
+            # Unparseable body — return 400 Bad Request
+            self._json_response({"error": "Invalid JSON body"}, 400)
+            return
         path = self.path
 
         if path == "/api/compile_result":
