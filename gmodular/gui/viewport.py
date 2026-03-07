@@ -20,8 +20,12 @@ from typing import Optional, List, Tuple, Callable, Dict
 
 import numpy as np
 from PyQt5.QtWidgets import QOpenGLWidget, QSizePolicy
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint
-from PyQt5.QtGui import QKeyEvent, QMouseEvent, QWheelEvent, QSurfaceFormat
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
+from PyQt5.QtGui import (
+    QKeyEvent, QMouseEvent, QWheelEvent, QSurfaceFormat,
+    QPainter, QPen, QBrush, QColor, QFont, QFontMetrics,
+    QPolygon, QCursor,
+)
 
 log = logging.getLogger(__name__)
 
@@ -369,6 +373,25 @@ def _grid_verts(n: int = 20, step: float = 1.0) -> np.ndarray:
     return np.array(verts, dtype='f4')
 
 
+# ── Gimbal / Translate Gizmo ─────────────────────────────────────────────────
+# Snap increments (KotOR world units)
+SNAP_UNIT  = 1.0    # Ctrl held
+SNAP_HALF  = 0.5    # Ctrl+Shift held
+SNAP_FINE  = 0.25   # Shift held alone
+
+GIZMO_LEN  = 72     # arrow screen length (px)
+GIZMO_HEAD = 10     # arrowhead px
+GIZMO_HIT  = 14     # hit-test radius (px)
+
+_GIZMO_X_COL = QColor(230,  60,  60)   # red   — X
+_GIZMO_Y_COL = QColor( 60, 200,  60)   # green — Y
+_GIZMO_Z_COL = QColor( 60, 120, 230)   # blue  — Z
+_GIZMO_R_COL = QColor(220, 220,  50)   # yellow — rotate Z
+_GIZMO_ACT   = QColor(255, 255, 100)   # active highlight
+
+_AX_X, _AX_Y, _AX_Z, _AX_R = 0, 1, 2, 3
+
+
 class ViewportWidget(QOpenGLWidget):
     """
     ModernGL-powered 3D viewport for GModular.
@@ -426,6 +449,20 @@ class ViewportWidget(QOpenGLWidget):
         self._move_timer = QTimer(self)
         self._move_timer.setInterval(16)  # ~60 fps
         self._move_timer.timeout.connect(self._process_movement)
+
+        # ── Gimbal / Transform Gizmo state ───────────────────────────────────
+        # Active drag axis: None | _AX_X | _AX_Y | _AX_Z | _AX_R
+        self._gizmo_axis: Optional[int] = None
+        self._gizmo_hover: Optional[int] = None   # axis under cursor (for highlight)
+        self._gizmo_drag_start_mouse: Optional[QPoint] = None
+        self._gizmo_drag_start_pos: Optional[object] = None  # Vector3 copy
+        self._gizmo_drag_start_rot: float = 0.0  # bearing at drag start
+        # Screen-space positions of gizmo tip pixels (computed each frame)
+        self._gizmo_tips: Dict[int, QPoint] = {}
+        self._gizmo_origin_screen: Optional[QPoint] = None
+        # Snap: Ctrl = 1-unit, Ctrl+Shift = 0.5, Shift = 0.25
+        self._snap_enabled: bool = False
+        self._snap_size: float = SNAP_UNIT
 
         # Refresh timer
         self._refresh_timer = QTimer(self)
@@ -554,6 +591,179 @@ class ViewportWidget(QOpenGLWidget):
 
         except Exception as e:
             log.debug(f"paintGL error: {e}")
+
+    # ── 2D Gimbal Overlay (painted on top of GL) ──────────────────────────────
+
+    def paintEvent(self, event):
+        """QOpenGLWidget.paintEvent — called after GL is composited.
+        We use a QPainter here exclusively for the 2D gizmo overlay."""
+        # Let the GL superclass draw first
+        super().paintEvent(event)
+
+        obj = self._selected_obj
+        if obj is None or self._play_mode or self._placement_mode:
+            return
+        if not hasattr(obj, 'position'):
+            return
+
+        pos = obj.position
+        sx, sy = self._world_to_screen(pos.x, pos.y, pos.z)
+        if sx is None:
+            return
+
+        origin = QPoint(int(sx), int(sy))
+        self._gizmo_origin_screen = origin
+
+        # Project axis tip points
+        ax_tips = {
+            _AX_X: self._world_to_screen(pos.x + 1.0, pos.y, pos.z),
+            _AX_Y: self._world_to_screen(pos.x, pos.y + 1.0, pos.z),
+            _AX_Z: self._world_to_screen(pos.x, pos.y, pos.z + 1.0),
+        }
+
+        tips: Dict[int, QPoint] = {}
+        for ax, (tx, ty) in ax_tips.items():
+            if tx is None:
+                continue
+            # Scale to fixed screen length
+            raw_dx = tx - sx
+            raw_dy = ty - sy
+            length = math.hypot(raw_dx, raw_dy) or 1.0
+            tip_x = int(sx + raw_dx / length * GIZMO_LEN)
+            tip_y = int(sy + raw_dy / length * GIZMO_LEN)
+            tips[ax] = QPoint(tip_x, tip_y)
+
+        # Rotation ring (circle around origin)
+        tips[_AX_R] = origin   # centre of ring
+
+        self._gizmo_tips = tips
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        axis_colors = {
+            _AX_X: _GIZMO_X_COL,
+            _AX_Y: _GIZMO_Y_COL,
+            _AX_Z: _GIZMO_Z_COL,
+        }
+        labels = {_AX_X: "X", _AX_Y: "Y", _AX_Z: "Z"}
+
+        # Draw translate arrows
+        for ax, tip in tips.items():
+            if ax == _AX_R:
+                continue
+            col = _GIZMO_ACT if (self._gizmo_axis == ax or self._gizmo_hover == ax) \
+                else axis_colors[ax]
+            pen = QPen(col, 3 if (self._gizmo_axis == ax) else 2)
+            p.setPen(pen)
+            p.drawLine(origin, tip)
+
+            # Arrowhead
+            dx = tip.x() - origin.x()
+            dy = tip.y() - origin.y()
+            length = math.hypot(dx, dy) or 1.0
+            ux, uy = dx / length, dy / length
+            px, py = -uy, ux  # perpendicular
+            head_pts = [
+                (tip.x(), tip.y()),
+                (tip.x() - ux * GIZMO_HEAD + px * GIZMO_HEAD * 0.4,
+                 tip.y() - uy * GIZMO_HEAD + py * GIZMO_HEAD * 0.4),
+                (tip.x() - ux * GIZMO_HEAD - px * GIZMO_HEAD * 0.4,
+                 tip.y() - uy * GIZMO_HEAD - py * GIZMO_HEAD * 0.4),
+            ]
+            poly = QPolygon([QPoint(int(x), int(y)) for x, y in head_pts])
+            p.setBrush(QBrush(col))
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(poly)
+
+            # Axis label near tip
+            p.setPen(QPen(col))
+            p.setFont(QFont("Consolas", 8, QFont.Bold))
+            p.drawText(tip.x() + 4, tip.y() - 4, labels[ax])
+
+        # Draw rotation ring (dashed circle)
+        ring_col = _GIZMO_ACT if (self._gizmo_axis == _AX_R or self._gizmo_hover == _AX_R) \
+            else _GIZMO_R_COL
+        ring_pen = QPen(ring_col, 2, Qt.DashLine)
+        p.setPen(ring_pen)
+        p.setBrush(Qt.NoBrush)
+        ring_r = GIZMO_LEN // 2
+        p.drawEllipse(origin.x() - ring_r, origin.y() - ring_r, ring_r * 2, ring_r * 2)
+        p.setPen(QPen(ring_col))
+        p.setFont(QFont("Consolas", 7))
+        p.drawText(origin.x() + ring_r + 2, origin.y() + 4, "R")
+
+        # Snap indicator
+        if self._snap_enabled:
+            p.setFont(QFont("Consolas", 8, QFont.Bold))
+            snap_text = f"SNAP  {self._snap_size:.2f}u"
+            p.setPen(QPen(QColor(255, 220, 50)))
+            p.drawText(self.width() - 120, self.height() - 10, snap_text)
+
+        # Mode legend bottom-left
+        p.setFont(QFont("Consolas", 7))
+        p.setPen(QPen(QColor(120, 120, 120)))
+        legend = "Gimbal: LMB drag axis  |  Ctrl=snap 1u  Shift=0.25u  Ctrl+Shift=0.5u"
+        p.drawText(6, self.height() - 6, legend)
+
+        p.end()
+
+    def _world_to_screen(self, wx: float, wy: float, wz: float
+                         ) -> Tuple[Optional[float], Optional[float]]:
+        """Project a world-space point to screen pixels. Returns (None,None) if behind camera."""
+        try:
+            W, H = self.width(), self.height()
+            aspect = W / max(H, 1)
+            proj = self.camera.projection_matrix(aspect)
+            view = self.camera.view_matrix()
+            vp = proj @ view
+            world_pt = np.array([wx, wy, wz, 1.0], dtype='f4')
+            clip = vp @ world_pt
+            if clip[3] <= 0:
+                return None, None
+            ndc_x = clip[0] / clip[3]
+            ndc_y = clip[1] / clip[3]
+            sx = (ndc_x + 1.0) * 0.5 * W
+            sy = (1.0 - (ndc_y + 1.0) * 0.5) * H
+            return sx, sy
+        except Exception:
+            return None, None
+
+    def _hit_gizmo(self, mx: int, my: int) -> Optional[int]:
+        """Return which gizmo axis (or None) the screen point (mx,my) hits."""
+        if self._gizmo_origin_screen is None:
+            return None
+        origin = self._gizmo_origin_screen
+        ring_r = GIZMO_LEN // 2
+
+        # Check rotation ring (annular hit zone)
+        dist_to_centre = math.hypot(mx - origin.x(), my - origin.y())
+        if abs(dist_to_centre - ring_r) < GIZMO_HIT:
+            return _AX_R
+
+        # Check translate arrows
+        for ax in (_AX_X, _AX_Y, _AX_Z):
+            tip = self._gizmo_tips.get(ax)
+            if tip is None:
+                continue
+            # Distance from point to line segment origin→tip
+            dx = tip.x() - origin.x()
+            dy = tip.y() - origin.y()
+            seg_len2 = dx * dx + dy * dy
+            if seg_len2 < 1:
+                continue
+            t = max(0.0, min(1.0,
+                ((mx - origin.x()) * dx + (my - origin.y()) * dy) / seg_len2))
+            cx = origin.x() + t * dx
+            cy = origin.y() + t * dy
+            if math.hypot(mx - cx, my - cy) < GIZMO_HIT:
+                return ax
+        return None
+
+    def _apply_snap(self, value: float) -> float:
+        """Snap a world coordinate to the current snap grid."""
+        s = self._snap_size
+        return round(value / s) * s
 
     # ── Grid ─────────────────────────────────────────────────────────────────
 
@@ -960,20 +1170,35 @@ class ViewportWidget(QOpenGLWidget):
         self._last_mouse = event.pos()
 
         if self._play_mode:
-            # In play mode: mouse clicks don't select objects
             self._mouse_button = event.button()
             return
 
         if event.button() == Qt.LeftButton:
+            # ── Gizmo hit test FIRST ──────────────────────────────────────────
+            if self._selected_obj is not None and not self._placement_mode:
+                axis = self._hit_gizmo(event.x(), event.y())
+                if axis is not None:
+                    self._gizmo_axis = axis
+                    self._gizmo_drag_start_mouse = event.pos()
+                    # Deep-copy current position/rotation
+                    obj = self._selected_obj
+                    if hasattr(obj, 'position'):
+                        from ..formats.gff_types import Vector3
+                        p = obj.position
+                        self._gizmo_drag_start_pos = Vector3(p.x, p.y, p.z)
+                    if hasattr(obj, 'bearing'):
+                        self._gizmo_drag_start_rot = getattr(obj, 'bearing', 0.0)
+                    self._mouse_button = event.button()
+                    return   # consumed by gizmo
+
             if self._placement_mode:
-                # Place a new object
                 pos = self._ray_ground_intersect(event.x(), event.y())
                 if pos:
                     self._place_object_at(pos)
             else:
-                # Select object
                 obj = self._pick_object(event.x(), event.y())
                 self._selected_obj = obj
+                self._gizmo_axis = None
                 self._rebuild_object_vaos()
                 self.object_selected.emit(obj)
 
@@ -981,7 +1206,6 @@ class ViewportWidget(QOpenGLWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._play_mode and self._play_session:
-            # FPS mouse look: update player yaw and pitch
             if self._play_mouse_last is not None:
                 dx = event.x() - self._play_mouse_last.x()
                 dy = event.y() - self._play_mouse_last.y()
@@ -990,13 +1214,29 @@ class ViewportWidget(QOpenGLWidget):
                 self._play_pitch = max(-80.0, min(80.0,
                                        self._play_pitch - dy * sensitivity))
             self._play_mouse_last = event.pos()
-            # Warp cursor to centre to allow infinite rotation
             cx, cy = self.width() // 2, self.height() // 2
-            from PyQt5.QtGui import QCursor
             QCursor.setPos(self.mapToGlobal(QPoint(cx, cy)))
             self._play_mouse_last = QPoint(cx, cy)
             self.update()
             return
+
+        # ── Gizmo drag ────────────────────────────────────────────────────────
+        if (self._gizmo_axis is not None
+                and self._gizmo_drag_start_mouse is not None
+                and self._selected_obj is not None
+                and hasattr(self._selected_obj, 'position')
+                and self._gizmo_drag_start_pos is not None):
+            self._handle_gizmo_drag(event)
+            return
+
+        # ── Gizmo hover highlight ─────────────────────────────────────────────
+        if self._selected_obj is not None and not self._placement_mode:
+            old_hover = self._gizmo_hover
+            self._gizmo_hover = self._hit_gizmo(event.x(), event.y())
+            if self._gizmo_hover != old_hover:
+                self.setCursor(Qt.SizeAllCursor if self._gizmo_hover is not None
+                               else Qt.ArrowCursor)
+                self.update()
 
         if self._last_mouse is None:
             self._last_mouse = event.pos()
@@ -1007,17 +1247,101 @@ class ViewportWidget(QOpenGLWidget):
         self._last_mouse = event.pos()
 
         if event.buttons() & Qt.RightButton:
-            # Orbit
             self.camera.orbit(-dx * 0.4, -dy * 0.4)
         elif event.buttons() & Qt.MiddleButton:
-            # Pan
             self.camera.pan(dx, dy)
 
         target = self.camera.target
         self.camera_moved.emit(float(target[0]), float(target[1]), float(target[2]))
         self.update()
 
+    def _handle_gizmo_drag(self, event: QMouseEvent):
+        """Translate or rotate the selected object by dragging a gizmo axis."""
+        obj = self._selected_obj
+        axis = self._gizmo_axis
+        start_mouse = self._gizmo_drag_start_mouse
+        start_pos   = self._gizmo_drag_start_pos
+
+        # Total pixel delta from drag start
+        total_dx = event.x() - start_mouse.x()
+        total_dy = event.y() - start_mouse.y()
+
+        # World-units per pixel: use camera distance as scale
+        dist = float(np.linalg.norm(
+            self.camera.eye - self.camera.target)) if hasattr(self.camera, 'eye') else 10.0
+        # Approx world units per screen pixel
+        fov_rad = math.radians(45.0)
+        world_per_px = (2.0 * dist * math.tan(fov_rad * 0.5)) / max(self.height(), 1)
+
+        # Axis screen direction — project unit vector along the axis
+        ox, oy = self._world_to_screen(start_pos.x, start_pos.y, start_pos.z)
+        if ox is None:
+            return
+
+        if axis == _AX_R:
+            # Rotation around Z: map horizontal drag to degrees
+            raw_angle = total_dx * 1.5   # 1.5 deg per pixel
+            if self._snap_enabled:
+                snap_deg = 45.0 if (self._snap_size >= 1.0) else 15.0
+                raw_angle = round(raw_angle / snap_deg) * snap_deg
+            start_rot = getattr(self, '_gizmo_drag_start_rot', 0.0)
+            new_bearing = (start_rot + raw_angle) % 360.0
+            if hasattr(obj, 'bearing'):
+                obj.bearing = new_bearing
+            self._rebuild_object_vaos()
+            self.update()
+            return
+
+        # Translate axes: map screen delta to world delta along each axis
+        world_axes = {
+            _AX_X: (1.0, 0.0, 0.0),
+            _AX_Y: (0.0, 1.0, 0.0),
+            _AX_Z: (0.0, 0.0, 1.0),
+        }
+        wx, wy, wz = world_axes[axis]
+
+        # Project +1 world unit along axis to screen to get screen direction
+        tx, ty = self._world_to_screen(
+            start_pos.x + wx, start_pos.y + wy, start_pos.z + wz)
+        if tx is None:
+            return
+        sdx = tx - ox
+        sdy = ty - oy
+        slen = math.hypot(sdx, sdy) or 1.0
+        # Dot screen drag with axis screen direction
+        dot = (total_dx * sdx + total_dy * sdy) / slen
+        # Scale by world_per_px using the projected axis length
+        axis_screen_len = slen  # pixels per world unit
+        world_delta = dot * world_per_px / max(axis_screen_len * world_per_px, 0.001)
+        # Simpler: dot * (1.0 / axis_screen_len)
+        world_delta = dot / max(axis_screen_len, 0.1)
+
+        new_x = start_pos.x + wx * world_delta
+        new_y = start_pos.y + wy * world_delta
+        new_z = start_pos.z + wz * world_delta
+
+        # Apply snap
+        if self._snap_enabled:
+            if wx: new_x = self._apply_snap(new_x)
+            if wy: new_y = self._apply_snap(new_y)
+            if wz: new_z = self._apply_snap(new_z)
+
+        obj.position.x = new_x
+        obj.position.y = new_y
+        obj.position.z = new_z
+
+        self._rebuild_object_vaos()
+        self.update()
+
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton and self._gizmo_axis is not None:
+            # Finish gizmo drag — clear all drag state
+            self._gizmo_axis = None
+            self._gizmo_drag_start_mouse = None
+            self._gizmo_drag_start_pos = None
+            self._gizmo_hover = None
+            self.setCursor(Qt.ArrowCursor)
+            self.update()
         self._mouse_button = None
 
     def wheelEvent(self, event: QWheelEvent):
@@ -1029,6 +1353,31 @@ class ViewportWidget(QOpenGLWidget):
 
     # ── Keyboard Events ───────────────────────────────────────────────────────
 
+    def _update_snap_state(self):
+        """Recompute snap enabled/size from currently held modifier keys.
+
+        Matches Unreal Engine conventions:
+          Ctrl            → snap 1.0 u  (coarse)
+          Shift           → snap 0.25 u (fine)
+          Ctrl + Shift    → snap 0.5 u  (medium)
+          (no modifier)   → snap off
+        """
+        ctrl  = Qt.Key_Control in self._keys
+        shift = Qt.Key_Shift   in self._keys
+        if ctrl and shift:
+            self._snap_enabled = True
+            self._snap_size    = SNAP_HALF
+        elif ctrl:
+            self._snap_enabled = True
+            self._snap_size    = SNAP_UNIT
+        elif shift:
+            self._snap_enabled = True
+            self._snap_size    = SNAP_FINE
+        else:
+            self._snap_enabled = False
+            self._snap_size    = SNAP_UNIT
+        self.update()  # redraw snap indicator
+
     def keyPressEvent(self, event: QKeyEvent):
         self._keys.add(event.key())
         if self._play_mode:
@@ -1039,18 +1388,28 @@ class ViewportWidget(QOpenGLWidget):
                 self._move_timer.start()
             return
 
+        # Snap modifier keys (Ctrl / Shift)
+        if event.key() in (Qt.Key_Control, Qt.Key_Shift):
+            self._update_snap_state()
+
         if event.key() == Qt.Key_F:
             self._frame_all()
         elif event.key() == Qt.Key_Delete:
             self._delete_selected()
         elif event.key() == Qt.Key_Escape:
             self._placement_mode = False
+            self._gizmo_axis = None
+            self._gizmo_drag_start_mouse = None
+            self._gizmo_drag_start_pos = None
             self.setCursor(Qt.ArrowCursor)
         if not self._move_timer.isActive():
             self._move_timer.start()
 
     def keyReleaseEvent(self, event: QKeyEvent):
         self._keys.discard(event.key())
+        # Update snap when modifier is released
+        if event.key() in (Qt.Key_Control, Qt.Key_Shift):
+            self._update_snap_state()
         if not self._play_mode and not self._keys:
             self._move_timer.stop()
 
