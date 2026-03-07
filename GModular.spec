@@ -15,23 +15,33 @@ NOTE on moderngl:
     If moderngl is absent the viewport falls back to PyOpenGL (pure Python).
 
 NOTE on Python version:
-    PyQt5 wheels exist for Python 3.8 – 3.12 only.
+    PyQt5 wheels exist for Python 3.8 - 3.12 only.
     Do NOT use Python 3.13 or 3.14.  Use Python 3.12.
 
-KEY FIX (v2.1):
-    Use collect_all('PyQt5') instead of bare hiddenimports for PyQt5.
-    On Windows the frozen EXE needs the full PyQt5 hook to copy Qt DLLs,
-    Qt plugins (platforms/, styles/, imageformats/), and the sip bindings.
-    A bare hiddenimport of "PyQt5.QtWidgets" does NOT trigger those hooks,
-    which causes NameError for QGroupBox and friends at startup.
+HOW PyQt5 COLLECTION WORKS (v2.2):
+    Three-layer defence so the EXE always contains the full Qt runtime:
+
+    Layer 1 - hookspath=['hooks']:
+        hooks/hook-PyQt5.py and hooks/hook-PyQt5.QtWidgets.py call
+        collect_all('PyQt5'), which copies Qt5*.dll, platforms/, styles/,
+        imageformats/, and all .pyd extension modules.
+
+    Layer 2 - spec-level collect_all() call (wrapped in try/except):
+        Explicit call here adds the results to binaries= and datas= so
+        they end up in the EXE even if the hook path mechanism is skipped.
+
+    Layer 3 - runtime_hooks=['runtime_hooks/pyi_rth_pyqt5.py']:
+        Runs inside the frozen EXE at boot time and pre-imports every
+        PyQt5 module, giving a clear error at startup rather than a
+        cryptic NameError inside GUI code.
+
+    Without all three layers: QGroupBox (and every other Qt widget class)
+    raises NameError because the .pyd binding file was never included.
 """
 
 import sys
 import importlib.util
 from pathlib import Path
-
-# PyInstaller built-ins (collect_all, collect_submodules, collect_data_files)
-from PyInstaller.utils.hooks import collect_all, collect_submodules   # noqa: F821
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE = Path(SPECPATH)   # noqa: F821  (PyInstaller built-in)
@@ -44,19 +54,23 @@ _has_watchdog  = importlib.util.find_spec("watchdog") is not None
 
 print(f"[spec] moderngl  : {'YES' if _has_moderngl else 'NO (will use PyOpenGL fallback)'}")
 print(f"[spec] PyOpenGL  : {'YES' if _has_pyopengl else 'NO'}")
-print(f"[spec] flask     : {'YES' if _has_flask    else 'NO (optional — skipped)'}")
-print(f"[spec] watchdog  : {'YES' if _has_watchdog else 'NO (optional — skipped)'}")
+print(f"[spec] flask     : {'YES' if _has_flask    else 'NO (optional - skipped)'}")
+print(f"[spec] watchdog  : {'YES' if _has_watchdog else 'NO (optional - skipped)'}")
 
-# ── Collect PyQt5 via hooks (THE critical fix) ────────────────────────────────
-# collect_all() runs PyInstaller's bundled hook for PyQt5, which:
-#   1. Copies all Qt DLLs (Qt5Core.dll, Qt5Gui.dll, Qt5Widgets.dll, ...)
-#   2. Copies Qt plugins (platforms/qwindows.dll, styles/, imageformats/)
-#   3. Copies all PyQt5 .pyd/.so bindings (QtWidgets, QtCore, QtGui, sip, ...)
-# Without this, QGroupBox / any widget class raises NameError in the frozen EXE.
-_pyqt5_datas, _pyqt5_binaries, _pyqt5_hiddenimports = collect_all("PyQt5")
+# ── Layer 2: collect_all for PyQt5 (try/except so spec never hard-fails) ─────
+# Even if this fails, Layer 1 (hookspath) and Layer 3 (runtime hook) still run.
+try:
+    from PyInstaller.utils.hooks import collect_all as _collect_all   # noqa
+    _pyqt5_datas, _pyqt5_binaries, _pyqt5_hiddenimports = _collect_all("PyQt5")
+    print(f"[spec] PyQt5 collect_all: {len(_pyqt5_binaries)} binaries, "
+          f"{len(_pyqt5_datas)} datas, {len(_pyqt5_hiddenimports)} hidden")
+except Exception as _e:
+    print(f"[spec] WARNING: collect_all('PyQt5') failed ({_e}); "
+          f"relying on hookspath for PyQt5 collection")
+    _pyqt5_datas, _pyqt5_binaries, _pyqt5_hiddenimports = [], [], []
 
 # ── Data files bundled into the EXE ─────────────────────────────────────────
-datas = list(_pyqt5_datas)   # start with PyQt5 data (Qt plugins, translations)
+datas = list(_pyqt5_datas)
 if (HERE / "assets").exists():
     datas.append((str(HERE / "assets"), "assets"))
 if (HERE / "resources").exists():
@@ -97,7 +111,7 @@ hidden_imports = [
     "gmodular.ipc.callback_server",
     "gmodular.utils",
     "gmodular.utils.resource_manager",
-    # ── PyQt5 explicit (belt-and-suspenders on top of collect_all) ────────
+    # ── PyQt5 explicit (belt-and-suspenders) ─────────────────────────────
     "PyQt5",
     "PyQt5.QtWidgets",
     "PyQt5.QtCore",
@@ -105,18 +119,18 @@ hidden_imports = [
     "PyQt5.QtOpenGL",
     "PyQt5.QtPrintSupport",
     "PyQt5.sip",
-    # ── numpy ────────────────────────────────────────────────────────────
+    # ── numpy ─────────────────────────────────────────────────────────────
     "numpy",
     "numpy.core",
     "numpy.core._multiarray_umath",
-    # ── requests (IPC) ───────────────────────────────────────────────────
+    # ── requests (IPC) ────────────────────────────────────────────────────
     "requests",
     "urllib3",
     "certifi",
     "charset_normalizer",
     "idna",
 ]
-# Merge in the full PyQt5 hook hidden imports (collected above via collect_all)
+# Merge collect_all hidden imports (deduped)
 hidden_imports += [h for h in _pyqt5_hiddenimports if h not in hidden_imports]
 
 # Optional: moderngl (preferred GL backend)
@@ -163,7 +177,7 @@ excludes = [
     "email", "html", "http.server", "xmlrpc",
     # NOTE: multiprocessing intentionally NOT excluded — PyInstaller Windows
     #       bootloader requires it for the freeze_support() call on Windows.
-    "sip",   # bare 'sip' is obsolete; PyQt5.sip is used instead (suppresses warning)
+    "sip",   # bare 'sip' is obsolete; PyQt5.sip is used instead
 ]
 
 if not _has_moderngl:
@@ -183,12 +197,14 @@ _icon_arg = _icon if (HERE / "assets" / "icons" / "gmodular.ico").exists() else 
 a = Analysis(
     [str(HERE / "main.py")],
     pathex=[str(HERE)],
-    binaries=list(_pyqt5_binaries),   # Qt DLLs from collect_all hook
+    binaries=list(_pyqt5_binaries),
     datas=datas,
     hiddenimports=hidden_imports,
-    hookspath=[],
+    # Layer 1: local hooks trigger collect_all for PyQt5
+    hookspath=["hooks"],
     hooksconfig={},
-    runtime_hooks=[],
+    # Layer 3: runtime hook pre-imports all PyQt5 modules inside the EXE
+    runtime_hooks=["runtime_hooks/pyi_rth_pyqt5.py"],
     excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -209,7 +225,7 @@ exe = EXE(  # noqa: F821
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,          # disabled — UPX often absent on fresh Windows, causes errors
+    upx=False,          # disabled - UPX often absent on fresh Windows
     runtime_tmpdir=None,
     console=False,      # no console window
     disable_windowed_traceback=False,
