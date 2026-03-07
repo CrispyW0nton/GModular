@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QToolBar, QPlainTextEdit, QFrame,
     QSizePolicy, QApplication, QInputDialog, QComboBox, QTabWidget,
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QScrollArea,
+    QStackedWidget,
 )
 from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSlot
 from PyQt5.QtGui import QIcon, QFont, QKeySequence
@@ -52,6 +53,110 @@ log = logging.getLogger(__name__)
 
 APP_NAME    = "GModular"
 APP_VERSION = "1.0.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Welcome / Quick-Start Panel  (shown over viewport when no module is open)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WelcomePanel(QWidget):
+    """
+    Shown in the center when no module is open.
+    Gives the user the three actions needed to start building.
+    """
+
+    new_module_requested  = None   # set by MainWindow after construction
+    open_git_requested    = None
+    open_room_requested   = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:#1e1e1e;")
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(16)
+
+        title = QLabel("GModular")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color:#4ec9b0; font-size:22pt; font-weight:bold;")
+        layout.addWidget(title)
+
+        sub = QLabel("KotOR Module Editor")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setStyleSheet("color:#569cd6; font-size:10pt;")
+        layout.addWidget(sub)
+
+        layout.addSpacing(20)
+
+        step_style = (
+            "QGroupBox { color:#dcdcaa; font-weight:bold; font-size:9pt; "
+            "border:1px solid #3c3c3c; border-radius:4px; margin-top:6px; "
+            "padding:8px; background:#252526; }"
+        )
+        btn_style = (
+            "QPushButton { background:#0e639c; color:#ffffff; border:none; "
+            "border-radius:4px; padding:8px 20px; font-size:10pt; font-weight:bold; }"
+            "QPushButton:hover { background:#1177bb; }"
+        )
+        btn_style2 = (
+            "QPushButton { background:#3a3a3a; color:#d4d4d4; border:1px solid #555; "
+            "border-radius:4px; padding:8px 20px; font-size:9pt; }"
+            "QPushButton:hover { background:#4a4a4a; }"
+        )
+
+        # Step 1
+        grp1 = QGroupBox("Step 1  —  Set Your Game Directory")
+        grp1.setStyleSheet(step_style)
+        g1l = QVBoxLayout(grp1)
+        g1l.addWidget(QLabel(
+            "Go to  Tools › Set Game Directory\n"
+            "and point GModular at your KotOR install folder\n"
+            "(the one containing chitin.key)."))
+        g1l.itemAt(0).widget().setStyleSheet("color:#9cdcfe; font-size:8pt;")
+        layout.addWidget(grp1)
+
+        # Step 2
+        grp2 = QGroupBox("Step 2  —  Create or Open a Module")
+        grp2.setStyleSheet(step_style)
+        g2l = QVBoxLayout(grp2)
+        row = QHBoxLayout()
+        self._btn_new = QPushButton("New Module\u2026")
+        self._btn_new.setStyleSheet(btn_style)
+        self._btn_open = QPushButton("Open .GIT File\u2026")
+        self._btn_open.setStyleSheet(btn_style2)
+        row.addWidget(self._btn_new)
+        row.addSpacing(8)
+        row.addWidget(self._btn_open)
+        row.addStretch()
+        g2l.addLayout(row)
+        note = QLabel("New Module creates a blank module. Open .GIT loads an existing one.")
+        note.setStyleSheet("color:#666; font-size:7pt; margin-top:2px;")
+        g2l.addWidget(note)
+        layout.addWidget(grp2)
+
+        # Step 3
+        grp3 = QGroupBox("Step 3  —  Assemble Rooms")
+        grp3.setStyleSheet(step_style)
+        g3l = QVBoxLayout(grp3)
+        desc = QLabel(
+            "Click the  \u25b6 Room Grid  tab at the bottom of the screen.\n"
+            "Select a room MDL from the palette on the left, then\n"
+            "drag it onto the grid  \u2014  or right-click a grid cell to place it.\n"
+            "Adjacent rooms are automatically connected in the .vis file.\n"
+            "When done, click  Save LYT + VIS\u2026  to write the layout files.")
+        desc.setStyleSheet("color:#9cdcfe; font-size:8pt;")
+        desc.setWordWrap(True)
+        g3l.addWidget(desc)
+        self._btn_room = QPushButton("Open Room Grid Now")
+        self._btn_room.setStyleSheet(btn_style2)
+        g3l.addWidget(self._btn_room)
+        layout.addWidget(grp3)
+
+        layout.addStretch()
+
+    def connect_actions(self, new_cb, open_cb, room_cb):
+        self._btn_new.clicked.connect(new_cb)
+        self._btn_open.clicked.connect(open_cb)
+        self._btn_room.clicked.connect(room_cb)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,6 +218,7 @@ class MainWindow(QMainWindow):
         self._game_dir: Optional[Path] = None
         self._placement_active = False
         self._recent_files: list = []   # populated by _load_settings
+        self._room_panel = None         # set by _build_bottom_tabs
 
         # IPC
         self._gs_bridge = GhostScripterBridge(self)
@@ -192,7 +298,7 @@ class MainWindow(QMainWindow):
 
         self._outer_splitter.addWidget(left_tabs)
 
-        # ── CENTER: Viewport + log ────────────────────────────────────────────
+        # ── CENTER: Stacked widget (Welcome ↔ Viewport) + log ────────────────
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
         center_layout.setContentsMargins(0, 0, 0, 0)
@@ -209,7 +315,15 @@ class MainWindow(QMainWindow):
         self._viewport_header = self._build_viewport_header()
         center_layout.addWidget(self._viewport_header)
 
-        center_layout.addWidget(self._viewport, stretch=3)
+        # Stacked: page 0 = Welcome, page 1 = Viewport
+        self._center_stack = QStackedWidget()
+        self._welcome_panel = WelcomePanel()
+        self._welcome_panel.connect_actions(
+            self.new_module, self.open_git, self._focus_room_tab)
+        self._center_stack.addWidget(self._welcome_panel)   # index 0
+        self._center_stack.addWidget(self._viewport)         # index 1
+        self._center_stack.setCurrentIndex(0)               # show welcome first
+        center_layout.addWidget(self._center_stack, stretch=3)
 
         # Bottom panel: tabbed (log + walkmesh + area props)
         self._bottom_tabs = self._build_bottom_tabs()
@@ -319,16 +433,45 @@ class MainWindow(QMainWindow):
         return bar
 
     def _build_bottom_tabs(self) -> QTabWidget:
-        """Build the bottom panel with Output Log, Walkmesh Editor, and Area Properties tabs."""
+        """Build the bottom panel with Output Log, Room Grid, Walkmesh, and Area Properties tabs."""
         tabs = QTabWidget()
-        tabs.setFixedHeight(150)
+        tabs.setFixedHeight(160)
         tabs.setFont(QFont("Segoe UI", 8))
         tabs.setStyleSheet(
             "QTabWidget::pane { border-top:1px solid #3c3c3c; background:#1e1e1e; }"
             "QTabBar::tab { background:#252526; color:#969696; padding:3px 10px;"
             " border:1px solid #3c3c3c; font-size:8pt; }"
             "QTabBar::tab:selected { background:#1e1e1e; color:#d4d4d4; border-bottom:none; }"
+            "QTabBar::tab:first { color:#4ec9b0; font-weight:bold; }"  # highlight Room Grid
         )
+
+        # ── Room Assembly Grid tab ─────────────────────────────────────────
+        try:
+            from .room_assembly import RoomAssemblyPanel
+            self._room_panel = RoomAssemblyPanel()
+            self._room_panel.lyt_changed.connect(
+                lambda t: self.log(f"LYT updated ({len(t.splitlines())} lines)"))
+            # Populate with game rooms if available
+            try:
+                rm = get_resource_manager()
+                room_names = [r for r in rm.list_resources("mdl")
+                              if len(r) > 4 and not r.startswith("c_")
+                              and not r.startswith("p_")]
+                self._room_panel.set_available_rooms(room_names[:300])
+            except Exception:
+                # Fallback demo rooms so panel is usable before game dir is set
+                self._room_panel.set_available_rooms([
+                    "manm26aa", "manm26ab", "manm26ac", "manm26ad",
+                    "manm26ba", "manm26bb", "manm26bc",
+                    "tarc_m17aa", "tarc_m17ab", "tarc_m17ba",
+                    "tar_m02aa", "tar_m02ab", "tar_m02ba",
+                    "danm14aa", "danm14ab", "danm14ba",
+                ])
+            tabs.addTab(self._room_panel, "\u25b6 Room Grid")
+        except Exception as e:
+            log.warning(f"Room Assembly unavailable: {e}")
+            self._room_panel = None
+            tabs.addTab(QLabel("Room Grid unavailable"), "\u25b6 Room Grid")
 
         # ── Output Log tab ─────────────────────────────────────────────────
         log_widget = QWidget()
@@ -644,7 +787,8 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         sb.setStyleSheet("QStatusBar { background:#007acc; color:white; font-size:8pt; }")
 
-        self._status_main = QLabel("Ready")
+        self._status_main = QLabel(
+            "No module open  —  File › New Module…  or  open the Room Grid tab below")
         self._status_main.setStyleSheet("color:white; padding: 0 8px;")
         sb.addWidget(self._status_main)
 
@@ -902,6 +1046,23 @@ class MainWindow(QMainWindow):
                 self.log(f"  Loaded {len(doors)} doors")
         except Exception as e:
             self.log(f"✗ Asset load error: {e}")
+
+        # Refresh Room Assembly palette with MDL room names from game
+        try:
+            mdl_type = EXT_TO_TYPE.get("mdl", 2002)
+            room_mdls = self._rm.list_resources(mdl_type)
+            # Filter to environment/room meshes (not creature/placeable models)
+            rooms = [r for r in room_mdls
+                     if len(r) > 4
+                     and not r.startswith("c_")
+                     and not r.startswith("p_")
+                     and not r.startswith("w_")
+                     and not r.startswith("i_")]
+            if rooms and self._room_panel:
+                self._room_panel.set_available_rooms(rooms[:400])
+                self.log(f"  Loaded {len(rooms)} room MDLs into Room Grid palette")
+        except Exception:
+            pass  # Room palette update is non-critical
 
     # ── Validation ────────────────────────────────────────────────────────────
 
@@ -1448,9 +1609,26 @@ class MainWindow(QMainWindow):
             self._module_label.setText(
                 f"{state.module_name}{dirty_marker}"
             )
+            # Switch center panel to viewport now that a module is open
+            if self._center_stack.currentIndex() == 0:
+                self._center_stack.setCurrentIndex(1)
+                self.statusBar().showMessage(
+                    "Module loaded — Assets tab: double-click to place  |  "
+                    "Room Grid tab: drag or right-click to assemble rooms", 6000)
         else:
             self.setWindowTitle(f"{APP_NAME}  ·  v{APP_VERSION}")
             self._module_label.setText("No module loaded")
+            # Return to welcome screen when no module is loaded
+            self._center_stack.setCurrentIndex(0)
+
+    def _focus_room_tab(self):
+        """Switch the bottom panel to the Room Grid tab and expand it."""
+        for i in range(self._bottom_tabs.count()):
+            if "Room" in self._bottom_tabs.tabText(i):
+                self._bottom_tabs.setCurrentIndex(i)
+                # Expand bottom area so the grid is usable
+                self._bottom_tabs.setFixedHeight(420)
+                break
 
     def _update_object_count(self):
         state = self._state

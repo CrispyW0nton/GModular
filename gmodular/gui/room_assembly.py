@@ -28,6 +28,7 @@ VIS format (plain text):
 from __future__ import annotations
 import logging
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -119,8 +120,9 @@ class RoomGridWidget(QWidget):
     Supports drop, move, delete, and selection of room instances.
     """
 
-    rooms_changed = pyqtSignal()
-    room_selected = pyqtSignal(object)   # RoomInstance or None
+    rooms_changed   = pyqtSignal()
+    room_selected   = pyqtSignal(object)   # RoomInstance or None
+    request_place_at = pyqtSignal(int, int) # gx, gy — right-click place request
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -286,6 +288,15 @@ class RoomGridWidget(QWidget):
                 return r
         return None
 
+    # ── Keyboard ──────────────────────────────────────────────────────────
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if self._selected:
+                self._delete_room(self._selected)
+        else:
+            super().keyPressEvent(event)
+
     def _context_menu(self, pos: QPoint):
         gx = pos.x() // CELL_SIZE
         gy = pos.y() // CELL_SIZE
@@ -296,12 +307,25 @@ class RoomGridWidget(QWidget):
             "QMenu::item:selected { background:#3c3c3c; }"
         )
         if room:
-            act_del = menu.addAction(f"Remove '{room.mdl_name}'")
+            act_del = menu.addAction(f"\u2715  Remove '{room.mdl_name}'")
             act_del.triggered.connect(lambda: self._delete_room(room))
+            menu.addSeparator()
+            act_rename = menu.addAction("Rename…")
+            act_rename.triggered.connect(lambda: self._rename_room(room))
         else:
-            act_place = menu.addAction("Drop room here from palette")
-            act_place.setEnabled(False)
+            # Right-click on empty cell to place currently-selected palette item
+            act_place = menu.addAction("Place selected room here")
+            act_place.triggered.connect(lambda: self.request_place_at.emit(gx, gy))
         menu.exec_(self.mapToGlobal(pos))
+
+    def _rename_room(self, room: RoomInstance):
+        from PyQt5.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Rename Room", "MDL name:",
+                                        text=room.mdl_name)
+        if ok and name.strip():
+            room.mdl_name = name.strip().lower()
+            self.rooms_changed.emit()
+            self.update()
 
     def _delete_room(self, room: RoomInstance):
         self._rooms.remove(room)
@@ -437,6 +461,7 @@ class RoomAssemblyPanel(QWidget):
         self._grid = RoomGridWidget()
         self._grid.rooms_changed.connect(self._on_rooms_changed)
         self._grid.room_selected.connect(self._on_room_selected)
+        self._grid.request_place_at.connect(self._on_place_at_request)
         scroll.setWidget(self._grid)
         splitter.addWidget(scroll)
 
@@ -469,6 +494,11 @@ class RoomAssemblyPanel(QWidget):
         self._export_vis_btn = QPushButton("Copy VIS Text")
         self._export_vis_btn.clicked.connect(self._copy_vis)
         export_layout.addWidget(self._export_vis_btn)
+
+        self._save_lyt_btn = QPushButton("Save LYT + VIS…")
+        self._save_lyt_btn.setToolTip("Write .lyt and .vis files to your project folder")
+        self._save_lyt_btn.clicked.connect(self._save_lyt_vis)
+        export_layout.addWidget(self._save_lyt_btn)
 
         clear_btn = QPushButton("Clear Grid")
         clear_btn.clicked.connect(self._grid.clear)
@@ -507,6 +537,54 @@ class RoomAssemblyPanel(QWidget):
             self._detail_label.setText(
                 f"{room.mdl_name}\nGrid: ({room.grid_x}, {room.grid_y})\n"
                 f"World: ({room.world_x:.1f}, {room.world_y:.1f})")
+
+    def _on_place_at_request(self, gx: int, gy: int):
+        """Place the palette's currently-selected room at (gx, gy) via right-click."""
+        item = self._palette._list.currentItem()
+        if not item:
+            return
+        mdl_name = item.text().strip()
+        if not mdl_name:
+            return
+        existing = self._grid._room_at(gx, gy)
+        if existing:
+            return
+        room = RoomInstance(
+            mdl_name=mdl_name,
+            grid_x=gx, grid_y=gy,
+            world_x=gx * DEFAULT_ROOM_W,
+            world_y=gy * DEFAULT_ROOM_H,
+        )
+        self._grid._rooms.append(room)
+        self._grid._selected = room
+        self._grid.rooms_changed.emit()
+        self._grid.room_selected.emit(room)
+        self._grid.update()
+
+    def _save_lyt_vis(self):
+        """Write .lyt and .vis files to a user-chosen directory."""
+        from PyQt5.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(
+            self, "Choose folder to save LYT + VIS", "")
+        if not folder:
+            return
+        # Determine base name from first room or default
+        rooms = self._grid.get_rooms()
+        base = rooms[0].mdl_name[:8] if rooms else "module"
+        lyt_path = os.path.join(folder, base + ".lyt")
+        vis_path = os.path.join(folder, base + ".vis")
+        try:
+            with open(lyt_path, "w") as f:
+                f.write(self._grid.generate_lyt().to_text())
+            with open(vis_path, "w") as f:
+                f.write(self._grid.generate_vis_text())
+            log.info(f"Saved LYT: {lyt_path}  VIS: {vis_path}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Saved",
+                f"Saved:\n  {lyt_path}\n  {vis_path}")
+        except Exception as e:
+            log.error(f"Save LYT/VIS failed: {e}")
 
     def _copy_lyt(self):
         lyt = self._grid.generate_lyt()
