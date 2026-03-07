@@ -2388,11 +2388,12 @@ class TestBuildBatPythonVersionGuard(unittest.TestCase):
             "build.bat must install PyQt5")
 
     def test_bat_version_string_updated_to_v14(self):
-        """build.bat header must show v1.4 or higher (version that added the Python guard)."""
+        """build.bat header must show v1.4+ or v2.0+ (version that added the Python guard)."""
         bat = self._read_bat()
         self.assertTrue(
-            any(f"v1.{n}" in bat for n in range(4, 20)),
-            "build.bat must be v1.4 or higher after adding the Python version guard"
+            any(f"v1.{n}" in bat for n in range(4, 20))
+            or any(f"v2.{n}" in bat for n in range(0, 20)),
+            "build.bat must be v1.4 or higher (or v2.x) after adding the Python version guard"
         )
 
 
@@ -2437,11 +2438,12 @@ class TestBuildBatStoreWarning(unittest.TestCase):
             "build.bat must mention setup_python.bat as an alternative")
 
     def test_bat_version_is_v15(self):
-        """build.bat must be v1.5 through v1.8 or higher."""
+        """build.bat must be v1.5+ or v2.0+ (includes py-launcher auto-detect)."""
         bat = self._read_bat()
         self.assertTrue(
-            any(f"v1.{n}" in bat for n in range(5, 20)),
-            "build.bat must show version v1.5 or higher")
+            any(f"v1.{n}" in bat for n in range(5, 20))
+            or any(f"v2.{n}" in bat for n in range(0, 20)),
+            "build.bat must show version v1.5 or higher (or v2.x)")
 
 
 class TestSetupPythonBat(unittest.TestCase):
