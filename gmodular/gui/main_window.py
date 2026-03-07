@@ -87,12 +87,13 @@ class WelcomePanel(QWidget):
 
         layout.addSpacing(20)
 
-        step_style = (
-            "QGroupBox { color:#dcdcaa; font-weight:bold; font-size:9pt; "
-            "border:1px solid #3c3c3c; border-radius:4px; margin-top:6px; "
-            "padding:8px; background:#252526; }"
+        # Card style using QFrame — no QGroupBox dependency
+        card_style = (
+            "QFrame { border:1px solid #3c3c3c; border-radius:4px; "
+            "background:#252526; padding:4px; }"
         )
-        btn_style = (
+        hdr_style  = "color:#dcdcaa; font-weight:bold; font-size:9pt; padding-bottom:2px;"
+        btn_style  = (
             "QPushButton { background:#0e639c; color:#ffffff; border:none; "
             "border-radius:4px; padding:8px 20px; font-size:10pt; font-weight:bold; }"
             "QPushButton:hover { background:#1177bb; }"
@@ -103,21 +104,30 @@ class WelcomePanel(QWidget):
             "QPushButton:hover { background:#4a4a4a; }"
         )
 
+        def _make_card(header_text):
+            """Return (card_frame, inner_vbox_layout) using only QFrame+QLabel."""
+            card = QFrame()
+            card.setStyleSheet(card_style)
+            vbox = QVBoxLayout(card)
+            vbox.setContentsMargins(10, 8, 10, 8)
+            vbox.setSpacing(6)
+            hdr = QLabel(header_text)
+            hdr.setStyleSheet(hdr_style)
+            vbox.addWidget(hdr)
+            return card, vbox
+
         # Step 1
-        grp1 = QGroupBox("Step 1  —  Set Your Game Directory")
-        grp1.setStyleSheet(step_style)
-        g1l = QVBoxLayout(grp1)
-        g1l.addWidget(QLabel(
-            "Go to  Tools › Set Game Directory\n"
+        card1, g1l = _make_card("Step 1  \u2014  Set Your Game Directory")
+        lbl1 = QLabel(
+            "Go to  Tools \u203a Set Game Directory\n"
             "and point GModular at your KotOR install folder\n"
-            "(the one containing chitin.key)."))
-        g1l.itemAt(0).widget().setStyleSheet("color:#9cdcfe; font-size:8pt;")
-        layout.addWidget(grp1)
+            "(the one containing chitin.key).")
+        lbl1.setStyleSheet("color:#9cdcfe; font-size:8pt;")
+        g1l.addWidget(lbl1)
+        layout.addWidget(card1)
 
         # Step 2
-        grp2 = QGroupBox("Step 2  —  Create or Open a Module")
-        grp2.setStyleSheet(step_style)
-        g2l = QVBoxLayout(grp2)
+        card2, g2l = _make_card("Step 2  \u2014  Create or Open a Module")
         row = QHBoxLayout()
         self._btn_new = QPushButton("New Module\u2026")
         self._btn_new.setStyleSheet(btn_style)
@@ -131,12 +141,10 @@ class WelcomePanel(QWidget):
         note = QLabel("New Module creates a blank module. Open .GIT loads an existing one.")
         note.setStyleSheet("color:#666; font-size:7pt; margin-top:2px;")
         g2l.addWidget(note)
-        layout.addWidget(grp2)
+        layout.addWidget(card2)
 
         # Step 3
-        grp3 = QGroupBox("Step 3  —  Assemble Rooms")
-        grp3.setStyleSheet(step_style)
-        g3l = QVBoxLayout(grp3)
+        card3, g3l = _make_card("Step 3  \u2014  Assemble Rooms")
         desc = QLabel(
             "Click the  \u25b6 Room Grid  tab at the bottom of the screen.\n"
             "Select a room MDL from the palette on the left, then\n"
@@ -149,7 +157,7 @@ class WelcomePanel(QWidget):
         self._btn_room = QPushButton("Open Room Grid Now")
         self._btn_room.setStyleSheet(btn_style2)
         g3l.addWidget(self._btn_room)
-        layout.addWidget(grp3)
+        layout.addWidget(card3)
 
         layout.addStretch()
 
@@ -523,7 +531,6 @@ class MainWindow(QMainWindow):
 
     def _build_area_props_tab(self) -> QWidget:
         """Area .ARE properties quick editor."""
-        from PyQt5.QtWidgets import QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox
         widget = QScrollArea()
         widget.setWidgetResizable(True)
         widget.setStyleSheet("QScrollArea { border:none; background:#1e1e1e; }")
