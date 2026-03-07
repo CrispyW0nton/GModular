@@ -1,5 +1,5 @@
 """
-GModular — Self-Hosted IPC Callback Server (port 5003)
+GModular — Self-Hosted IPC Callback Server (port 7003)
 Provides a minimal HTTP REST server so GhostScripter and GhostRigger
 can push events *back* to GModular (compile results, model updates, etc.)
 
@@ -31,7 +31,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 
 log = logging.getLogger(__name__)
 
-GMODULAR_CALLBACK_PORT = 5003
+GMODULAR_CALLBACK_PORT = 7003
 GMODULAR_VERSION = "1.0.0"
 
 
@@ -170,7 +170,7 @@ class _ServerThread(threading.Thread):
 
 class GModularIPCServer(QObject):
     """
-    Hosts the GModular callback HTTP server on port 5003.
+    Hosts the GModular callback HTTP server on port 7003.
     Delivers events to the main thread via Qt signals.
 
     Usage:

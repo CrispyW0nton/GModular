@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
 
         self.log("GModular initialized. Ready.")
         self.log(f"Version {APP_VERSION}  |  KotorModTools Suite")
-        self.log("Suite: GModular ↔ GhostScripter (port 5002) ↔ GhostRigger (port 5001)")
+        self.log("Suite: GModular (7003) ↔ GhostScripter (7002) ↔ GhostRigger (7001)")
         if self._game_dir:
             self.log(f"Game directory: {self._game_dir}")
 
@@ -222,7 +222,16 @@ class MainWindow(QMainWindow):
         self._inspector.setMinimumWidth(220)
         self._inspector.setMaximumWidth(340)
         self._inspector.property_changed.connect(self._on_property_changed)
+        # P4: patrol path signals
+        self._inspector.request_patrol_click.connect(self._on_patrol_click_requested)
+        self._inspector.patrol_path_changed.connect(self._on_patrol_path_changed)
+        # P9: blueprint IPC signal
+        self._inspector.open_in_rigger.connect(self._on_open_in_rigger)
+        # Give inspector access to state for patrol editor
+        self._inspector.set_state(self._state)
         self._outer_splitter.addWidget(self._inspector)
+        # Track patrol placement mode
+        self._patrol_placement_creature = None
 
         self._outer_splitter.setSizes([240, 900, 280])
         self._outer_splitter.setStretchFactor(1, 1)
@@ -559,7 +568,13 @@ class MainWindow(QMainWindow):
         mm.addAction(self._action("Module Properties…", self._show_module_props))
         mm.addSeparator()
         mm.addAction(self._action("Validate",      self._validate_module))
+        mm.addAction(self._action("Validate Module (Full Report)", self._open_validation_report))
+        mm.addSeparator()
+        mm.addAction(self._action("Pack Module (.MOD)...", self._open_mod_packager))
+        mm.addSeparator()
         mm.addAction(self._action("Export .GIT",   self._save_module))
+        mm.addSeparator()
+        mm.addAction(self._action("Room Assembly Grid", self._open_room_assembly))
 
         # Tools
         tm = mb.addMenu("Tools")
@@ -964,6 +979,16 @@ class MainWindow(QMainWindow):
 
     def _on_object_placed(self, obj):
         """Called when an object is successfully placed."""
+        # P4: If in patrol placement mode, route the position to inspector
+        if getattr(obj, "resref", "") == "__patrol__" or self._patrol_placement_creature is not None:
+            if self._patrol_placement_creature is not None:
+                x, y, z = getattr(obj, "x", 0), getattr(obj, "y", 0), getattr(obj, "z", 0)
+                self._inspector.add_patrol_waypoint_at(x, y, z)
+                self._patrol_placement_creature = None
+                self._viewport.set_placement_mode(False)
+                self._mode_label.setText("EDIT MODE")
+                self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
+                return
         self._placement_active = False
         self._viewport.set_placement_mode(False)
         self._mode_label.setText("EDIT MODE")
@@ -991,18 +1016,137 @@ class MainWindow(QMainWindow):
     def _on_property_changed(self, obj, attr: str, old, new):
         """Called when Inspector edits a field."""
         if attr == "_open_script":
-            # Special: open script in GhostScripter
-            self._gs_bridge.open_script(str(new))
-            self.log(f"→ Opening {new} in GhostScripter…")
+            # P7: open script in GhostScripter
+            if new:
+                self._gs_bridge.open_script(str(new))
+                self.log(f"→ Opening {new} in GhostScripter…")
+            else:
+                self.log("⚠ No script assigned to this field")
         elif attr == "_compile_script":
             game = self._state.project.game if self._state.project else "K1"
             self._gs_bridge.compile_script(str(new), game)
             self.log(f"→ Compiling {new}…")
+        elif attr == "_open_in_rigger":
+            # P9: handled by open_in_rigger signal
+            pass
         else:
             self._state._dirty = True
             self.log(f"  Edit: {attr} = {new!r}")
 
     # ── IPC ───────────────────────────────────────────────────────────────────
+
+    # ── P6: Module Packager ───────────────────────────────────────────────────
+
+    def _open_mod_packager(self):
+        """Open the MOD Packager dialog."""
+        try:
+            from .mod_packager_dialog import ModPackagerDialog
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Packager unavailable: {e}")
+            return
+        module_name = self._state.module_name or "unnamed"
+        module_dir = ""
+        if self._state.project:
+            module_dir = str(self._state.project.module_dir)
+        elif self._game_dir:
+            module_dir = str(self._game_dir / "Modules")
+        dlg = ModPackagerDialog(
+            parent=self,
+            module_name=module_name,
+            module_dir=module_dir,
+            git=self._state.git,
+            are=self._state.are,
+            ifo=self._state.ifo,
+            game_dir=str(self._game_dir) if self._game_dir else "",
+        )
+        dlg.pack_complete.connect(lambda path: self.log(f"✓ Module packed: {path}"))
+        dlg.exec_()
+
+    def _open_validation_report(self):
+        """Open the full validation report dialog."""
+        try:
+            from .mod_packager_dialog import ModPackagerDialog
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Validation unavailable: {e}")
+            return
+        module_name = self._state.module_name or "unnamed"
+        module_dir = ""
+        if self._state.project:
+            module_dir = str(self._state.project.module_dir)
+        dlg = ModPackagerDialog(
+            parent=self,
+            module_name=module_name,
+            module_dir=module_dir,
+            git=self._state.git,
+            are=self._state.are,
+            ifo=self._state.ifo,
+            game_dir=str(self._game_dir) if self._game_dir else "",
+        )
+        dlg._run_validate()
+        dlg.exec_()
+
+    def _open_room_assembly(self):
+        """Open the Room Assembly Grid as a floating dialog."""
+        try:
+            from .room_assembly import RoomAssemblyPanel
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Room Assembly unavailable: {e}")
+            return
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Room Assembly Grid")
+        dlg.setMinimumSize(960, 600)
+        layout = QVBoxLayout(dlg)
+        panel = RoomAssemblyPanel(dlg)
+        panel.lyt_changed.connect(lambda t: self.log(f"LYT updated ({len(t)} chars)"))
+        try:
+            rm = get_resource_manager()
+            room_names = [r for r in rm.list_resources("mdl")
+                          if len(r) > 4 and not r.startswith("c_") and not r.startswith("p_")]
+            panel.set_available_rooms(room_names[:200])
+        except Exception:
+            panel.set_available_rooms([
+                "manm26aa", "manm26ab", "manm26ac", "manm26ad",
+                "tarc_m17aa", "tarc_m17ab", "tar_m02aa",
+            ])
+        layout.addWidget(panel)
+        dlg.exec_()
+
+    # ── P9: Blueprint IPC ─────────────────────────────────────────────────────
+
+    def _on_open_in_rigger(self, resref: str, ext: str, module_dir: str):
+        """P9: Relay inspector's 'Edit in GhostRigger' to the IPC bridge."""
+        self.log(f"→ Opening {resref}.{ext} in GhostRigger…")
+        ok = self._gr_bridge.open_blueprint(resref, ext, module_dir)
+        if not ok:
+            self.log(f"  ⚠ GhostRigger not connected — {resref}.{ext} cannot be opened remotely")
+            QMessageBox.information(
+                self,
+                "GhostRigger Not Connected",
+                f"GhostRigger is not running.\n\n"
+                f"Start GhostRigger, then try again.\n"
+                f"Port: 7001  |  Resource: {resref}.{ext}"
+            )
+
+    # ── P4: Patrol Waypoint Linker ────────────────────────────────────────────
+
+    def _on_patrol_click_requested(self, creature):
+        """P4: Inspector wants a floor-click to place a patrol waypoint."""
+        self._patrol_placement_creature = creature
+        self._viewport.set_placement_mode(True, "__patrol__", "waypoint")
+        tag = getattr(creature, "tag", "?")
+        self._mode_label.setText(f"PATROL MODE  [ Click floor to place waypoint for {tag!r} ]")
+        self._mode_label.setStyleSheet("color:#ffcc44; font-weight:bold; font-size:8pt;")
+        self.log(f"Patrol mode: click viewport floor to add waypoint for {tag!r}")
+
+    def _on_patrol_path_changed(self, creature, waypoints: list):
+        """P4: Patrol path changed — update viewport overlay."""
+        positions = [(w.x, w.y, w.z) for w in waypoints]
+        tag = getattr(creature, "tag", "?")
+        if hasattr(self._viewport, "set_patrol_path"):
+            self._viewport.set_patrol_path(tag, positions)
+        self.log(f"Patrol: {tag} — {len(waypoints)} waypoints")
+
 
     def _on_object_selected_from_outline(self, obj):
         """Called when user selects in scene outline (sync to viewport)."""
