@@ -736,6 +736,8 @@ class MainWindow(QMainWindow):
 
         # Help
         hm = mb.addMenu("Help")
+        hm.addAction(self._action("How To Build a Module", self._print_howto_guide))
+        hm.addSeparator()
         hm.addAction(self._action("About GModular", self._show_about))
 
     def _action(self, text: str, slot, shortcut: str = "") -> QAction:
@@ -916,6 +918,7 @@ class MainWindow(QMainWindow):
         self._file_watcher.watch(project_dir)
         self.log(f"✓ Created module: {data['name']} ({data['game']})")
         self.log(f"  ResRef: {data['resref']}  |  Path: {project_dir}")
+        self._print_howto_guide()
 
     def open_git(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1601,6 +1604,74 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _print_howto_guide(self):
+        """Print a concise how-to-build guide to the Output Log."""
+        lines = [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "  HOW TO BUILD A MODULE IN GMODULAR",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "  STEP 1 — ASSEMBLE ROOMS (Room Grid tab, bottom panel)",
+            "    • Click the 'Room Grid' tab at the bottom of the screen.",
+            "    • The left palette lists every .mdl room from your game dir.",
+            "    • Drag a room name from the palette onto a grid cell, OR",
+            "      right-click a cell and choose 'Place room here'.",
+            "    • Repeat for each room tile you need.",
+            "    • Adjacent rooms are auto-connected in the .vis export.",
+            "    • Click 'Save LYT + VIS...' to write layout files to disk.",
+            "",
+            "  STEP 2 — PLACE OBJECTS (Asset Palette, left panel)",
+            "    • Click the 'Assets' tab on the left.",
+            "    • Double-click any Placeable / Creature / Door to enter",
+            "      PLACE MODE (orange banner appears).",
+            "    • Click anywhere in the 3-D viewport to drop the object.",
+            "    • Repeat for every object in your module.",
+            "",
+            "  STEP 3 — INSPECT & EDIT (Inspector, right panel)",
+            "    • Click any object in the viewport or Scene Outline to select.",
+            "    • The Inspector shows Tag, ResRef, Position, Bearing etc.",
+            "    • Edit fields directly; changes are tracked for undo (Ctrl+Z).",
+            "    • The pencil icon next to script fields opens GhostScripter.",
+            "    • 'Edit in GhostRigger' opens the blueprint for that object.",
+            "",
+            "  STEP 4 — MOVE OBJECTS (Gimbal, 3-D Viewport)",
+            "    • Select an object — three colour arrows appear on it:",
+            "        Red   = X axis   Green = Y axis   Blue = Z axis",
+            "        Yellow dashed ring = Rotate around Z",
+            "    • Left-click and drag an arrow to translate along that axis.",
+            "    • Drag the ring to rotate.",
+            "    • Hold Ctrl while dragging  → snap to 1.0 u grid.",
+            "    • Hold Shift while dragging → snap to 0.25 u (fine).",
+            "    • Hold Ctrl+Shift           → snap to 0.5 u (medium).",
+            "    • Press F to frame-all; Delete to remove selected object.",
+            "",
+            "  STEP 5 — SAVE (Ctrl+S  or  File > Save GIT)",
+            "    • Saves the .git file (and .ifo) to your project folder.",
+            "    • Autosave runs every 2 minutes while the module is open.",
+            "",
+            "  STEP 6 — VALIDATE & PACK (.MOD export)",
+            "    • Module > Pack Module (.MOD)... — opens the Packager dialog.",
+            "    • The Packager validates tag uniqueness, resref lengths,",
+            "      script presence, door links, and patrol waypoints.",
+            "    • Fix any errors shown, then click 'Pack' to write the .MOD.",
+            "    • Copy the resulting .MOD into KotOR's Modules/ folder to test.",
+            "",
+            "  KEYBOARD SHORTCUTS",
+            "    Ctrl+S  Save    Ctrl+Z  Undo    Ctrl+Y  Redo",
+            "    F       Frame all objects in viewport",
+            "    Delete  Remove selected object",
+            "    Escape  Cancel placement / cancel gizmo drag",
+            "    Ctrl    Snap 1.0 u  |  Shift  Snap 0.25 u  |  Ctrl+Shift  0.5 u",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "  TIP: You can re-read this guide any time via Help > How To Build",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+        for line in lines:
+            self.log(line)
 
     def log(self, message: str):
         if hasattr(self, "_output_log"):
