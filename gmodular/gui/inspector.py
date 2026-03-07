@@ -1,7 +1,10 @@
 """
 GModular — Inspector Panel
 Displays and edits properties of selected GIT objects.
-Updates the underlying GITPlaceable/GITCreature/GITDoor in real-time.
+
+P7 — each script ResRef field has a pencil icon button (opens in GhostScripter).
+P9 — "Edit in GhostRigger" button for Creature, Placeable, Door.
+P4 — PatrolPathEditor embedded in creature inspector.
 """
 from __future__ import annotations
 import logging
@@ -20,6 +23,14 @@ from ..formats.gff_types import (
     GITPlaceable, GITCreature, GITDoor, GITWaypoint,
     GITTrigger, GITSoundObject, GITStoreObject,
 )
+
+# Lazy import to avoid circular imports at class-definition time
+def _get_patrol_editor_class():
+    try:
+        from .patrol_editor import PatrolPathEditor
+        return PatrolPathEditor
+    except Exception:
+        return None
 
 log = logging.getLogger(__name__)
 
@@ -92,15 +103,25 @@ class InspectorPanel(QWidget):
     """
     Right-side inspector panel.
     Shows editable properties for any selected GIT object.
+
+    P7: each script field has a pencil icon button (opens in GhostScripter).
+    P9: "Edit in GhostRigger" button for Creature, Placeable, Door.
+    P4: PatrolPathEditor section for Creature.
     """
 
-    property_changed = pyqtSignal(object, str, object, object)  # obj, attr, old, new
+    property_changed     = pyqtSignal(object, str, object, object)  # obj, attr, old, new
+    open_in_rigger       = pyqtSignal(str, str, str)     # P9: resref, ext, module_dir
+    request_patrol_click = pyqtSignal(object)            # P4: creature object
+    patrol_path_changed  = pyqtSignal(object, list)      # P4: creature, [GITWaypoint]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._obj = None
         self._scripts: list = []
-        self._building = False  # suppress signals during rebuild
+        self._state = None           # ModuleState, set by MainWindow
+        self._module_dir: str = ""
+        self._building = False       # suppress signals during rebuild
+        self._patrol_editor = None   # current PatrolPathEditor if any
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -141,11 +162,38 @@ class InspectorPanel(QWidget):
         self._compile_btn.hide()
         actions_layout.addWidget(self._compile_btn)
 
+        # P9: Edit in GhostRigger button
+        self._edit_in_rigger_btn = QPushButton("Edit Blueprint in GhostRigger")
+        self._edit_in_rigger_btn.setToolTip(
+            "Open this object's blueprint (.utc/.utp/.utd) in GhostRigger for editing")
+        self._edit_in_rigger_btn.setStyleSheet(
+            "QPushButton { background:#1a3a5a; color:#9cdcfe; "
+            "border:1px solid #2a5a8a; border-radius:3px; padding:4px; }"
+            "QPushButton:hover { background:#2a5a8a; }")
+        self._edit_in_rigger_btn.clicked.connect(self._open_in_ghostrigger)
+        self._edit_in_rigger_btn.hide()
+        actions_layout.addWidget(self._edit_in_rigger_btn)
+
         layout.addWidget(self._actions_frame)
 
         self._show_empty()
 
     # ── Public API ──────────────────────────────────────────────────────────
+
+    def set_state(self, state):
+        """Set the ModuleState reference (for patrol editor)."""
+        self._state = state
+
+    def set_module_dir(self, module_dir: str):
+        """Set the module directory (for P9 IPC payload)."""
+        self._module_dir = module_dir or ""
+
+    def add_patrol_waypoint_at(self, x: float, y: float, z: float):
+        """P4: Called by MainWindow when user clicks floor for patrol waypoint."""
+        if self._patrol_editor is not None:
+            self._patrol_editor.add_waypoint_at(x, y, z)
+            if hasattr(self._patrol_editor, 'cancel_placement'):
+                self._patrol_editor.cancel_placement()
 
     def set_scripts(self, scripts: list):
         """Update script dropdown options from GhostScripter IPC."""
@@ -177,6 +225,8 @@ class InspectorPanel(QWidget):
         self._content_layout.addStretch()
         self._open_script_btn.hide()
         self._compile_btn.hide()
+        self._edit_in_rigger_btn.hide()
+        self._patrol_editor = None
 
     def _rebuild(self):
         obj = self._obj
@@ -210,6 +260,10 @@ class InspectorPanel(QWidget):
             self._build_store(obj)
         else:
             self._type_label.setText(type(obj).__name__)
+
+        # P9: show "Edit in GhostRigger" for blueprint types
+        has_bp = isinstance(obj, (GITCreature, GITPlaceable, GITDoor))
+        self._edit_in_rigger_btn.setVisible(has_bp)
 
         self._content_layout.addStretch()
         self._building = False
@@ -420,22 +474,49 @@ class InspectorPanel(QWidget):
 
         self._content_layout.addWidget(grp)
 
+    def _pencil_btn(self, attr: str, obj) -> QPushButton:
+        """P7: Pencil button that opens a script field in GhostScripter."""
+        btn = QPushButton("✏")
+        btn.setFixedWidth(22)
+        btn.setFixedHeight(22)
+        btn.setToolTip("Open this script in GhostScripter")
+        btn.setStyleSheet(
+            "QPushButton { background:#1a3a1a; color:#4ec9b0; "
+            "border:1px solid #2a6a2a; border-radius:2px; font-size:9pt; padding:0; }"
+            "QPushButton:hover { background:#2a5a2a; }"
+        )
+        def on_clicked(checked=False, _attr=attr, _obj=obj):
+            val = getattr(_obj, _attr, "")
+            self.property_changed.emit(_obj, "_open_script", None, val or "")
+        btn.clicked.connect(on_clicked)
+        return btn
+
     def _build_scripts_section(self, obj, script_attrs: list):
-        """Build Scripts section with a combo per event."""
+        """Build Scripts section with P7 pencil icons per event."""
         grp = QGroupBox("Scripts")
         grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
-        form = QFormLayout(grp)
-        form.setLabelAlignment(Qt.AlignRight)
-        form.setContentsMargins(8, 8, 8, 8)
-        form.setSpacing(4)
+        vbox = QVBoxLayout(grp)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(3)
 
         for attr, label in script_attrs:
             val   = getattr(obj, attr, "")
             combo = self._script_combo(val)
             self._connect_script(combo, obj, attr)
-            form.addRow(label + ":", combo)
 
-            # Show action buttons if any script is assigned
+            # P7: row = label + combo + pencil btn
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(2)
+            lbl = QLabel(f"{label}:")
+            lbl.setStyleSheet("color:#969696; font-size:8pt;")
+            lbl.setFixedWidth(90)
+            row_l.addWidget(lbl)
+            row_l.addWidget(combo, 1)
+            row_l.addWidget(self._pencil_btn(attr, obj))
+            vbox.addWidget(row_w)
+
             if val:
                 self._open_script_btn.show()
                 self._compile_btn.show()
@@ -477,6 +558,7 @@ class InspectorPanel(QWidget):
             ("on_spawn",             "OnSpawn"),
         ]
         self._build_scripts_section(obj, script_events)
+        self._build_patrol_section(obj)
 
     def _build_door(self, obj: GITDoor):
         self._build_common(obj)
@@ -553,6 +635,23 @@ class InspectorPanel(QWidget):
         self._build_common(obj)
         self._build_position(obj)
         # No scripts for ambient sounds in KotOR GIT
+        pass
+
+    def _build_patrol_section(self, obj: GITCreature):
+        """P4: Embed the patrol waypoint linker in creature inspector."""
+        PatrolPathEditor = _get_patrol_editor_class()
+        if PatrolPathEditor is None:
+            return
+        grp = QGroupBox("Patrol Path")
+        grp.setStyleSheet("QGroupBox { color:#dcdcaa; font-weight:bold; }")
+        layout = QVBoxLayout(grp)
+        layout.setContentsMargins(6, 8, 6, 6)
+        editor = PatrolPathEditor(obj, state=self._state, parent=grp)
+        editor.path_changed.connect(self.patrol_path_changed)
+        editor.request_click_placement.connect(self.request_patrol_click)
+        self._patrol_editor = editor
+        layout.addWidget(editor)
+        self._content_layout.addWidget(grp)
 
     def _build_store(self, obj: GITStoreObject):
         self._build_common(obj)
@@ -592,3 +691,25 @@ class InspectorPanel(QWidget):
             return
         log.info(f"Request: compile {script}")
         self.property_changed.emit(self._obj, "_compile_script", None, script)
+
+    # ── GhostRigger integration (P9) ─────────────────────────────────────────
+
+    def _open_in_ghostrigger(self):
+        """P9: Open the selected object's blueprint in GhostRigger."""
+        obj = self._obj
+        if obj is None:
+            return
+        resref = getattr(obj, "resref", "").strip()
+        if not resref:
+            return
+        if isinstance(obj, GITCreature):
+            ext = "utc"
+        elif isinstance(obj, GITPlaceable):
+            ext = "utp"
+        elif isinstance(obj, GITDoor):
+            ext = "utd"
+        else:
+            return
+        log.info(f"P9: open {resref}.{ext} in GhostRigger")
+        self.open_in_rigger.emit(resref, ext, self._module_dir)
+        self.property_changed.emit(obj, "_open_in_rigger", None, (resref, ext))

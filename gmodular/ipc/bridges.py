@@ -1,10 +1,15 @@
 """
 GModular — IPC Bridges
-HTTP REST communication with GhostScripter (port 5002) and GhostRigger (port 5001).
+HTTP REST communication with GhostScripter (port 7002) and GhostRigger (port 7001).
 Architecture mirrors GhostScripter's own GhostRiggerBridge:
   - Background daemon thread handles all HTTP I/O
   - Qt signals deliver results back to main thread
   - Drain timer (50ms) empties result queue — never blocks UI
+
+Port contract (GHOSTWORKS BLUEPRINT v1.0):
+  GhostRigger    port 7001 — receives asset-edit requests
+  GhostScripter  port 7002 — receives script/dlg requests
+  GModular       port 7003 — receives refresh/update calls
 """
 from __future__ import annotations
 import logging
@@ -24,10 +29,10 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
-# IPC configuration (matches GhostScripter / GhostRigger)
-GHOSTSCRIPTER_PORT = 5002
-GHOSTRIGGER_PORT   = 5001
-GMODULAR_PORT      = 5003   # GModular's own callback server
+# IPC configuration — GHOSTWORKS BLUEPRINT fixed ports (do not change)
+GHOSTSCRIPTER_PORT = 7002
+GHOSTRIGGER_PORT   = 7001
+GMODULAR_PORT      = 7003   # GModular's own callback server
 
 POLL_INTERVAL_S    = 8.0
 CONNECT_TIMEOUT    = 0.5
@@ -35,7 +40,7 @@ REQUEST_TIMEOUT    = 3.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  GhostScripter Bridge  (port 5002)
+#  GhostScripter Bridge  (port 7002)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _GhostScripterPollWorker(threading.Thread):
@@ -210,7 +215,7 @@ class GhostScripterBridge(QObject):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  GhostRigger Bridge  (port 5001)
+#  GhostRigger Bridge  (port 7001)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -351,6 +356,52 @@ class GhostRiggerBridge(QObject):
         except Exception as e:
             self.rig_error.emit(str(e))
             return False
+
+    # ── P9: Blueprint IPC (open_utc / open_utp / open_utd) ──────────────────
+
+    def open_blueprint(self, resref: str, blueprint_type: str,
+                       module_dir: str = "") -> bool:
+        """
+        P9 — Ask GhostRigger to open a blueprint for editing.
+
+        blueprint_type: "utc", "utp", or "utd"
+        Payload matches GHOSTWORKS BLUEPRINT IPC spec:
+          POST /api/open_utc  {"resref": "...", "module_dir": "..."}
+          POST /api/open_utp  {...}
+          POST /api/open_utd  {...}
+        """
+        if not self._fg:
+            log.debug("GhostRigger not connected — blueprint open skipped")
+            return False
+        ext = blueprint_type.lower().strip(".")
+        endpoint = f"http://localhost:{GHOSTRIGGER_PORT}/api/open_{ext}"
+        try:
+            r = self._fg.post(
+                endpoint,
+                json={"resref": resref, "module_dir": module_dir},
+                timeout=REQUEST_TIMEOUT,
+            )
+            ok = r.status_code == 200
+            if ok:
+                log.info(f"GhostRigger: opened {resref}.{ext}")
+            else:
+                log.debug(f"GhostRigger: {endpoint} returned {r.status_code}")
+            return ok
+        except Exception as e:
+            log.debug(f"GhostRigger open_blueprint error: {e}")
+            return False
+
+    def open_utc(self, resref: str, module_dir: str = "") -> bool:
+        """Open a creature blueprint (.utc) in GhostRigger."""
+        return self.open_blueprint(resref, "utc", module_dir)
+
+    def open_utp(self, resref: str, module_dir: str = "") -> bool:
+        """Open a placeable blueprint (.utp) in GhostRigger."""
+        return self.open_blueprint(resref, "utp", module_dir)
+
+    def open_utd(self, resref: str, module_dir: str = "") -> bool:
+        """Open a door blueprint (.utd) in GhostRigger."""
+        return self.open_blueprint(resref, "utd", module_dir)
 
     def get_models(self) -> List[Dict]:
         if not self._is_connected or not self._fg:
