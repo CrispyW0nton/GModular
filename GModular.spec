@@ -17,11 +17,21 @@ NOTE on moderngl:
 NOTE on Python version:
     PyQt5 wheels exist for Python 3.8 – 3.12 only.
     Do NOT use Python 3.13 or 3.14.  Use Python 3.12.
+
+KEY FIX (v2.1):
+    Use collect_all('PyQt5') instead of bare hiddenimports for PyQt5.
+    On Windows the frozen EXE needs the full PyQt5 hook to copy Qt DLLs,
+    Qt plugins (platforms/, styles/, imageformats/), and the sip bindings.
+    A bare hiddenimport of "PyQt5.QtWidgets" does NOT trigger those hooks,
+    which causes NameError for QGroupBox and friends at startup.
 """
 
 import sys
 import importlib.util
 from pathlib import Path
+
+# PyInstaller built-ins (collect_all, collect_submodules, collect_data_files)
+from PyInstaller.utils.hooks import collect_all, collect_submodules   # noqa: F821
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE = Path(SPECPATH)   # noqa: F821  (PyInstaller built-in)
@@ -37,14 +47,24 @@ print(f"[spec] PyOpenGL  : {'YES' if _has_pyopengl else 'NO'}")
 print(f"[spec] flask     : {'YES' if _has_flask    else 'NO (optional — skipped)'}")
 print(f"[spec] watchdog  : {'YES' if _has_watchdog else 'NO (optional — skipped)'}")
 
+# ── Collect PyQt5 via hooks (THE critical fix) ────────────────────────────────
+# collect_all() runs PyInstaller's bundled hook for PyQt5, which:
+#   1. Copies all Qt DLLs (Qt5Core.dll, Qt5Gui.dll, Qt5Widgets.dll, ...)
+#   2. Copies Qt plugins (platforms/qwindows.dll, styles/, imageformats/)
+#   3. Copies all PyQt5 .pyd/.so bindings (QtWidgets, QtCore, QtGui, sip, ...)
+# Without this, QGroupBox / any widget class raises NameError in the frozen EXE.
+_pyqt5_datas, _pyqt5_binaries, _pyqt5_hiddenimports = collect_all("PyQt5")
+
 # ── Data files bundled into the EXE ─────────────────────────────────────────
-datas = []
+datas = list(_pyqt5_datas)   # start with PyQt5 data (Qt plugins, translations)
 if (HERE / "assets").exists():
     datas.append((str(HERE / "assets"), "assets"))
 if (HERE / "resources").exists():
     datas.append((str(HERE / "resources"), "resources"))
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
+# NOTE: The regex in tests/test_module_state.py::TestSpecHiddenImports
+# scans this literal list for required entries — keep all GModular imports here.
 hidden_imports = [
     # ── GModular package ──────────────────────────────────────────────────
     "gmodular",
@@ -77,14 +97,14 @@ hidden_imports = [
     "gmodular.ipc.callback_server",
     "gmodular.utils",
     "gmodular.utils.resource_manager",
-    # ── PyQt5 ────────────────────────────────────────────────────────────
+    # ── PyQt5 explicit (belt-and-suspenders on top of collect_all) ────────
     "PyQt5",
     "PyQt5.QtWidgets",
     "PyQt5.QtCore",
     "PyQt5.QtGui",
     "PyQt5.QtOpenGL",
-    "PyQt5.QtPrintSupport",   # needed for print dialogs on Windows
-    "PyQt5.sip",              # correct name (not bare 'sip')
+    "PyQt5.QtPrintSupport",
+    "PyQt5.sip",
     # ── numpy ────────────────────────────────────────────────────────────
     "numpy",
     "numpy.core",
@@ -96,6 +116,8 @@ hidden_imports = [
     "charset_normalizer",
     "idna",
 ]
+# Merge in the full PyQt5 hook hidden imports (collected above via collect_all)
+hidden_imports += [h for h in _pyqt5_hiddenimports if h not in hidden_imports]
 
 # Optional: moderngl (preferred GL backend)
 if _has_moderngl:
@@ -161,7 +183,7 @@ _icon_arg = _icon if (HERE / "assets" / "icons" / "gmodular.ico").exists() else 
 a = Analysis(
     [str(HERE / "main.py")],
     pathex=[str(HERE)],
-    binaries=[],
+    binaries=list(_pyqt5_binaries),   # Qt DLLs from collect_all hook
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],
