@@ -331,11 +331,21 @@ class MainWindow(QMainWindow):
         self._center_stack.addWidget(self._welcome_panel)   # index 0
         self._center_stack.addWidget(self._viewport)         # index 1
         self._center_stack.setCurrentIndex(0)               # show welcome first
-        center_layout.addWidget(self._center_stack, stretch=3)
 
         # Bottom panel: tabbed (log + walkmesh + area props)
         self._bottom_tabs = self._build_bottom_tabs()
-        center_layout.addWidget(self._bottom_tabs)
+
+        # Vertical splitter between viewport area and bottom tabs —
+        # lets the user drag the divider to resize the Room Grid panel.
+        self._center_vsplitter = QSplitter(Qt.Vertical)
+        self._center_vsplitter.setHandleWidth(4)
+        self._center_vsplitter.setChildrenCollapsible(False)
+        self._center_vsplitter.addWidget(self._center_stack)   # top: 3D view
+        self._center_vsplitter.addWidget(self._bottom_tabs)    # bottom: tabs
+        self._center_vsplitter.setSizes([600, 200])            # sensible default
+        self._center_vsplitter.setStretchFactor(0, 3)          # viewport gets more space
+        self._center_vsplitter.setStretchFactor(1, 1)
+        center_layout.addWidget(self._center_vsplitter, stretch=1)
 
         self._outer_splitter.addWidget(center_widget)
 
@@ -443,7 +453,7 @@ class MainWindow(QMainWindow):
     def _build_bottom_tabs(self) -> QTabWidget:
         """Build the bottom panel with Output Log, Room Grid, Walkmesh, and Area Properties tabs."""
         tabs = QTabWidget()
-        tabs.setFixedHeight(160)
+        tabs.setMinimumHeight(120)
         tabs.setFont(QFont("Segoe UI", 8))
         tabs.setStyleSheet(
             "QTabWidget::pane { border-top:1px solid #3c3c3c; background:#1e1e1e; }"
@@ -1704,8 +1714,16 @@ class MainWindow(QMainWindow):
         for i in range(self._bottom_tabs.count()):
             if "Room" in self._bottom_tabs.tabText(i):
                 self._bottom_tabs.setCurrentIndex(i)
-                # Expand bottom area so the grid is usable
-                self._bottom_tabs.setFixedHeight(420)
+                # Expand bottom area via the vertical splitter so the
+                # Room Grid is usable (user can still resize afterwards).
+                try:
+                    total = self._center_vsplitter.height()
+                    if total > 0:
+                        bottom = max(420, total // 2)
+                        top = max(200, total - bottom)
+                        self._center_vsplitter.setSizes([top, bottom])
+                except Exception:
+                    pass
                 break
 
     def _update_object_count(self):
