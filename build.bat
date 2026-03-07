@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v1.7
+echo  GModular Build Script  v1.9
 echo  KotOR Module Editor  ^|  Produces: dist\GModular.exe
 echo ============================================================
 echo.
