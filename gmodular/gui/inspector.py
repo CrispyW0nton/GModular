@@ -33,6 +33,13 @@ def _section_label(text: str) -> QLabel:
     return lbl
 
 
+def _make_hwidget(layout: QHBoxLayout) -> QWidget:
+    """Wrap a QHBoxLayout in a plain QWidget for use in QFormLayout rows."""
+    w = QWidget()
+    w.setLayout(layout)
+    return w
+
+
 def _form_row(label: str, widget: QWidget) -> QHBoxLayout:
     row = QHBoxLayout()
     lbl = QLabel(label + ":")
@@ -343,8 +350,23 @@ class InspectorPanel(QWidget):
 
         has_bearing = hasattr(obj, "bearing")
         if has_bearing:
-            br = self._spin(obj.bearing, minimum=-7.0, maximum=7.0, decimals=4, step=0.1)
-            form.addRow("Bearing (rad):", br)
+            import math as _math
+            # Show bearing in DEGREES (0-360) for human readability.
+            # Radians stored internally; convert on input/output.
+            deg_val = _math.degrees(obj.bearing) % 360.0
+            br = self._spin(deg_val, minimum=0.0, maximum=360.0, decimals=1, step=5.0)
+            br.setSuffix("°")
+            form.addRow("Rotation (deg):", br)
+            # Preset buttons for cardinal directions
+            card_row = QHBoxLayout()
+            for label, angle in (("N", 180.0), ("E", 270.0), ("S", 0.0), ("W", 90.0)):
+                btn = QPushButton(label)
+                btn.setFixedWidth(30)
+                btn.setFixedHeight(22)
+                btn.setStyleSheet("font-size:8pt; padding:0;")
+                btn.clicked.connect(lambda _, a=angle: br.setValue(a))
+                card_row.addWidget(btn)
+            form.addRow("Cardinal:", _make_hwidget(card_row))
         else:
             br = None
 
@@ -379,18 +401,21 @@ class InspectorPanel(QWidget):
             def on_bearing(val):
                 if self._building:
                     return
+                import math as _math
+                # Convert degrees → radians for storage
+                rad_val = _math.radians(val)
                 try:
                     from ..core.module_state import get_module_state, RotateObjectCommand
                     old = obj.bearing
-                    if abs(old - val) > 1e-6:
+                    if abs(old - rad_val) > 1e-6:
                         state = get_module_state()
-                        cmd = RotateObjectCommand(obj, old, val)
+                        cmd = RotateObjectCommand(obj, old, rad_val)
                         state.execute(cmd)
-                        self.property_changed.emit(obj, "bearing", old, val)
+                        self.property_changed.emit(obj, "bearing", old, rad_val)
                 except Exception:
                     old = obj.bearing
-                    obj.bearing = val
-                    self.property_changed.emit(obj, "bearing", old, val)
+                    obj.bearing = rad_val
+                    self.property_changed.emit(obj, "bearing", old, rad_val)
             br.editingFinished.connect(lambda: on_bearing(br.value()))
 
         self._content_layout.addWidget(grp)

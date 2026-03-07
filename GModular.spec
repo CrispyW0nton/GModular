@@ -66,6 +66,7 @@ hidden_imports = [
     "gmodular.gui.asset_palette",
     "gmodular.gui.scene_outline",
     "gmodular.gui.walkmesh_editor",
+    "gmodular.gui.script_library",
     "gmodular.ipc",
     "gmodular.ipc.bridges",
     "gmodular.ipc.callback_server",

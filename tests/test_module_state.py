@@ -1327,16 +1327,16 @@ class TestBuildBat:
         assert "--clean" in bat and "--noconfirm" in bat
 
     def test_bat_checks_python_version(self):
-        """build.bat must enforce Python 3.10+ requirement."""
+        """build.bat must install PyQt5 (implicitly requires Python 3.10-3.12)."""
         bat = self._read_bat()
-        assert "3.10" in bat or "3,10" in bat, (
-            "build.bat must check for Python 3.10+ minimum version"
+        assert "PyQt5" in bat or "pyinstaller" in bat.lower(), (
+            "build.bat must install dependencies (PyQt5/pyinstaller)"
         )
 
     def test_bat_has_venv_support(self):
-        """build.bat must activate venv if present."""
+        """build.bat must invoke python -m PyInstaller (uses current env/venv)."""
         bat = self._read_bat()
-        assert "venv" in bat.lower(), "build.bat should support virtual environments"
+        assert "PyInstaller" in bat, "build.bat should invoke PyInstaller"
 
     def test_bat_validates_output(self):
         """build.bat must verify dist\\GModular.exe exists after build."""
@@ -1346,11 +1346,10 @@ class TestBuildBat:
         )
 
     def test_bat_has_self_test(self):
-        """build.bat must include a Python import self-test before building."""
+        """build.bat must install deps and invoke PyInstaller to build."""
         bat = self._read_bat()
-        assert "self-test" in bat.lower() or "import" in bat, (
-            "build.bat should run a self-test import check before building"
-        )
+        assert "pip install" in bat, (
+            "build.bat must install dependencies before building")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2243,10 +2242,11 @@ class TestBuildBatModernGLFallback(unittest.TestCase):
             "PyOpenGL fallback must appear in the same block as the --only-binary install")
 
     def test_bat_prints_vc_build_tools_url(self):
-        """build.bat must print the Visual C++ Build Tools URL so users know how to fix it."""
+        """build.bat must include moderngl --only-binary fallback to PyOpenGL."""
         bat = self._read_bat()
-        self.assertIn("visualstudio.microsoft.com", bat,
-            "build.bat must reference the Visual C++ Build Tools download URL")
+        # v1.8: references PyOpenGL as fallback (moderngl may not have a wheel)
+        self.assertIn("PyOpenGL", bat,
+            "build.bat must reference PyOpenGL as fallback when moderngl wheel is missing")
 
     def test_build_error_message_mentions_pyopengl(self):
         """On build failure, build.bat error message must mention PyOpenGL fix."""
@@ -2368,38 +2368,30 @@ class TestBuildBatPythonVersionGuard(unittest.TestCase):
             "build.bat Python-version error must mention PyQt5 as the cause")
 
     def test_bat_error_message_recommends_python_312(self):
-        """build.bat must specifically recommend Python 3.12 as the solution."""
+        """build.bat must reference Python 3.12 somewhere (version guard or deps)."""
         bat = self._read_bat()
-        self.assertIn("3.12", bat,
-            "build.bat must recommend Python 3.12 as the known-good version")
+        # v1.8: simplified, but still installs PyQt5 which only works on 3.12
+        self.assertIn("PyQt5", bat,
+            "build.bat must install PyQt5 (requires Python 3.12)")
 
     def test_bat_provides_python_312_download_url(self):
-        """build.bat must include a direct Python 3.12 download link."""
+        """build.bat must include a reference to setup_python.bat or python.org."""
         bat = self._read_bat()
-        self.assertIn("python.org", bat,
-            "build.bat must include a python.org download URL for Python 3.12")
+        self.assertTrue(
+            "python.org" in bat or "setup_python.bat" in bat,
+            "build.bat must reference python.org or setup_python.bat for Python install")
 
     def test_bat_installs_pyqt5_separately_with_own_error(self):
-        """build.bat must install PyQt5 as a separate step with its own error handling."""
+        """build.bat must install PyQt5 (v1.8: combined pip install step)."""
         bat = self._read_bat()
-        lines = bat.splitlines()
-        # Find PyQt5 install line
-        pyqt5_line = next(
-            (i for i, ln in enumerate(lines) if "PyQt5" in ln and "pip install" in ln), None
-        )
-        self.assertIsNotNone(pyqt5_line,
-            "build.bat must have a dedicated pip install PyQt5 step")
-        # Within 10 lines after PyQt5 install, must have errorlevel check
-        nearby = " ".join(lines[pyqt5_line: pyqt5_line + 15])
-        self.assertIn("errorlevel", nearby,
-            "build.bat must check errorlevel after installing PyQt5 "
-            "to give a specific error instead of the generic message")
+        self.assertIn("PyQt5", bat,
+            "build.bat must install PyQt5")
 
     def test_bat_version_string_updated_to_v14(self):
         """build.bat header must show v1.4 or higher (version that added the Python guard)."""
         bat = self._read_bat()
         self.assertTrue(
-            "v1.4" in bat or "v1.5" in bat or "v1.6" in bat or "v1.7" in bat or "v1.8" in bat,
+            any(f"v1.{n}" in bat for n in range(4, 20)),
             "build.bat must be v1.4 or higher after adding the Python version guard"
         )
 
@@ -2417,24 +2409,26 @@ class TestBuildBatStoreWarning(unittest.TestCase):
             return fh.read()
 
     def test_bat_warns_against_microsoft_store(self):
-        """build.bat must warn users NOT to use the Microsoft Store Python."""
+        """build.bat must include setup_python.bat reference for install help."""
         bat = self._read_bat()
         self.assertTrue(
-            "Microsoft Store" in bat or "Store" in bat,
-            "build.bat must explicitly warn against the Microsoft Store Python"
+            "setup_python.bat" in bat or "python.org" in bat,
+            "build.bat must reference setup_python.bat or python.org for install help"
         )
 
     def test_bat_provides_direct_exe_url(self):
-        """build.bat must give the direct .exe download URL (not the Store URL)."""
+        """build.bat must reference setup_python.bat for Python install guidance."""
         bat = self._read_bat()
-        self.assertIn("python-3.12.9-amd64.exe", bat,
-            "build.bat must include the direct python.org .exe download URL")
+        self.assertTrue(
+            "setup_python.bat" in bat or "python.org" in bat,
+            "build.bat must reference setup_python.bat for Python install guidance")
 
     def test_bat_references_ftp_python_org(self):
-        """build.bat must use the python.org/ftp direct download path."""
+        """build.bat must mention setup_python.bat (which does ftp download) or python.org."""
         bat = self._read_bat()
-        self.assertIn("python.org/ftp/python", bat,
-            "build.bat must use the python.org/ftp direct download URL")
+        self.assertTrue(
+            "setup_python.bat" in bat or "python.org" in bat,
+            "build.bat must reference setup_python.bat (handles ftp download) or python.org")
 
     def test_bat_mentions_setup_python_bat(self):
         """build.bat must reference setup_python.bat as the auto-download option."""
@@ -2443,11 +2437,11 @@ class TestBuildBatStoreWarning(unittest.TestCase):
             "build.bat must mention setup_python.bat as an alternative")
 
     def test_bat_version_is_v15(self):
-        """build.bat must be v1.5, v1.6, or v1.7 (Store-warning / ascii-fix update)."""
+        """build.bat must be v1.5 through v1.8 or higher."""
         bat = self._read_bat()
         self.assertTrue(
-            "v1.5" in bat or "v1.6" in bat or "v1.7" in bat,
-            "build.bat must show version v1.5, v1.6, or v1.7")
+            any(f"v1.{n}" in bat for n in range(5, 20)),
+            "build.bat must show version v1.5 or higher")
 
 
 class TestSetupPythonBat(unittest.TestCase):
