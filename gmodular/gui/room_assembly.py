@@ -1,5 +1,5 @@
 """
-GModular — Room Assembly Grid (P1)
+GModular  -  Room Assembly Grid (P1)
 Provides a 2D top-down grid for assembling KotOR module rooms.
 
 Features:
@@ -8,7 +8,10 @@ Features:
   - Snap placement to configurable grid size
   - Auto-generates .lyt (plain text room layout) from placed rooms
   - Auto-generates .vis (visibility list) from room adjacency
+  - Portal-based VIS: rooms can share explicit portal connections
   - Room connection arrows (doorway indicators)
+  - Auto-detect MDL bounding-box to set per-room width/height
+  - Door-hook snap targets from MDL dummy nodes
   - Export to module ARE + regenerate LYT + VIS
   - Zoom in/out on the grid (mouse wheel or buttons)
 
@@ -57,7 +60,7 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# ── Room Grid Cell Size ───────────────────────────────────────────────────
+# -- Room Grid Cell Size ---------------------------------------------------
 
 CELL_SIZE     = 80          # pixels per grid unit (default)
 CELL_SIZE_MIN = 32
@@ -76,9 +79,11 @@ class RoomInstance:
     world_x: float = 0.0    # KotOR world units X
     world_y: float = 0.0    # KotOR world units Y
     world_z: float = 0.0    # KotOR world units Z
-    width: float = DEFAULT_ROOM_W
+    width: float  = DEFAULT_ROOM_W
     height: float = DEFAULT_ROOM_H
     connected_to: List[str] = field(default_factory=list)
+    # Door-hook positions relative to world origin (filled by MDL scan)
+    door_hooks: List[Tuple[float, float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -96,33 +101,203 @@ class LYTData:
         lines += ["obstaclecount 0", "doorhookcount 0"]
         return "\n".join(lines) + "\n"
 
+    @classmethod
+    def from_text(cls, text: str) -> 'LYTData':
+        """
+        Parse a KotOR .lyt plain-text file into a LYTData object.
+
+        .lyt format::
+            filedependency 0
+            roomcount N
+            mdl_name  x  y  z
+            ...
+            obstaclecount 0
+            doorhookcount 0
+        """
+        lyt = cls()
+        lines = text.splitlines()
+        i = 0
+        room_count = 0
+        reading_rooms = False
+
+        while i < len(lines):
+            raw = lines[i].strip()
+            i += 1
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split()
+            if not parts:
+                continue
+            key = parts[0].lower()
+            if key == "filedependency":
+                continue
+            elif key == "roomcount":
+                try:
+                    room_count = int(parts[1]) if len(parts) > 1 else 0
+                except (ValueError, IndexError):
+                    room_count = 0
+                reading_rooms = True
+            elif key in ("obstaclecount", "doorhookcount", "trackcount", "obstaclecount"):
+                reading_rooms = False
+            elif reading_rooms and len(parts) >= 4:
+                try:
+                    mdl_name = parts[0].lower()
+                    wx = float(parts[1])
+                    wy = float(parts[2])
+                    wz = float(parts[3])
+                    # Compute approximate grid position from world units
+                    room = RoomInstance(
+                        mdl_name=mdl_name,
+                        grid_x=0, grid_y=0,
+                        world_x=wx, world_y=wy, world_z=wz,
+                    )
+                    lyt.rooms.append(room)
+                except (ValueError, IndexError):
+                    pass
+
+        return lyt
+
+    @classmethod
+    def from_file(cls, path: str) -> 'LYTData':
+        """Read a .lyt file from disk."""
+        from pathlib import Path
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        return cls.from_text(text)
+
+
+def _parse_vis(text: str) -> Dict[str, List[str]]:
+    """
+    Parse a KotOR .vis plain-text file into a dict of {room_name: [visible_rooms]}.
+
+    .vis format::
+        room1
+        room1
+        room2
+        (blank line ends section)
+        room2
+        room1
+        room2
+    """
+    result: Dict[str, List[str]] = {}
+    lines = [l.strip() for l in text.splitlines()]
+    i = 0
+    while i < len(lines):
+        line = lines[i]; i += 1
+        if not line or line.startswith("#"):
+            continue
+        room_name = line.lower()
+        visible: List[str] = []
+        while i < len(lines):
+            vline = lines[i]
+            if not vline or vline.startswith("#"):
+                i += 1
+                break
+            visible.append(vline.lower())
+            i += 1
+        result[room_name] = visible
+    return result
+
 
 def _generate_vis(rooms: List[RoomInstance]) -> str:
     """
     Generate a .vis file from placed rooms.
-    Rooms sharing a grid edge are mutually visible.
+
+    Visibility rules (in priority order):
+    1. Explicit portal connections (room.connected_to)
+    2. Grid-adjacent rooms (share a grid edge)
+
+    Each room line lists itself plus all visible neighbours.
     """
+    # Build adjacency map from grid positions
     pos_map: Dict[Tuple[int, int], str] = {
         (r.grid_x, r.grid_y): r.mdl_name for r in rooms}
+
+    # Build explicit-connection lookup
+    explicit: Dict[str, Set[str]] = {r.mdl_name: set(r.connected_to) for r in rooms}
+
     lines = []
     for r in rooms:
         lines.append(r.mdl_name)
-        visible: List[str] = [r.mdl_name]
+        visible: Set[str] = {r.mdl_name}
+
+        # Grid-adjacent neighbours
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             neighbor = pos_map.get((r.grid_x + dx, r.grid_y + dy))
             if neighbor:
-                visible.append(neighbor)
-        lines.extend(visible)
+                visible.add(neighbor)
+
+        # Explicit portal connections
+        visible |= explicit.get(r.mdl_name, set())
+
+        for v in sorted(visible):
+            lines.append(v)
         lines.append("")
     return "\n".join(lines)
 
 
-# ── Draggable list widget ────────────────────────────────────────────────────
+# -- MDL dimension helpers -----------------------------------------------------
+
+def _read_mdl_bounds(mdl_path: str) -> Optional[Tuple[float, float]]:
+    """
+    Read the bounding-box from an MDL file header and return (width, height)
+    in KotOR units.  Returns None on failure.
+
+    The model-data section header (at file offset 12 + model_data_off) contains:
+      +120  float bb_min_x
+      +124  float bb_min_y
+      +128  float bb_min_z
+      +132  float bb_max_x
+      +136  float bb_max_y
+      +140  float bb_max_z
+    """
+    import struct
+    try:
+        with open(mdl_path, "rb") as f:
+            header = f.read(12)
+        if len(header) < 12:
+            return None
+        model_data_off = struct.unpack_from("<I", header, 4)[0]
+        # Read bounding box (6 floats at model_data_off+120)
+        with open(mdl_path, "rb") as f:
+            f.seek(model_data_off + 120)
+            bb = struct.unpack("<6f", f.read(24))
+        mn_x, mn_y, mn_z, mx_x, mx_y, mx_z = bb
+        w = abs(mx_x - mn_x)
+        h = abs(mx_y - mn_y)
+        if w > 0.1 and h > 0.1:
+            return (w, h)
+    except Exception:
+        pass
+    return None
+
+
+def _scan_door_hooks(mdl_path: str) -> List[Tuple[float, float, float]]:
+    """
+    Scan an MDL node tree for DW_* (door-hook) dummy nodes and return
+    their world-space positions.  Returns empty list on failure.
+    """
+    try:
+        from ..formats.mdl_parser import MDLParser, _world_pos
+        mesh = MDLParser.parse_files(mdl_path)
+        hooks = []
+        for node in mesh.all_nodes():
+            if node.name.lower().startswith('dw_') or node.name.lower().startswith('doorway_'):
+                try:
+                    wp = _world_pos(node)
+                    hooks.append(wp)
+                except Exception:
+                    hooks.append(node.position)
+        return hooks
+    except Exception:
+        return []
+
+
+# -- Draggable list widget ----------------------------------------------------
 
 class _DragList(QListWidget):
     """
     QListWidget subclass where startDrag() is properly overridden.
-    The override MUST be on the QListWidget itself — putting it on a
+    The override MUST be on the QListWidget itself  -  putting it on a
     parent QWidget has no effect because Qt calls startDrag() on the
     widget that owns the viewport, not on arbitrary parents.
     """
@@ -145,7 +320,7 @@ class _DragList(QListWidget):
             super().mouseMoveEvent(event)
 
 
-# ── Room Grid Widget ──────────────────────────────────────────────────────
+# -- Room Grid Widget ------------------------------------------------------
 
 class RoomGridWidget(QWidget):
     """
@@ -155,7 +330,7 @@ class RoomGridWidget(QWidget):
 
     rooms_changed    = pyqtSignal()
     room_selected    = pyqtSignal(object)    # RoomInstance or None
-    request_place_at = pyqtSignal(int, int)  # gx, gy — right-click place
+    request_place_at = pyqtSignal(int, int)  # gx, gy  -  right-click place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -167,6 +342,8 @@ class RoomGridWidget(QWidget):
         self._hover_cell: Optional[Tuple[int, int]] = None  # cell under drag
         self._drag_room: Optional[RoomInstance] = None      # room being moved
         self._drag_start_pos: Optional[QPoint] = None
+        # Per-room MDL dimensions cache (mdl_name → (w, h))
+        self._room_dims: Dict[str, Tuple[float, float]] = {}
 
         self._update_size()
         self.setAcceptDrops(True)
@@ -182,7 +359,7 @@ class RoomGridWidget(QWidget):
         self.setMinimumSize(w, h)
         self.setFixedSize(w, h)
 
-    # ── Zoom ─────────────────────────────────────────────────────────────
+    # -- Zoom -------------------------------------------------------------
 
     def zoom_in(self):
         self._cell = min(CELL_SIZE_MAX, self._cell + 8)
@@ -204,7 +381,7 @@ class RoomGridWidget(QWidget):
         else:
             super().wheelEvent(event)
 
-    # ── Painting ──────────────────────────────────────────────────────────
+    # -- Painting ----------------------------------------------------------
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -273,6 +450,20 @@ class RoomGridWidget(QWidget):
             p.drawText(QRect(x + 2, y + h - 14, w - 4, 12),
                        Qt.AlignCenter, f"({room.grid_x},{room.grid_y})")
 
+        # Door-hook indicators
+        if room.door_hooks and c >= 48:
+            p.setPen(QPen(QColor("#ffcc00"), 2))
+            room_w = room.width or DEFAULT_ROOM_W
+            room_h = room.height or DEFAULT_ROOM_H
+            for hx, hy, hz in room.door_hooks:
+                # Map hook world position to pixel position within cell
+                if room_w > 0 and room_h > 0:
+                    px = x + int((hx / room_w) * w)
+                    py = y + int((hy / room_h) * h)
+                    px = max(x + 2, min(x + w - 2, px))
+                    py = max(y + 2, min(y + h - 2, py))
+                    p.drawEllipse(QPoint(px, py), 3, 3)
+
     def _draw_connections(self, p: QPainter):
         pos_map = {(r.grid_x, r.grid_y): r for r in self._rooms}
         c = self._cell
@@ -293,7 +484,7 @@ class RoomGridWidget(QWidget):
                         ny = nb.grid_y * c + c // 2
                         p.drawLine(cx, cy, nx, ny)
 
-    # ── Drag & Drop (from palette) ─────────────────────────────────────────
+    # -- Drag & Drop (from palette) -----------------------------------------
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText() or event.mimeData().hasFormat("text/plain"):
@@ -345,7 +536,7 @@ class RoomGridWidget(QWidget):
         mdl_name = text
         placed = self._place_room(mdl_name, gx, gy)
         if not placed:
-            # Cell was occupied — find nearest empty cell
+            # Cell was occupied  -  find nearest empty cell
             for radius in range(1, max(self._grid_w, self._grid_h)):
                 for dx in range(-radius, radius + 1):
                     for dy in range(-radius, radius + 1):
@@ -362,7 +553,7 @@ class RoomGridWidget(QWidget):
         event.accept()
         self.update()
 
-    # ── Mouse (select / drag-to-move existing rooms) ─────────────────────
+    # -- Mouse (select / drag-to-move existing rooms) ---------------------
 
     def mousePressEvent(self, event):
         gx = event.x() // self._cell
@@ -407,7 +598,7 @@ class RoomGridWidget(QWidget):
         self._drag_room = None
         self._drag_start_pos = None
 
-    # ── Keyboard ──────────────────────────────────────────────────────────
+    # -- Keyboard ----------------------------------------------------------
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
@@ -416,7 +607,7 @@ class RoomGridWidget(QWidget):
         else:
             super().keyPressEvent(event)
 
-    # ── Context menu ──────────────────────────────────────────────────────
+    # -- Context menu ------------------------------------------------------
 
     def _context_menu(self, pos: QPoint):
         gx = pos.x() // self._cell
@@ -439,24 +630,34 @@ class RoomGridWidget(QWidget):
             )
         menu.exec_(self.mapToGlobal(pos))
 
-    # ── Helpers ───────────────────────────────────────────────────────────
+    # -- Helpers -----------------------------------------------------------
 
     def _place_room(self, mdl_name: str, gx: int, gy: int) -> bool:
         """Place a room at (gx, gy). Returns False if cell occupied."""
         if self._room_at(gx, gy):
             return False
+
+        # Get (or compute) room dimensions
+        dims = self._room_dims.get(mdl_name.lower())
+        if dims:
+            rw, rh = dims
+        else:
+            rw, rh = DEFAULT_ROOM_W, DEFAULT_ROOM_H
+
         room = RoomInstance(
             mdl_name=mdl_name,
             grid_x=gx, grid_y=gy,
-            world_x=gx * DEFAULT_ROOM_W,
-            world_y=gy * DEFAULT_ROOM_H,
+            world_x=gx * rw,
+            world_y=gy * rh,
+            width=rw, height=rh,
         )
         self._rooms.append(room)
         self._selected = room
-        self.rooms_changed.emit()
-        self.room_selected.emit(room)
-        self.update()
-        log.info(f"Room placed: {mdl_name} at ({gx},{gy})")
+        if _HAS_QT:
+            self.rooms_changed.emit()
+            self.room_selected.emit(room)
+            self.update()
+        log.info(f"Room placed: {mdl_name} at ({gx},{gy}) world=({room.world_x:.1f},{room.world_y:.1f})")
         return True
 
     def _room_at(self, gx: int, gy: int) -> Optional[RoomInstance]:
@@ -481,10 +682,38 @@ class RoomGridWidget(QWidget):
             self.rooms_changed.emit()
             self.update()
 
-    # ── Public API ────────────────────────────────────────────────────────
+    # -- Public API --------------------------------------------------------
+
+    def register_mdl_dims(self, mdl_name: str, width: float, height: float):
+        """Register a room's real-world dimensions (from MDL bounding box)."""
+        self._room_dims[mdl_name.lower()] = (width, height)
+
+    def register_mdl_file(self, mdl_name: str, mdl_path: str):
+        """
+        Read an MDL file to extract bounding-box dimensions and door-hook positions.
+        Stores dims in the cache so future placements use accurate world coordinates.
+        """
+        dims = _read_mdl_bounds(mdl_path)
+        if dims:
+            self._room_dims[mdl_name.lower()] = dims
+            log.debug(f"Room '{mdl_name}': MDL dims = {dims[0]:.1f} × {dims[1]:.1f} units")
+        hooks = _scan_door_hooks(mdl_path)
+        if hooks:
+            log.debug(f"Room '{mdl_name}': {len(hooks)} door-hooks found")
+            # Store hooks for future room placements
+            self._door_hooks_cache = getattr(self, '_door_hooks_cache', {})
+            self._door_hooks_cache[mdl_name.lower()] = hooks
 
     def place_room_by_name(self, mdl_name: str, gx: int, gy: int) -> bool:
-        return self._place_room(mdl_name, gx, gy)
+        ok = self._place_room(mdl_name, gx, gy)
+        if ok:
+            # Attach cached door hooks if available
+            hooks_cache = getattr(self, '_door_hooks_cache', {})
+            hooks = hooks_cache.get(mdl_name.lower(), [])
+            room = self._room_at(gx, gy)
+            if room and hooks:
+                room.door_hooks = hooks
+        return ok
 
     def get_rooms(self) -> List[RoomInstance]:
         return list(self._rooms)
@@ -506,8 +735,24 @@ class RoomGridWidget(QWidget):
         self._rooms = list(rooms)
         self.update()
 
+    def recalculate_world_positions(self):
+        """
+        Recalculate world_x/world_y for all rooms based on their grid positions
+        and the registered MDL dimensions.  Call after loading MDL files.
+        """
+        for room in self._rooms:
+            dims = self._room_dims.get(room.mdl_name.lower())
+            rw = dims[0] if dims else DEFAULT_ROOM_W
+            rh = dims[1] if dims else DEFAULT_ROOM_H
+            room.world_x = room.grid_x * rw
+            room.world_y = room.grid_y * rh
+            room.width   = rw
+            room.height  = rh
+        self.rooms_changed.emit()
+        self.update()
 
-# ── Room Palette ─────────────────────────────────────────────────────────────
+
+# -- Room Palette -------------------------------------------------------------
 
 class RoomPaletteWidget(QWidget):
     """
@@ -517,7 +762,7 @@ class RoomPaletteWidget(QWidget):
     - Double-click in list emits place_requested signal
     """
 
-    place_requested = pyqtSignal(str)   # mdl_name — single-click place
+    place_requested = pyqtSignal(str)   # mdl_name  -  single-click place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -561,11 +806,11 @@ class RoomPaletteWidget(QWidget):
         )
         layout.addWidget(self._list, 1)
 
-        # Place button — click once in list, then click this
+        # Place button  -  click once in list, then click this
         self._place_btn = QPushButton("\u25bc  Place Selected Room")
         self._place_btn.setToolTip(
             "Select a room in the list above, then click here to place it\n"
-            "at the next empty cell — or drag directly to the grid"
+            "at the next empty cell  -  or drag directly to the grid"
         )
         self._place_btn.setStyleSheet(
             "QPushButton{background:#0e639c;color:#fff;border:none;"
@@ -598,7 +843,7 @@ class RoomPaletteWidget(QWidget):
         return item.text() if item else None
 
 
-# ── Room Assembly Panel ───────────────────────────────────────────────────────
+# -- Room Assembly Panel -------------------------------------------------------
 
 class RoomAssemblyPanel(QWidget):
     """
@@ -622,7 +867,7 @@ class RoomAssemblyPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Toolbar ──────────────────────────────────────────────────────
+        # -- Toolbar ------------------------------------------------------
         toolbar = QWidget()
         toolbar.setFixedHeight(32)
         toolbar.setStyleSheet("background:#252526; border-bottom:1px solid #3c3c3c;")
@@ -675,7 +920,7 @@ class RoomAssemblyPanel(QWidget):
 
         root.addWidget(toolbar)
 
-        # ── Main splitter: palette | grid | details ───────────────────────
+        # -- Main splitter: palette | grid | details -----------------------
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
         splitter.setChildrenCollapsible(False)
@@ -772,7 +1017,7 @@ class RoomAssemblyPanel(QWidget):
         splitter.setSizes([160, 600, 160])
         root.addWidget(splitter, 1)
 
-        # ── Status bar ────────────────────────────────────────────────────
+        # -- Status bar ----------------------------------------------------
         status = QLabel(
             "  Drag rooms from palette to grid  |  Double-click or use Place button  |  "
             "Right-click grid cell for options  |  Ctrl+scroll to zoom"
@@ -791,7 +1036,7 @@ class RoomAssemblyPanel(QWidget):
             "QSplitter::handle{background:#3c3c3c;}"
         )
 
-    # ── Placement helpers ─────────────────────────────────────────────────
+    # -- Placement helpers -------------------------------------------------
 
     def _place_from_palette(self, mdl_name: str):
         """Place the given room at the next available cell."""
@@ -814,7 +1059,7 @@ class RoomAssemblyPanel(QWidget):
         if room_name:
             self._grid.place_room_by_name(room_name, gx, gy)
 
-    # ── Zoom ─────────────────────────────────────────────────────────────
+    # -- Zoom -------------------------------------------------------------
 
     def _zoom_in(self):
         self._grid.zoom_in()
@@ -822,7 +1067,7 @@ class RoomAssemblyPanel(QWidget):
     def _zoom_out(self):
         self._grid.zoom_out()
 
-    # ── Slots ─────────────────────────────────────────────────────────────
+    # -- Slots -------------------------------------------------------------
 
     def _on_rooms_changed(self):
         rooms = self._grid.get_rooms()
@@ -837,10 +1082,12 @@ class RoomAssemblyPanel(QWidget):
         if room is None:
             self._detail_label.setText("None")
         else:
+            hooks_info = f"\n{len(room.door_hooks)} door-hook(s)" if room.door_hooks else ""
             self._detail_label.setText(
                 f"{room.mdl_name}\n"
                 f"Grid ({room.grid_x}, {room.grid_y})\n"
-                f"World ({room.world_x:.1f}, {room.world_y:.1f})"
+                f"World ({room.world_x:.1f}, {room.world_y:.1f})\n"
+                f"Dims {room.width:.1f}×{room.height:.1f}{hooks_info}"
             )
 
     def _clear_grid(self):
@@ -852,7 +1099,7 @@ class RoomAssemblyPanel(QWidget):
         if reply == QMessageBox.Yes:
             self._grid.clear()
 
-    # ── Export ────────────────────────────────────────────────────────────
+    # -- Export ------------------------------------------------------------
 
     def _save_lyt_vis(self):
         folder = QFileDialog.getExistingDirectory(
@@ -881,10 +1128,14 @@ class RoomAssemblyPanel(QWidget):
     def _copy_vis(self):
         QApplication.clipboard().setText(self._grid.generate_vis_text())
 
-    # ── Public API ────────────────────────────────────────────────────────
+    # -- Public API --------------------------------------------------------
 
     def set_available_rooms(self, room_names: List[str]):
         self._palette.set_rooms(room_names)
+
+    def register_mdl_file(self, mdl_name: str, mdl_path: str):
+        """Register an MDL file so dimensions and door-hooks are read automatically."""
+        self._grid.register_mdl_file(mdl_name, mdl_path)
 
     def get_rooms(self) -> List[RoomInstance]:
         return self._grid.get_rooms()
@@ -894,3 +1145,4 @@ class RoomAssemblyPanel(QWidget):
 
     def get_vis(self) -> str:
         return self._grid.generate_vis_text()
+

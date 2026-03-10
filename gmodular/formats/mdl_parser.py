@@ -582,6 +582,90 @@ class MDLParser:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Fast texture-name scanner (no geometry, just texture names)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scan_mdl_textures(mdl_bytes: bytes) -> List[str]:
+    """
+    Quickly extract all texture names referenced by an MDL file.
+    Does NOT parse geometry — only reads the mesh texture fields.
+
+    Each mesh node stores a 32-byte texture name at a fixed offset within
+    the mesh header.  This function walks the node tree (geometry only)
+    and collects all non-empty texture names.
+
+    Returns a de-duplicated list of lowercase texture names (no extension).
+    Suitable for building texture dependency lists for the MOD packager.
+    """
+    B = MDLParser.BASE
+    if len(mdl_bytes) < B + 168:
+        return []
+
+    try:
+        parser = MDLParser(mdl_bytes, b'')
+        mesh_data = parser.parse()
+        names: List[str] = []
+        seen: set = set()
+        for node in mesh_data.visible_mesh_nodes():
+            tex = node.texture_clean.lower()
+            if tex and tex not in seen:
+                seen.add(tex)
+                names.append(tex)
+        return names
+    except Exception as e:
+        log.debug(f"scan_mdl_textures: failed: {e}")
+        return []
+
+
+def list_mdl_dependencies(mdl_bytes: bytes,
+                          mdx_bytes: bytes = b'') -> Dict[str, List[str]]:
+    """
+    Return a mapping of dependency type → list of resrefs for an MDL.
+
+    Keys:
+        'textures'  – TGA/TPC texture names (no extension)
+        'lightmaps' – lightmap names (no extension)
+        'models'    – supermodel resref (if any, lowercase)
+
+    Usage in MOD packager::
+        deps = list_mdl_dependencies(mdl_bytes)
+        for tex in deps['textures']:
+            # pack tex.tpc or tex.tga
+    """
+    result: Dict[str, List[str]] = {
+        'textures': [],
+        'lightmaps': [],
+        'models': [],
+    }
+    B = MDLParser.BASE
+    if len(mdl_bytes) < B + 168:
+        return result
+
+    try:
+        parser = MDLParser(mdl_bytes, mdx_bytes)
+        mesh_data = parser.parse()
+
+        tex_seen:  set = set()
+        lmap_seen: set = set()
+
+        for node in mesh_data.mesh_nodes():
+            tex = node.texture_clean.lower()
+            if tex and tex not in tex_seen:
+                tex_seen.add(tex)
+                result['textures'].append(tex)
+
+        # Supermodel
+        sm = mesh_data.supermodel.lower()
+        if sm and sm != "null" and sm not in ("", "null"):
+            result['models'].append(sm)
+
+    except Exception as e:
+        log.debug(f"list_mdl_dependencies: {e}")
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Model Cache (application-level LRU to avoid re-parsing the same MDL)
 # ─────────────────────────────────────────────────────────────────────────────
 
