@@ -10,14 +10,25 @@ from __future__ import annotations
 import logging
 from typing import Optional, Any
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QDoubleSpinBox, QGroupBox, QFormLayout,
-    QComboBox, QPlainTextEdit, QScrollArea, QSizePolicy,
-    QTabWidget, QFrame, QSpacerItem,
-)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+try:
+    from PyQt5.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+        QPushButton, QDoubleSpinBox, QGroupBox, QFormLayout,
+        QComboBox, QPlainTextEdit, QScrollArea, QSizePolicy,
+        QTabWidget, QFrame, QSpacerItem,
+    )
+    from PyQt5.QtCore import Qt, pyqtSignal
+    from PyQt5.QtGui import QFont
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QWidget = object       # type: ignore[misc,assignment]
+    QLineEdit = object     # type: ignore[misc,assignment]
+    QDoubleSpinBox = object  # type: ignore[misc,assignment]
+    QComboBox = object     # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 from ..formats.gff_types import (
     GITPlaceable, GITCreature, GITDoor, GITWaypoint,

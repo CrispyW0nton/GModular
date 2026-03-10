@@ -33,18 +33,27 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QScrollArea,
-    QSplitter, QFrame, QSizePolicy,
-    QLineEdit, QMessageBox, QMenu,
-    QApplication, QFileDialog, QInputDialog,
-)
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize, QMimeData
-from PyQt5.QtGui import (
-    QPainter, QColor, QPen, QFont,
-    QFontMetrics, QDrag,
-)
+try:
+    from PyQt5.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+        QListWidget, QListWidgetItem, QScrollArea,
+        QSplitter, QFrame, QSizePolicy,
+        QLineEdit, QMessageBox, QMenu,
+        QApplication, QFileDialog, QInputDialog,
+    )
+    from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize, QMimeData
+    from PyQt5.QtGui import (
+        QPainter, QColor, QPen, QFont,
+        QFontMetrics, QDrag,
+    )
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QWidget = object  # type: ignore[misc,assignment]
+    QListWidget = object  # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 log = logging.getLogger(__name__)
 
