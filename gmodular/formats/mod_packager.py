@@ -165,31 +165,47 @@ CORE_RESREFS_TYPES = [
 # Script extensions to collect
 SCRIPT_TYPES = {"nss", "ncs"}
 
-# Blueprint types indexed from GIT
-BLUEPRINT_ATTRS: Dict[str, str] = {
-    # GIT object type -> resref attribute -> blueprint ext
+# Blueprint extension map (GIT object type → blueprint file extension)
+# Used by _get_all_resrefs to determine which blueprint ext matches each object
+OBJECT_BLUEPRINT_EXT: Dict[str, str] = {
+    "placeables": "utp",
+    "creatures":  "utc",
+    "doors":      "utd",
+    "triggers":   "utt",
+    "waypoints":  "utw",
+    "sounds":     "uts",
+    "stores":     "utm",
 }
+
+# All script hook attribute names present on GIT objects
+_SCRIPT_ATTRS = (
+    "on_used", "on_heartbeat", "on_open", "on_open2",
+    "on_closed", "on_lock", "on_unlock", "on_damaged",
+    "on_death", "on_end_conversation", "on_inventory_disturbed",
+    "on_melee_attacked", "on_user_defined", "on_enter",
+    "on_exit", "on_fail_to_open", "on_notice",
+    "on_conversation", "on_disturbed", "on_blocked",
+    "on_attacked", "on_spawn",
+)
+
 
 def _get_all_resrefs(git: GITData) -> List[Tuple[str, str]]:
     """
     Walk a GITData object and collect all (resref, ext) tuples for
     blueprints, scripts, and dialogs referenced by the module.
-    Returns list of (resref_lower, ext) tuples.
+
+    Returns a de-duplicated list of (resref_lower, ext) tuples
+    in dependency order: core blueprints first, scripts second, dialogs last.
     """
     found: List[Tuple[str, str]] = []
 
     def add(resref: str, ext: str):
-        if resref and resref.strip():
-            found.append((resref.strip().lower(), ext))
+        r = (resref or "").strip().lower()
+        if r:
+            found.append((r, ext))
 
     def walk_scripts(obj):
-        for attr in ("on_used", "on_heartbeat", "on_open", "on_open2",
-                     "on_closed", "on_lock", "on_unlock", "on_damaged",
-                     "on_death", "on_end_conversation", "on_inventory_disturbed",
-                     "on_melee_attacked", "on_user_defined", "on_enter",
-                     "on_exit", "on_fail_to_open", "on_notice",
-                     "on_conversation", "on_disturbed", "on_blocked",
-                     "on_attacked", "on_spawn"):
+        for attr in _SCRIPT_ATTRS:
             val = getattr(obj, attr, "")
             if val:
                 add(val, "ncs")
@@ -233,6 +249,81 @@ def _get_all_resrefs(git: GITData) -> List[Tuple[str, str]]:
             seen.add(item)
             unique.append(item)
     return unique
+
+
+# ── chitin.key reader (base-game asset lookup) ────────────────────────────
+
+def _read_chitin_key(game_dir: Path) -> Set[Tuple[str, str]]:
+    """
+    Parse KotOR's chitin.key to build a set of (resref, ext) tuples for all
+    resources included in the base game's BIF archives.
+
+    This lets the packager skip resources that are already in the base game
+    (no need to re-package them into the .mod).
+
+    chitin.key binary layout (little-endian):
+      Header:
+        +0   4s  file_type "KEY "
+        +4   4s  version   "V1  "
+        +8   I   bif_count
+        +12  I   key_count
+        +16  I   offset_to_bif_table
+        +20  I   offset_to_key_table
+        +24  I   build_year
+        +28  I   build_day
+        +32  32s reserved
+
+      BIF entry (12 bytes each at offset_to_bif_table):
+        +0   I   file_size
+        +4   I   filename_offset  (from start of file)
+        +8   H   filename_size
+        +10  H   drives
+
+      Key entry (22 bytes each at offset_to_key_table):
+        +0   16s  resref
+        +16  H    res_type
+        +18  I    res_id
+
+    Returns empty set on any parse error.
+    """
+    key_path = game_dir / "chitin.key"
+    if not key_path.exists():
+        return set()
+
+    base_set: Set[Tuple[str, str]] = set()
+    try:
+        data = key_path.read_bytes()
+        if len(data) < 64 or data[:4] not in (b"KEY ", b"KEY\x00"):
+            return base_set
+
+        key_count        = struct.unpack_from("<I", data, 12)[0]
+        offset_key_table = struct.unpack_from("<I", data, 20)[0]
+
+        for i in range(min(key_count, 200_000)):
+            off = offset_key_table + i * 22
+            if off + 22 > len(data):
+                break
+            raw_resref = data[off:off+16]
+            res_type   = struct.unpack_from("<H", data, off + 16)[0]
+
+            # Decode resref
+            end = raw_resref.find(b'\x00')
+            if end < 0:
+                end = 16
+            resref = raw_resref[:end].decode("ascii", errors="replace").lower().strip()
+            if not resref:
+                continue
+
+            # Decode extension
+            ext = RES_TYPE_MAP.get(res_type, "")
+            if resref and ext:
+                base_set.add((resref, ext))
+
+    except Exception as e:
+        log.debug(f"chitin.key parse error: {e}")
+
+    log.debug(f"chitin.key: {len(base_set)} base-game resources indexed")
+    return base_set
 
 
 # ── Module Packager ──────────────────────────────────────────────────────
@@ -503,6 +594,14 @@ class ModPackager:
         resources: List[PackageResource] = []
         name = self._module_name
 
+        # Load chitin.key index (base-game assets to skip)
+        base_game_assets: Set[Tuple[str, str]] = set()
+        if self._game_dir:
+            base_game_assets = _read_chitin_key(self._game_dir)
+            if base_game_assets:
+                self._issues.append(ValidationIssue(
+                    INFO, f"chitin.key indexed {len(base_game_assets):,} base-game assets"))
+
         # Core files: .are, .ifo, .git, .lyt, .vis
         core_exts = ["are", "ifo", "git", "lyt", "vis"]
         for ext in core_exts:
@@ -521,22 +620,84 @@ class ModPackager:
         # Dependency files (blueprints, scripts, dialogs)
         deps = _get_all_resrefs(self._git)
         seen: Set[Tuple[str, str]] = set()
+        skipped_base = 0
         for resref, ext in deps:
             key = (resref, ext)
             if key in seen:
                 continue
             seen.add(key)
+
+            # Skip resources that are in the base game (no need to re-pack)
+            if key in base_game_assets:
+                skipped_base += 1
+                log.debug(f"Packager: skipping base-game asset {resref}.{ext}")
+                continue
+
             data = self._find_resource(resref, ext)
             if data:
                 type_id = EXT_TO_TYPE.get(ext, 0)
                 resources.append(PackageResource(
                     resref=resref, res_type=type_id, ext=ext,
                     data=data, source_path=f"{resref}.{ext}"))
+                # If it's an MDL, also collect its texture dependencies
+                if ext == "mdl":
+                    self._collect_mdl_textures(
+                        resref, data, resources, seen, base_game_assets)
             else:
-                self._issues.append(ValidationIssue(
-                    WARNING, f"Dependency {resref}.{ext} not found (will not be packed)"))
+                # Check if it's in base game before warning
+                # (The chitin.key may have missed it due to type mapping gaps)
+                in_base = any(
+                    r == resref for (r, e) in base_game_assets if e == ext)
+                if not in_base:
+                    self._issues.append(ValidationIssue(
+                        WARNING, f"Dependency {resref}.{ext} not found (will not be packed)"))
+
+        if skipped_base:
+            self._issues.append(ValidationIssue(
+                INFO, f"{skipped_base} dependency(ies) skipped — already in base game"))
 
         return resources
+
+    def _collect_mdl_textures(
+            self,
+            mdl_resref: str,
+            mdl_data: bytes,
+            resources: List[PackageResource],
+            seen: Set[Tuple[str, str]],
+            base_game_assets: Set[Tuple[str, str]],
+    ):
+        """
+        Scan an MDL file for texture references (TGA/TPC) and add them
+        to the resource list if they exist in the module or override dirs.
+
+        KotOR loads TPC over TGA if both exist; we prefer TPC → TGA fallback.
+        """
+        try:
+            from .mdl_parser import list_mdl_dependencies
+            deps = list_mdl_dependencies(mdl_data)
+            tex_names = deps.get('textures', [])
+        except Exception:
+            return
+
+        for tex in tex_names:
+            for ext in ("tpc", "tga"):
+                key = (tex, ext)
+                if key in seen:
+                    break
+                if key in base_game_assets:
+                    seen.add(key)
+                    log.debug(f"Packager: texture {tex}.{ext} in base game, skipping")
+                    break
+                data = self._find_resource(tex, ext)
+                if data:
+                    seen.add(key)
+                    type_id = EXT_TO_TYPE.get(ext, 0)
+                    resources.append(PackageResource(
+                        resref=tex, res_type=type_id, ext=ext,
+                        data=data, source_path=f"{tex}.{ext}"))
+                    log.debug(f"Packager: packed texture {tex}.{ext} "
+                              f"(from MDL {mdl_resref})")
+                    break   # found as TPC, no need to try TGA
 
     def _read_core_file(self, name: str, ext: str) -> Optional[bytes]:
         """Read a core module file from disk (tries module_dir first)."""
@@ -550,11 +711,13 @@ class ModPackager:
 
     def _find_resource(self, resref: str, ext: str) -> Optional[bytes]:
         """
-        Try to find a resource file:
+        Try to find a resource file in priority order:
           1. module_dir/resref.ext
           2. override_dir/resref.ext
           3. game_dir/Override/resref.ext
-        Does NOT dig into BIF archives (those are base-game assets).
+          4. game_dir/Modules/resref.ext
+        Does NOT dig into BIF archives (base-game assets — use chitin.key check).
+        Uses case-insensitive filename matching for cross-platform compatibility.
         """
         search_dirs = [
             self._module_dir,
@@ -562,17 +725,25 @@ class ModPackager:
         ]
         if self._game_dir:
             search_dirs.append(self._game_dir / "Override")
+            search_dirs.append(self._game_dir / "Modules")
+            search_dirs.append(self._game_dir / "modules")
+
+        target_lower = f"{resref}.{ext}".lower()
 
         for directory in search_dirs:
             if directory is None:
                 continue
+            # Exact path first
             path = directory / f"{resref}.{ext}"
             if path.exists():
-                return path.read_bytes()
+                try:
+                    return path.read_bytes()
+                except Exception:
+                    continue
             # Case-insensitive fallback
             try:
                 for f in directory.iterdir():
-                    if f.name.lower() == f"{resref}.{ext}".lower():
+                    if f.name.lower() == target_lower:
                         return f.read_bytes()
             except Exception:
                 pass
