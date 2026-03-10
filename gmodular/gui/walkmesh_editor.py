@@ -17,15 +17,23 @@ from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QFrame,
-    QGroupBox, QFormLayout, QComboBox, QFileDialog,
-    QScrollArea, QSplitter, QAbstractItemView, QCheckBox,
-    QDoubleSpinBox, QMessageBox,
-)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
+try:
+    from PyQt5.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+        QPushButton, QTableWidget, QTableWidgetItem, QFrame,
+        QGroupBox, QFormLayout, QComboBox, QFileDialog,
+        QScrollArea, QSplitter, QAbstractItemView, QCheckBox,
+        QDoubleSpinBox, QMessageBox,
+    )
+    from PyQt5.QtCore import Qt, pyqtSignal
+    from PyQt5.QtGui import QFont, QColor
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QWidget = object  # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 log = logging.getLogger(__name__)
 

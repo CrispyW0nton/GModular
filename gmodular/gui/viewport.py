@@ -18,14 +18,31 @@ import time
 import logging
 from typing import Optional, List, Tuple, Callable, Dict
 
-import numpy as np
-from PyQt5.QtWidgets import QOpenGLWidget, QSizePolicy
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
-from PyQt5.QtGui import (
-    QKeyEvent, QMouseEvent, QWheelEvent, QSurfaceFormat,
-    QPainter, QPen, QBrush, QColor, QFont, QFontMetrics,
-    QPolygon, QCursor,
-)
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+    np = None  # type: ignore
+
+try:
+    from PyQt5.QtWidgets import QOpenGLWidget, QSizePolicy
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
+    from PyQt5.QtGui import (
+        QKeyEvent, QMouseEvent, QWheelEvent, QSurfaceFormat,
+        QPainter, QPen, QBrush, QColor, QFont, QFontMetrics,
+        QPolygon, QCursor,
+    )
+    _HAS_QT = True
+    QOpenGLWidget_base = QOpenGLWidget
+except ImportError:
+    _HAS_QT = False
+    QOpenGLWidget_base = object  # type: ignore[misc,assignment]
+    QOpenGLWidget = object  # type: ignore[misc,assignment]
+    QColor = None  # type: ignore[assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 log = logging.getLogger(__name__)
 
@@ -383,16 +400,16 @@ GIZMO_LEN  = 72     # arrow screen length (px)
 GIZMO_HEAD = 10     # arrowhead px
 GIZMO_HIT  = 14     # hit-test radius (px)
 
-_GIZMO_X_COL = QColor(230,  60,  60)   # red   — X
-_GIZMO_Y_COL = QColor( 60, 200,  60)   # green — Y
-_GIZMO_Z_COL = QColor( 60, 120, 230)   # blue  — Z
-_GIZMO_R_COL = QColor(220, 220,  50)   # yellow — rotate Z
-_GIZMO_ACT   = QColor(255, 255, 100)   # active highlight
+_GIZMO_X_COL = QColor(230,  60,  60) if _HAS_QT else None   # red   — X
+_GIZMO_Y_COL = QColor( 60, 200,  60) if _HAS_QT else None   # green — Y
+_GIZMO_Z_COL = QColor( 60, 120, 230) if _HAS_QT else None   # blue  — Z
+_GIZMO_R_COL = QColor(220, 220,  50) if _HAS_QT else None   # yellow — rotate Z
+_GIZMO_ACT   = QColor(255, 255, 100) if _HAS_QT else None   # active highlight
 
 _AX_X, _AX_Y, _AX_Z, _AX_R = 0, 1, 2, 3
 
 
-class ViewportWidget(QOpenGLWidget):
+class ViewportWidget(QOpenGLWidget_base):
     """
     ModernGL-powered 3D viewport for GModular.
     Supports both editor mode (orbit camera) and play/preview mode

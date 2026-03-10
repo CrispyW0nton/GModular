@@ -15,13 +15,23 @@ from __future__ import annotations
 import logging
 from typing import List, Tuple, Optional
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QGroupBox, QFrame,
-    QDoubleSpinBox, QFormLayout, QMessageBox,
-)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+try:
+    from PyQt5.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+        QListWidget, QListWidgetItem, QGroupBox, QFrame,
+        QDoubleSpinBox, QFormLayout, QMessageBox,
+    )
+    from PyQt5.QtCore import Qt, pyqtSignal
+    from PyQt5.QtGui import QFont
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QWidget = object  # type: ignore[misc,assignment]
+    QListWidget = object  # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        """Stub so class-level signal definitions don't crash without Qt."""
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 from ..formats.gff_types import GITCreature, GITWaypoint
 
