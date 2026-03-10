@@ -13,14 +13,24 @@ import logging
 from typing import Optional, List, Dict
 from pathlib import Path
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QListWidget, QListWidgetItem, QTabWidget,
-    QComboBox, QGroupBox, QScrollArea, QFrame, QSplitter,
-    QAbstractItemView, QSizePolicy, QToolTip,
-)
-from PyQt5.QtCore import Qt, pyqtSignal, QMimeData
-from PyQt5.QtGui import QFont, QDrag, QColor
+try:
+    from PyQt5.QtWidgets import (
+        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+        QPushButton, QListWidget, QListWidgetItem, QTabWidget,
+        QComboBox, QGroupBox, QScrollArea, QFrame, QSplitter,
+        QAbstractItemView, QSizePolicy, QToolTip,
+    )
+    from PyQt5.QtCore import Qt, pyqtSignal, QMimeData
+    from PyQt5.QtGui import QFont, QDrag, QColor
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QWidget = object      # type: ignore[misc,assignment]
+    QListWidget = object  # type: ignore[misc,assignment]
+    QListWidgetItem = object  # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 log = logging.getLogger(__name__)
 

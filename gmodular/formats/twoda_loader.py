@@ -39,8 +39,29 @@ class TwoDATable:
         self.rows: Dict[int, Dict[str, str]] = {}   # row_idx -> {col: value}
 
     def get(self, row: int, column: str, default: str = "") -> str:
+        """Get a cell value by (row_index, column_name)."""
         row_data = self.rows.get(row, {})
         return row_data.get(column, default)
+
+    def get_int(self, row: int, column: str, default: int = 0) -> int:
+        """Get a cell value as int. Returns default on error."""
+        val = self.get(row, column, "")
+        if val in ("", "****"):
+            return default
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return default
+
+    def get_float(self, row: int, column: str, default: float = 0.0) -> float:
+        """Get a cell value as float. Returns default on error."""
+        val = self.get(row, column, "")
+        if val in ("", "****"):
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
 
     def get_label(self, row: int) -> str:
         """Return the LABEL column (first text column) for a row."""
@@ -52,6 +73,54 @@ class TwoDATable:
             return row_data.get(self.columns[0], "").strip('"')
         return f"Row {row}"
 
+    def get_column(self, column: str) -> List[Tuple[int, str]]:
+        """
+        Return all (row_index, value) pairs for the given column name.
+        Rows with empty or '****' values are included.
+        """
+        result = []
+        for idx in sorted(self.rows.keys()):
+            val = self.rows[idx].get(column, "")
+            result.append((idx, val))
+        return result
+
+    def find_row(self, column: str, value: str,
+                 case_sensitive: bool = False) -> Optional[int]:
+        """
+        Find the first row where column == value.
+        Returns the row index, or None if not found.
+        """
+        needle = value if case_sensitive else value.lower()
+        for idx in sorted(self.rows.keys()):
+            cell = self.rows[idx].get(column, "")
+            cell_cmp = cell if case_sensitive else cell.lower()
+            if cell_cmp == needle:
+                return idx
+        return None
+
+    def find_rows(self, column: str, value: str,
+                  case_sensitive: bool = False) -> List[int]:
+        """Find all row indices where column == value."""
+        needle = value if case_sensitive else value.lower()
+        result = []
+        for idx in sorted(self.rows.keys()):
+            cell = self.rows[idx].get(column, "")
+            cell_cmp = cell if case_sensitive else cell.lower()
+            if cell_cmp == needle:
+                result.append(idx)
+        return result
+
+    def column_values(self, column: str, skip_empty: bool = True) -> List[str]:
+        """Return all distinct values in a column, in row order."""
+        vals = []
+        for idx in sorted(self.rows.keys()):
+            v = self.rows[idx].get(column, "")
+            if skip_empty and v in ("", "****"):
+                continue
+            if v not in vals:
+                vals.append(v)
+        return vals
+
     def options(self) -> List[Tuple[int, str]]:
         """Return [(row_index, display_name)] sorted by index."""
         result = []
@@ -61,11 +130,39 @@ class TwoDATable:
                 result.append((idx, f"{label}  (row {idx})"))
         return result
 
+    def to_text(self) -> str:
+        """Serialize this 2DA table back to plain-text .2da format."""
+        lines = ["2DA V2.0", ""]
+        # Column header line
+        lines.append("  ".join(self.columns))
+        # Data rows
+        for idx in sorted(self.rows.keys()):
+            row_data = self.rows[idx]
+            cells = [str(idx)]
+            for col in self.columns:
+                v = row_data.get(col, "****")
+                if not v:
+                    v = "****"
+                # Quote if contains spaces
+                if " " in v and not v.startswith('"'):
+                    v = f'"{v}"'
+                cells.append(v)
+            lines.append("  ".join(cells))
+        return "\n".join(lines) + "\n"
+
     def row_count(self) -> int:
         return len(self.rows)
 
     def __len__(self):
         return len(self.rows)
+
+    def __contains__(self, row_idx: int) -> bool:
+        return row_idx in self.rows
+
+    def __iter__(self):
+        """Iterate over (row_index, row_dict) in row-index order."""
+        for idx in sorted(self.rows.keys()):
+            yield idx, self.rows[idx]
 
 
 def _parse_2da(text: str, name: str) -> Optional[TwoDATable]:
@@ -195,6 +292,54 @@ class TwoDALoader:
         if table:
             self._tables[name.lower()] = table
         return table
+
+    def load_from_bytes(self, name: str, data: bytes,
+                        encoding: str = "utf-8") -> Optional[TwoDATable]:
+        """
+        Load a 2DA from raw bytes (e.g. fetched from a game archive).
+        Tries the given encoding first, then falls back to latin-1.
+        """
+        for enc in (encoding, "latin-1"):
+            try:
+                text = data.decode(enc, errors="replace")
+                return self.load_from_text(name, text)
+            except Exception:
+                continue
+        return None
+
+    def get_table(self, table_name: str) -> Optional[TwoDATable]:
+        """Return a loaded table (auto-load if not cached)."""
+        name_lower = table_name.lower()
+        if name_lower not in self._tables:
+            self.load(table_name)
+        return self._tables.get(name_lower)
+
+    def get_cell(self, table_name: str, row: int,
+                 column: str, default: str = "") -> str:
+        """Convenience: get a single cell value directly."""
+        table = self.get_table(table_name)
+        if table is None:
+            return default
+        return table.get(row, column, default)
+
+    def find_row(self, table_name: str, column: str, value: str,
+                 case_sensitive: bool = False) -> Optional[int]:
+        """Find the first row in a table where column == value."""
+        table = self.get_table(table_name)
+        if table is None:
+            return None
+        return table.find_row(column, value, case_sensitive)
+
+    def reload(self, table_name: str) -> Optional[TwoDATable]:
+        """Force-reload a 2DA from disk, discarding the cached version."""
+        name_lower = table_name.lower()
+        self._tables.pop(name_lower, None)
+        return self.load(table_name)
+
+    def clear_cache(self):
+        """Discard all cached 2DA tables (e.g. after game directory change)."""
+        self._tables.clear()
+        log.debug("2DA cache cleared")
 
     def get_name(self, table_name: str, row: int) -> str:
         """Return the label for a given row index."""

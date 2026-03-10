@@ -19,7 +19,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+    _HAS_QT = True
+except ImportError:
+    _HAS_QT = False
+    QObject = object   # type: ignore[misc,assignment]
+    class pyqtSignal:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs): pass
+        def __set_name__(self, owner, name): pass
 
 log = logging.getLogger(__name__)
 
