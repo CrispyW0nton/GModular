@@ -437,6 +437,16 @@ class MainWindow(QMainWindow):
         self._play_btn.clicked.connect(self._toggle_play_mode)
         layout.addWidget(self._play_btn)
 
+        # Tutorial help button
+        tutorial_btn = quick_btn("?  Help", "Open Interactive Tutorial (F1)")
+        tutorial_btn.setStyleSheet(
+            "QPushButton{background:#2a2a4a;color:#88aaee;border:1px solid #3a3a6a;"
+            "border-radius:3px;padding:0 8px;font-size:8pt;font-weight:bold;}"
+            "QPushButton:hover{background:#3a3a6a;color:#aaccff;border-color:#4ec9b0;}"
+        )
+        tutorial_btn.clicked.connect(self._open_tutorial)
+        layout.addWidget(tutorial_btn)
+
         # IPC status dots
         self._gs_dot = QLabel("●")
         self._gs_dot.setToolTip("GhostScripter IPC")
@@ -469,6 +479,8 @@ class MainWindow(QMainWindow):
             self._room_panel = RoomAssemblyPanel()
             self._room_panel.lyt_changed.connect(
                 lambda t: self.log(f"LYT updated ({len(t.splitlines())} lines)"))
+            # ── Connect rooms_changed → viewport so 3-D scene updates live ──
+            self._room_panel.rooms_changed.connect(self._on_rooms_changed_in_grid)
             # Populate with game rooms if available
             try:
                 rm = get_resource_manager()
@@ -746,9 +758,15 @@ class MainWindow(QMainWindow):
 
         # Help
         hm = mb.addMenu("Help")
-        hm.addAction(self._action("How To Build a Module", self._print_howto_guide))
+        hm.addAction(self._action("📖 Interactive Tutorial…",  self._open_tutorial,   "F1"))
+        hm.addAction(self._action("How To Build a Module",      self._print_howto_guide))
+        hm.addSeparator()
+        hm.addAction(self._action("🏗  Room Grid Guide",   lambda: self._open_tutorial(3)))
+        hm.addAction(self._action("🎥  Viewport Controls", lambda: self._open_tutorial(5)))
+        hm.addAction(self._action("📦  Module Packager",   lambda: self._open_tutorial(10)))
         hm.addSeparator()
         hm.addAction(self._action("About GModular", self._show_about))
+
 
     def _action(self, text: str, slot, shortcut: str = "") -> QAction:
         act = QAction(text, self)
@@ -1194,6 +1212,26 @@ class MainWindow(QMainWindow):
             self._ipc_server.update_module_info(
                 self._state.module_name, self._state.git.object_count)
 
+    def _on_rooms_changed_in_grid(self, rooms: list):
+        """
+        Fired whenever rooms are added / removed / moved in the Room Grid tab.
+        Passes the current room list to the viewport so it can rebuild its
+        3-D VAOs and frame the camera.
+        """
+        try:
+            self._viewport.load_rooms(rooms)
+            # Also register MDL file paths so the viewport can find geometry
+            if self._room_panel and hasattr(self._room_panel, 'get_mdl_paths'):
+                for name, path in self._room_panel.get_mdl_paths().items():
+                    # Propagate mdl_path back onto each room instance
+                    for ri in rooms:
+                        n = getattr(ri, 'model_name', None) or getattr(ri, 'name', '')
+                        if n.lower() == name.lower():
+                            ri.mdl_path = path
+            self.log(f"Room Grid → Viewport: {len(rooms)} room(s) loaded")
+        except Exception as e:
+            log.debug(f"_on_rooms_changed_in_grid error: {e}")
+
     def _on_property_changed(self, obj, attr: str, old, new):
         """Called when Inspector edits a field."""
         if attr == "_open_script":
@@ -1614,6 +1652,16 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _open_tutorial(self, step: int = 0):
+        """Open (or raise) the interactive tutorial dialog."""
+        try:
+            from .tutorial_dialog import show_tutorial
+            show_tutorial(parent=self, step=step)
+        except Exception as e:
+            log.warning(f"Tutorial unavailable: {e}")
+            # Fallback: print howto to log
+            self._print_howto_guide()
 
     def _print_howto_guide(self):
         """Print a concise how-to-build guide to the Output Log."""

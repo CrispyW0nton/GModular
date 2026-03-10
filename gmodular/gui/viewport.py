@@ -442,7 +442,10 @@ class ViewportWidget(QOpenGLWidget_base):
         self._grid_vao: Optional["moderngl.VertexArray"] = None
         self._grid_verts_count: int = 0
         self._object_vaos: List[dict] = []   # list of {vao, count, obj}
-        self._mdl_vaos: List[dict] = []      # list of {vao, count, resref, color}
+        self._mdl_vaos: List[dict] = []      # list of {vao, count, resref, color} – play-mode only
+        self._room_vaos: List[dict] = []     # list of {vao, vbo, count, name, color} – editor room meshes
+        self._room_instances: List[dict] = []  # [{name, x, y, z, mdl_path}] from RoomAssemblyPanel
+        self._gl_ready: bool = False          # True once initializeGL has succeeded
 
         # Interaction state
         self._last_mouse: Optional[QPoint] = None
@@ -514,11 +517,14 @@ class ViewportWidget(QOpenGLWidget_base):
 
     def initializeGL(self):
         if not _HAS_MODERNGL:
+            log.warning("ModernGL not available — viewport will show 2D grid fallback")
             return
         try:
             self._ctx = moderngl.create_context()
             self._ctx.enable(moderngl.DEPTH_TEST)
             self._ctx.enable(moderngl.CULL_FACE)
+            self._ctx.enable(moderngl.BLEND)
+            self._ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
 
             self._prog = self._ctx.program(
                 vertex_shader=_VERT_SHADER,
@@ -533,8 +539,14 @@ class ViewportWidget(QOpenGLWidget_base):
                 log.warning(f"Mesh shader compile failed (using fallback): {e}")
                 self._prog_mesh = None
             self._build_grid()
+            self._gl_ready = True
+            log.info("ModernGL context initialised — 3D rendering active")
+            # Rebuild any rooms that were queued before GL was ready
+            if self._room_instances:
+                self._rebuild_room_vaos()
         except Exception as e:
             log.error(f"GL init error: {e}")
+            self._ctx = None
 
     def resizeGL(self, w: int, h: int):
         if self._ctx:
@@ -542,6 +554,7 @@ class ViewportWidget(QOpenGLWidget_base):
 
     def paintGL(self):
         if not self._ctx or not self._prog:
+            # No GL context — the paintEvent fallback draws a 2D grid
             return
         try:
             self._ctx.clear(0.08, 0.08, 0.12, 1.0)
@@ -550,7 +563,6 @@ class ViewportWidget(QOpenGLWidget_base):
 
             # ── View/projection matrix ────────────────────────────────────────
             if self._play_mode and self._play_session:
-                # First-person camera from player controller
                 proj = self.camera.projection_matrix(aspect)
                 eye  = self._play_session.player_eye
                 look = self._play_session.player.look_at_target(self._play_pitch)
@@ -572,6 +584,48 @@ class ViewportWidget(QOpenGLWidget_base):
                 self._grid_vao.render(moderngl.LINES,
                                       vertices=self._grid_verts_count)
 
+            # ── Room MDL geometry (editor + play mode) ────────────────────────
+            # Always render assembled rooms so user sees geometry as soon as
+            # rooms are dragged onto the Room Grid.
+            if self._room_vaos:
+                ident = np.eye(4, dtype='f4')
+                prog  = self._prog_mesh if self._prog_mesh else self._prog
+                if self._prog_mesh:
+                    try:
+                        self._prog_mesh["mvp"].write(vp.astype('f4').tobytes())
+                        self._prog_mesh["model"].write(ident.tobytes())
+                        self._prog_mesh["light_dir"].write(
+                            np.array([0.57, 0.57, 0.57], dtype='f4').tobytes())
+                        self._prog_mesh["ambient"].value = 0.35
+                    except Exception:
+                        pass
+                for entry in self._room_vaos:
+                    vao   = entry.get("vao")
+                    count = entry.get("count", 0)
+                    color = entry.get("color", (0.55, 0.52, 0.48))
+                    if not vao or count == 0:
+                        continue
+                    try:
+                        # Per-room model matrix (translate to room world position)
+                        tx = entry.get("tx", 0.0)
+                        ty = entry.get("ty", 0.0)
+                        tz = entry.get("tz", 0.0)
+                        model_m = _translation(tx, ty, tz)
+                        mvp_m   = proj @ view @ model_m
+                        if self._prog_mesh:
+                            self._prog_mesh["mvp"].write(mvp_m.astype('f4').tobytes())
+                            self._prog_mesh["model"].write(model_m.astype('f4').tobytes())
+                            self._prog_mesh["diffuse_color"].write(
+                                np.array(color, dtype='f4').tobytes())
+                        else:
+                            self._prog["mvp"].write(mvp_m.astype('f4').tobytes())
+                        vao.render(moderngl.TRIANGLES, vertices=count)
+                    except Exception as e:
+                        log.debug(f"room vao render error: {e}")
+
+            # Re-apply plain vp for GIT boxes (they have no per-instance model)
+            self._prog["mvp"].write(vp.astype('f4').tobytes())
+
             # GIT object boxes (always shown in both modes)
             for entry in self._object_vaos:
                 vao   = entry.get("vao")
@@ -582,7 +636,7 @@ class ViewportWidget(QOpenGLWidget_base):
                     except Exception:
                         pass
 
-            # MDL mesh geometry (play mode)
+            # MDL mesh geometry (play mode — character / NPC models)
             if self._play_mode and self._mdl_vaos and self._prog_mesh:
                 ident = np.eye(4, dtype='f4')
                 try:
@@ -613,19 +667,35 @@ class ViewportWidget(QOpenGLWidget_base):
 
     def paintEvent(self, event):
         """QOpenGLWidget.paintEvent — called after GL is composited.
-        We use a QPainter here exclusively for the 2D gizmo overlay."""
-        # Let the GL superclass draw first
+        Two jobs:
+          1. When ModernGL is unavailable, paint a 2-D top-down fallback
+             that shows the grid and room footprints so the user still has
+             a usable layout view.
+          2. Always paint the 2-D gizmo overlay on top of the GL frame.
+        """
+        # Let the GL superclass draw first (renders the 3-D scene if GL is up)
         super().paintEvent(event)
 
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        # ── 2-D fallback when GL is unavailable ──────────────────────────────
+        if not self._gl_ready:
+            self._paint_2d_fallback(p)
+
+        # ── Gizmo overlay ────────────────────────────────────────────────────
         obj = self._selected_obj
         if obj is None or self._play_mode or self._placement_mode:
+            p.end()
             return
         if not hasattr(obj, 'position'):
+            p.end()
             return
 
         pos = obj.position
         sx, sy = self._world_to_screen(pos.x, pos.y, pos.z)
         if sx is None:
+            p.end()
             return
 
         origin = QPoint(int(sx), int(sy))
@@ -654,9 +724,7 @@ class ViewportWidget(QOpenGLWidget_base):
         tips[_AX_R] = origin   # centre of ring
 
         self._gizmo_tips = tips
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        # (reuse the painter already created at the top of this method)
 
         axis_colors = {
             _AX_X: _GIZMO_X_COL,
@@ -781,6 +849,120 @@ class ViewportWidget(QOpenGLWidget_base):
         """Snap a world coordinate to the current snap grid."""
         s = self._snap_size
         return round(value / s) * s
+
+    # ── 2-D Fallback Painter (no GL) ─────────────────────────────────────────
+
+    def _paint_2d_fallback(self, p: "QPainter"):
+        """
+        Draw a top-down 2-D schematic when ModernGL is unavailable.
+        Shows:
+          • Dark background
+          • A ground grid (pixel scale: 1 world-unit = 10 px, panned)
+          • Assembled room footprints as labelled rectangles
+          • GIT object positions as coloured dots
+          • Status text explaining no-GL state
+        """
+        W, H = self.width(), self.height()
+
+        # Background
+        p.fillRect(0, 0, W, H, QColor(20, 20, 30))
+
+        # ── Grid ─────────────────────────────────────────────────────────────
+        scale   = 10.0   # pixels per world unit
+        origin_x = W // 2 - int(self.camera.target[0] * scale)
+        origin_y = H // 2 + int(self.camera.target[1] * scale)
+
+        grid_pen = QPen(QColor(40, 40, 55), 1)
+        axis_pen = QPen(QColor(70, 70, 90), 1)
+        p.setPen(grid_pen)
+
+        step_px = int(scale)
+        if step_px < 4:
+            step_px = 4
+
+        x0 = origin_x % step_px
+        while x0 < W:
+            world_x = (x0 - origin_x) / scale
+            pen = axis_pen if abs(world_x) < 0.5 else grid_pen
+            p.setPen(pen)
+            p.drawLine(x0, 0, x0, H)
+            x0 += step_px
+
+        y0 = origin_y % step_px
+        while y0 < H:
+            world_y = -(y0 - origin_y) / scale
+            pen = axis_pen if abs(world_y) < 0.5 else grid_pen
+            p.setPen(pen)
+            p.drawLine(0, y0, W, y0)
+            y0 += step_px
+
+        # ── Room footprints ──────────────────────────────────────────────────
+        room_colors_2d = [
+            QColor(100, 140, 180, 160),
+            QColor(140, 180, 100, 160),
+            QColor(180, 140, 100, 160),
+            QColor(140, 100, 180, 160),
+        ]
+        label_font = QFont("Consolas", 7)
+        p.setFont(label_font)
+
+        for idx, ri in enumerate(self._room_instances):
+            name = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room_{idx}')
+            rx = float(getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
+            ry = float(getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
+            rw = 10.0   # default tile size
+            rh = 10.0
+
+            sx = origin_x + int(rx * scale)
+            sy = origin_y - int((ry + rh) * scale)
+            pw = int(rw * scale)
+            ph = int(rh * scale)
+
+            col = room_colors_2d[idx % len(room_colors_2d)]
+            p.fillRect(sx, sy, pw, ph, col)
+            p.setPen(QPen(col.lighter(160), 2))
+            p.drawRect(sx, sy, pw, ph)
+            p.setPen(QPen(QColor(230, 230, 230)))
+            p.drawText(sx + 4, sy + 14, name)
+
+        # ── GIT object dots ──────────────────────────────────────────────────
+        try:
+            from ..core.module_state import get_module_state
+            state = get_module_state()
+            if state and state.git:
+                type_colors = {
+                    'placeables': QColor(80, 160, 255),
+                    'creatures':  QColor(255, 120, 60),
+                    'doors':      QColor(220, 200, 40),
+                    'waypoints':  QColor(200, 60, 200),
+                    'triggers':   QColor(60, 220, 120),
+                }
+                for attr, col in type_colors.items():
+                    for obj in getattr(state.git, attr, []):
+                        pos = getattr(obj, 'position', None)
+                        if pos is None:
+                            continue
+                        px_x = origin_x + int(pos.x * scale)
+                        px_y = origin_y - int(pos.y * scale)
+                        is_sel = (obj is self._selected_obj)
+                        dot_col = QColor(255, 255, 0) if is_sel else col
+                        p.setPen(Qt.NoPen)
+                        p.setBrush(QBrush(dot_col))
+                        r = 6 if is_sel else 4
+                        p.drawEllipse(px_x - r, px_y - r, r * 2, r * 2)
+        except Exception:
+            pass
+
+        # ── Status overlay ───────────────────────────────────────────────────
+        p.setPen(QPen(QColor(200, 100, 50)))
+        p.setFont(QFont("Consolas", 8, QFont.Bold))
+        status = "3D viewport offline (ModernGL unavailable)  —  2D top-down view"
+        p.drawText(8, H - 8, status)
+
+        p.setPen(QPen(QColor(120, 120, 120)))
+        p.setFont(QFont("Consolas", 7))
+        controls = "RMB drag: orbit/pan  |  Scroll: zoom  |  Rooms shown as footprints"
+        p.drawText(8, H - 22, controls)
 
     # ── Grid ─────────────────────────────────────────────────────────────────
 
@@ -1089,6 +1271,197 @@ class ViewportWidget(QOpenGLWidget_base):
             except Exception:
                 pass
         self._mdl_vaos.clear()
+
+    # ── Room MDL rendering (editor mode) ─────────────────────────────────────
+
+    def load_rooms(self, rooms: list):
+        """
+        Public API — called by main_window whenever the Room Assembly grid
+        changes.  ``rooms`` is a list of RoomInstance (or plain dicts with
+        keys ``name``, ``x``, ``y``, ``z`` / ``grid_x`` / ``grid_y``).
+
+        We store the list, immediately try to build VAOs (if GL is ready),
+        and frame the camera on the first room centre.
+        """
+        self._room_instances = list(rooms)
+        if self._gl_ready:
+            self._rebuild_room_vaos()
+        else:
+            # GL not yet ready (widget not shown) — VAOs will be built in
+            # initializeGL() once the context is created.
+            log.debug("load_rooms: GL not ready yet, queued %d rooms", len(rooms))
+        if rooms:
+            self._frame_rooms()
+        self.update()
+
+    def _frame_rooms(self):
+        """Point the camera at the centroid of all current room positions."""
+        if not _HAS_NUMPY:
+            return
+        pts = []
+        for ri in self._room_instances:
+            x = getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0)
+            y = getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0)
+            z = getattr(ri, 'z', 0.0)
+            if x is None:
+                x = 0.0
+            if y is None:
+                y = 0.0
+            pts.append([float(x), float(y), float(z)])
+        if not pts:
+            return
+        arr    = np.array(pts, dtype='f4')
+        center = arr.mean(axis=0)
+        radius = float(np.linalg.norm(arr - center, axis=1).max()) if len(pts) > 1 else 10.0
+        self.camera.frame(center, max(radius, 5.0))
+
+    def _rebuild_room_vaos(self):
+        """
+        For each room in self._room_instances, attempt to parse its MDL from
+        the game directory and upload geometry to GL.  Falls back to a
+        coloured placeholder box so there is always something visible.
+        """
+        self._release_room_vaos()
+        if not self._ctx or not self._prog:
+            return
+
+        room_colors = [
+            (0.45, 0.42, 0.38),
+            (0.38, 0.42, 0.45),
+            (0.42, 0.45, 0.38),
+            (0.45, 0.38, 0.42),
+        ]
+
+        for idx, ri in enumerate(self._room_instances):
+            # Derive world position from RoomInstance attributes
+            name = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room_{idx}')
+            x    = float(getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
+            y    = float(getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
+            z    = float(getattr(ri, 'z', 0.0) or 0.0)
+            color = room_colors[idx % len(room_colors)]
+
+            loaded = False
+
+            # ── Try to load MDL from registered mdl_path ──────────────────
+            mdl_path = getattr(ri, 'mdl_path', None) or ''
+            if not mdl_path and self._game_dir:
+                import os
+                for ext in ('mdl',):
+                    candidate = os.path.join(self._game_dir, 'models',
+                                             name.lower() + '.' + ext)
+                    if os.path.exists(candidate):
+                        mdl_path = candidate
+                        break
+                    # Try directly under game_dir
+                    candidate2 = os.path.join(self._game_dir, name.lower() + '.' + ext)
+                    if os.path.exists(candidate2):
+                        mdl_path = candidate2
+                        break
+
+            if mdl_path and _HAS_MDL:
+                try:
+                    cache = get_model_cache()
+                    mesh  = cache.load(mdl_path)
+                    if mesh:
+                        self._upload_room_mesh(mesh, color, tx=x, ty=y, tz=z)
+                        loaded = True
+                except Exception as e:
+                    log.debug(f"room MDL load error for {name}: {e}")
+
+            if not loaded:
+                # Fallback: coloured wireframe box so user knows the room exists
+                try:
+                    w, h = 10.0, 10.0   # default KotOR tile footprint
+                    verts = _box_verts(x + w/2, y + h/2, z,
+                                       w/2, h/2, 2.0, color)
+                    vbo = self._ctx.buffer(verts.tobytes())
+                    vao = self._ctx.vertex_array(
+                        self._prog,
+                        [(vbo, "3f 3f", "in_position", "in_color")]
+                    )
+                    self._room_vaos.append({
+                        "vao": vao, "vbo": vbo,
+                        "count": len(verts) // 6,
+                        "name": name, "color": color,
+                        "tx": 0.0, "ty": 0.0, "tz": 0.0,
+                    })
+                    log.debug(f"Room '{name}' at ({x:.1f},{y:.1f}) — placeholder box")
+                except Exception as e:
+                    log.debug(f"placeholder box error: {e}")
+
+        log.info(f"Room VAOs rebuilt: {len(self._room_vaos)} entries "
+                 f"from {len(self._room_instances)} rooms")
+        self.update()
+
+    def _upload_room_mesh(self, mesh_data, color: tuple,
+                          tx: float = 0.0, ty: float = 0.0, tz: float = 0.0):
+        """Upload one parsed MDL's geometry as room VAO(s).  Mirrors
+        _upload_mesh_to_gl but tags entries as room_vaos."""
+        if not self._ctx or not self._prog:
+            return
+        try:
+            prog = self._prog_mesh if self._prog_mesh else self._prog
+            nodes = (list(mesh_data.visible_mesh_nodes())
+                     if hasattr(mesh_data, 'visible_mesh_nodes')
+                     else mesh_data.mesh_nodes())
+            uploaded = 0
+            for node in nodes:
+                verts_raw  = getattr(node, 'vertices', [])
+                faces_raw  = getattr(node, 'faces', [])
+                normals_raw = getattr(node, 'normals', [])
+                if not verts_raw or not faces_raw:
+                    continue
+                verts_out = []
+                has_normals = len(normals_raw) == len(verts_raw)
+                for f in faces_raw:
+                    if max(f) >= len(verts_raw):
+                        continue
+                    for vi in f:
+                        vx, vy, vz = verts_raw[vi]
+                        if has_normals:
+                            nx_, ny_, nz_ = normals_raw[vi]
+                        else:
+                            nx_, ny_, nz_ = 0.0, 0.0, 1.0
+                        if self._prog_mesh:
+                            verts_out.extend([vx, vy, vz, nx_, ny_, nz_])
+                        else:
+                            r, g, b = color
+                            verts_out.extend([vx, vy, vz, r, g, b])
+                if not verts_out:
+                    continue
+                arr = np.array(verts_out, dtype='f4')
+                vbo = self._ctx.buffer(arr.tobytes())
+                if self._prog_mesh:
+                    vao = self._ctx.vertex_array(
+                        self._prog_mesh,
+                        [(vbo, "3f 3f", "in_position", "in_normal")]
+                    )
+                else:
+                    vao = self._ctx.vertex_array(
+                        self._prog,
+                        [(vbo, "3f 3f", "in_position", "in_color")]
+                    )
+                self._room_vaos.append({
+                    "vao": vao, "vbo": vbo,
+                    "count": len(verts_out) // 6,
+                    "name": getattr(mesh_data, 'name', ''),
+                    "color": color,
+                    "tx": tx, "ty": ty, "tz": tz,
+                })
+                uploaded += 1
+            log.debug(f"_upload_room_mesh: {uploaded} node VAOs for {getattr(mesh_data,'name','?')}")
+        except Exception as e:
+            log.debug(f"_upload_room_mesh error: {e}")
+
+    def _release_room_vaos(self):
+        """Release all room geometry VAOs / VBOs."""
+        for entry in self._room_vaos:
+            try:
+                entry["vbo"].release()
+                entry["vao"].release()
+            except Exception:
+                pass
+        self._room_vaos.clear()
 
     # ── Hit Testing ──────────────────────────────────────────────────────────
 
