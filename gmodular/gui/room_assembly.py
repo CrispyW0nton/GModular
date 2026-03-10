@@ -84,6 +84,20 @@ class RoomInstance:
     connected_to: List[str] = field(default_factory=list)
     # Door-hook positions relative to world origin (filled by MDL scan)
     door_hooks: List[Tuple[float, float, float]] = field(default_factory=list)
+    # Full filesystem path to the .mdl file (set when game dir is known)
+    mdl_path: str = ""
+
+    # ── Convenience aliases used by the viewport ──────────────────────────
+    @property
+    def name(self) -> str:         return self.mdl_name
+    @property
+    def model_name(self) -> str:   return self.mdl_name
+    @property
+    def x(self) -> float:          return self.world_x
+    @property
+    def y(self) -> float:          return self.world_y
+    @property
+    def z(self) -> float:          return self.world_z
 
 
 @dataclass
@@ -650,6 +664,7 @@ class RoomGridWidget(QWidget):
             world_x=gx * rw,
             world_y=gy * rh,
             width=rw, height=rh,
+            mdl_path=getattr(self, '_mdl_paths', {}).get(mdl_name.lower(), ""),
         )
         self._rooms.append(room)
         self._selected = room
@@ -692,17 +707,32 @@ class RoomGridWidget(QWidget):
         """
         Read an MDL file to extract bounding-box dimensions and door-hook positions.
         Stores dims in the cache so future placements use accurate world coordinates.
+        Also stores the path so that already-placed rooms can resolve geometry.
         """
+        key = mdl_name.lower()
+        # Store raw path for viewport geometry loading
+        if not hasattr(self, '_mdl_paths'):
+            self._mdl_paths: dict = {}
+        self._mdl_paths[key] = mdl_path
+
         dims = _read_mdl_bounds(mdl_path)
         if dims:
-            self._room_dims[mdl_name.lower()] = dims
+            self._room_dims[key] = dims
             log.debug(f"Room '{mdl_name}': MDL dims = {dims[0]:.1f} × {dims[1]:.1f} units")
         hooks = _scan_door_hooks(mdl_path)
         if hooks:
             log.debug(f"Room '{mdl_name}': {len(hooks)} door-hooks found")
-            # Store hooks for future room placements
             self._door_hooks_cache = getattr(self, '_door_hooks_cache', {})
-            self._door_hooks_cache[mdl_name.lower()] = hooks
+            self._door_hooks_cache[key] = hooks
+
+        # Backfill mdl_path on already-placed rooms with this name
+        for room in self._rooms:
+            if room.mdl_name.lower() == key and not room.mdl_path:
+                room.mdl_path = mdl_path
+
+    def get_mdl_paths(self) -> dict:
+        """Return a dict mapping mdl_name (lower) → filesystem path."""
+        return dict(getattr(self, '_mdl_paths', {}))
 
     def place_room_by_name(self, mdl_name: str, gx: int, gy: int) -> bool:
         ok = self._place_room(mdl_name, gx, gy)
@@ -1136,6 +1166,10 @@ class RoomAssemblyPanel(QWidget):
     def register_mdl_file(self, mdl_name: str, mdl_path: str):
         """Register an MDL file so dimensions and door-hooks are read automatically."""
         self._grid.register_mdl_file(mdl_name, mdl_path)
+
+    def get_mdl_paths(self) -> dict:
+        """Return a dict mapping mdl_name (lower) → filesystem path."""
+        return self._grid.get_mdl_paths()
 
     def get_rooms(self) -> List[RoomInstance]:
         return self._grid.get_rooms()
