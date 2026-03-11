@@ -1,23 +1,54 @@
 """
 GModular — 3D Viewport Widget
-PyQt5 + ModernGL OpenGL viewport for module editing.
+==============================
+Pure-QWidget + ModernGL EGL offscreen rendering.
 
-Features:
+Architecture
+------------
+Instead of QOpenGLWidget (which requires an X11/Wayland display to create
+a real GL context), we use:
+
+  1. moderngl.create_standalone_context(backend='egl')
+     — creates an EGL surfaceless context using Mesa's llvmpipe software
+       rasterizer.  Works on any Linux machine including headless CI/CD
+       servers and sandboxes with no GPU.
+
+  2. Render everything into an FBO (framebuffer object) at widget size.
+
+  3. Read the FBO pixels → QImage → draw with QPainter in paintEvent.
+     This blits the rendered frame onto the screen at native resolution.
+
+No GhostRigger, GhostScripter or any external tool is required.
+The viewport is fully self-contained.
+
+Features
+--------
 - Orbit camera (RMB drag), pan (MMB drag), zoom (scroll)
-- WASD first-person movement (when in playtest mode)
-- Walkmesh flat ground plane (grid floor)
-- GIT object billboards (placeables/creatures/doors as colored boxes)
+- WASD editor camera fly-through
+- Ground grid (Z=0 plane)
+- GIT object proxy boxes (placeables, creatures, doors, waypoints, …)
+- Room MDL geometry — rendered as soon as rooms are placed on the Room Grid
+  (falls back to a coloured placeholder box if no .mdl file is found)
 - Object selection via raycasting
-- Object placement via left-click on ground
-- Gizmos for selected object (translate handles)
-- Coordinate system: Z-up, right-handed (matches KotOR/Odyssey)
+- Object placement (left-click on ground)
+- Transform gizmo (2-D overlay) — XYZ translate + Z rotate
+- Snap (Ctrl / Shift / Ctrl+Shift)
+- First-person play preview mode
+- 2-D fallback painter when GL is completely unavailable
+- Coordinate system: Z-up right-handed (matches KotOR / Odyssey engine)
 """
 from __future__ import annotations
-import math
-import time
-import logging
-from typing import Optional, List, Tuple, Callable, Dict
 
+import math
+import os
+import time
+import ctypes
+import logging
+from typing import Optional, List, Tuple, Dict
+
+log = logging.getLogger(__name__)
+
+# ─── numpy ────────────────────────────────────────────────────────────────────
 try:
     import numpy as np
     _HAS_NUMPY = True
@@ -25,48 +56,84 @@ except ImportError:
     _HAS_NUMPY = False
     np = None  # type: ignore
 
+# ─── Qt ───────────────────────────────────────────────────────────────────────
 try:
-    from PyQt5.QtWidgets import QOpenGLWidget, QSizePolicy
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
+    from PyQt5.QtWidgets import QWidget, QSizePolicy
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint
     from PyQt5.QtGui import (
-        QKeyEvent, QMouseEvent, QWheelEvent, QSurfaceFormat,
-        QPainter, QPen, QBrush, QColor, QFont, QFontMetrics,
-        QPolygon, QCursor,
+        QKeyEvent, QMouseEvent, QWheelEvent,
+        QPainter, QPen, QBrush, QColor, QFont,
+        QPolygon, QCursor, QImage,
     )
     _HAS_QT = True
-    QOpenGLWidget_base = QOpenGLWidget
+    _QWidget_base = QWidget
 except ImportError:
     _HAS_QT = False
-    QOpenGLWidget_base = object  # type: ignore[misc,assignment]
-    QOpenGLWidget = object  # type: ignore[misc,assignment]
-    QColor = None  # type: ignore[assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
-        def __init__(self, *args, **kwargs): pass
-        def __set_name__(self, owner, name): pass
+    _QWidget_base = object  # type: ignore
+    QColor = None  # type: ignore
+    class pyqtSignal:  # type: ignore
+        def __init__(self, *a, **kw): pass
+        def __set_name__(self, o, n): pass
 
-log = logging.getLogger(__name__)
+# ─── ModernGL / EGL ───────────────────────────────────────────────────────────
+_HAS_MODERNGL = False
+_GL_INIT_ERROR = ""
+_GL_BACKEND = "none"   # 'egl' | 'default' | 'none'
 
-try:
-    import moderngl
-    _HAS_MODERNGL = True
-    _GL_BACKEND = "moderngl"
-except ImportError:
-    _HAS_MODERNGL = False
-    _GL_BACKEND = "none"
-    # Try PyOpenGL as a pure-Python fallback (no C++ compiler needed)
+
+def _bootstrap_gl_linux():
+    """
+    Pre-load libGL and libEGL into the process on Linux.
+    Searches common system library paths (both x86_64 and aarch64).
+    Silent on Windows/macOS — those platforms don't need this step.
+    """
+    if os.name != "posix":
+        return  # Windows / macOS — not needed
+    import glob
+    search_patterns = [
+        "/usr/lib/x86_64-linux-gnu/libGL.so*",
+        "/usr/lib/aarch64-linux-gnu/libGL.so*",
+        "/usr/lib/libGL.so*",
+        "/usr/local/lib/libGL.so*",
+    ]
+    egl_patterns = [
+        "/usr/lib/x86_64-linux-gnu/libEGL.so*",
+        "/usr/lib/aarch64-linux-gnu/libEGL.so*",
+        "/usr/lib/libEGL.so*",
+    ]
+    for patterns, tag in [(search_patterns, "libGL"), (egl_patterns, "libEGL")]:
+        loaded = False
+        for pat in patterns:
+            for path in sorted(glob.glob(pat), reverse=True):
+                try:
+                    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                    log.debug(f"Pre-loaded {path}")
+                    loaded = True
+                    break
+                except OSError:
+                    pass
+            if loaded:
+                break
+
+
+def _init_moderngl():
+    """Import moderngl and set _HAS_MODERNGL."""
+    global _HAS_MODERNGL, _GL_INIT_ERROR
     try:
-        import OpenGL.GL as _GL  # noqa: F401
-        _GL_BACKEND = "pyopengl"
-        log.info("ModernGL not available — using PyOpenGL fallback (pure Python)")
-    except ImportError:
-        log.warning(
-            "Neither ModernGL nor PyOpenGL is available. "
-            "The 3D viewport will show a placeholder grid. "
-            "Install PyOpenGL:  pip install PyOpenGL"
-        )
+        import moderngl as _mgl  # noqa: F401
+        _HAS_MODERNGL = True
+    except ImportError as exc:
+        _GL_INIT_ERROR = f"moderngl not installed: {exc}"
+        log.warning(_GL_INIT_ERROR)
 
+
+# Bootstrap on import
+_bootstrap_gl_linux()
+_init_moderngl()
+
+# ─── Other GModular imports (graceful) ────────────────────────────────────────
 try:
-    from ..formats.gff_types import GITPlaceable, GITCreature, GITDoor, Vector3
+    from ..formats.gff_types import Vector3
     from ..core.module_state import get_module_state
 except ImportError:
     pass
@@ -79,17 +146,17 @@ except ImportError:
     _HAS_ENGINE = False
 
 try:
-    from ..formats.mdl_parser import get_model_cache, MeshData
+    from ..formats.mdl_parser import get_model_cache
     _HAS_MDL = True
 except ImportError:
     _HAS_MDL = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 #  Math helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
-def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
+def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> "np.ndarray":
     f = 1.0 / math.tan(math.radians(fov_deg) * 0.5)
     d = near - far
     return np.array([
@@ -100,67 +167,43 @@ def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> np.n
     ], dtype='f4')
 
 
-def _look_at(eye: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
+def _look_at(eye: "np.ndarray", target: "np.ndarray",
+             up: "np.ndarray") -> "np.ndarray":
     f = target - eye
-    f /= np.linalg.norm(f)
+    f /= max(np.linalg.norm(f), 1e-9)
     r = np.cross(f, up)
     r_len = np.linalg.norm(r)
-    if r_len < 1e-9:
-        r = np.array([1.0, 0.0, 0.0], dtype='f4')
-    else:
-        r /= r_len
+    r = r / r_len if r_len > 1e-9 else np.array([1., 0., 0.], dtype='f4')
     u = np.cross(r, f)
     m = np.eye(4, dtype='f4')
-    m[0, :3] = r
-    m[1, :3] = u
-    m[2, :3] = -f
-    m[3, 0] = -np.dot(r, eye)
-    m[3, 1] = -np.dot(u, eye)
-    m[3, 2] =  np.dot(f, eye)
-    # Transpose to get column-major
+    m[0, :3] = r;  m[3, 0] = -np.dot(r, eye)
+    m[1, :3] = u;  m[3, 1] = -np.dot(u, eye)
+    m[2, :3] = -f; m[3, 2] =  np.dot(f, eye)
     return m.T
 
 
-def _translation(tx: float, ty: float, tz: float) -> np.ndarray:
+def _translation(tx: float, ty: float, tz: float) -> "np.ndarray":
     m = np.eye(4, dtype='f4')
     m[0, 3] = tx; m[1, 3] = ty; m[2, 3] = tz
     return m
 
 
-def _scale_mat(s: float) -> np.ndarray:
-    m = np.eye(4, dtype='f4')
-    m[0, 0] = m[1, 1] = m[2, 2] = s
-    return m
-
-
-def _rot_z(angle_rad: float) -> np.ndarray:
-    c, s = math.cos(angle_rad), math.sin(angle_rad)
-    m = np.eye(4, dtype='f4')
-    m[0, 0] =  c; m[0, 1] = -s
-    m[1, 0] =  s; m[1, 1] =  c
-    return m
-
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 #  Orbit Camera
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
 class OrbitCamera:
-    """
-    Maya-style orbit camera.
-    KotOR / GModular uses Z-up, right-handed coordinate system.
-    """
+    """Maya-style orbit camera (Z-up, right-handed — matches KotOR)."""
 
     def __init__(self):
-        self.azimuth   = 45.0   # degrees around Z axis
-        self.elevation = 30.0   # degrees up from ground plane
+        self.azimuth   = 45.0
+        self.elevation = 30.0
         self.distance  = 15.0
-        self.target    = np.array([0.0, 0.0, 0.0], dtype='f4')
+        self.target    = np.array([0., 0., 0.], dtype='f4')
         self.fov       = 60.0
-        self._near     = 0.1
-        self._far      = 1000.0
+        self._near, self._far = 0.1, 1000.0
 
-    def eye(self) -> np.ndarray:
+    def eye(self) -> "np.ndarray":
         az = math.radians(self.azimuth)
         el = math.radians(self.elevation)
         x  = self.distance * math.cos(el) * math.cos(az)
@@ -168,73 +211,52 @@ class OrbitCamera:
         z  = self.distance * math.sin(el)
         return self.target + np.array([x, y, z], dtype='f4')
 
-    def view_matrix(self) -> np.ndarray:
-        eye = self.eye()
-        up  = np.array([0.0, 0.0, 1.0], dtype='f4')
-        return _look_at(eye, self.target, up)
+    def view_matrix(self) -> "np.ndarray":
+        return _look_at(self.eye(), self.target,
+                        np.array([0., 0., 1.], dtype='f4'))
 
-    def projection_matrix(self, aspect: float) -> np.ndarray:
+    def projection_matrix(self, aspect: float) -> "np.ndarray":
         return _perspective(self.fov, aspect, self._near, self._far)
 
     def orbit(self, d_az: float, d_el: float):
-        self.azimuth    = (self.azimuth + d_az) % 360.0
-        self.elevation  = max(-85.0, min(85.0, self.elevation + d_el))
+        self.azimuth = (self.azimuth + d_az) % 360.
+        self.elevation = max(-85., min(85., self.elevation + d_el))
 
     def zoom(self, delta: float):
         self.distance = max(0.5, self.distance * (0.9 ** delta))
 
     def pan(self, dx: float, dy: float):
-        """Pan in screen space.
-
-        Derives the screen-up vector from the true camera up so that pan
-        works correctly even when the camera is near-vertical (elevation
-        close to ±90°).  A zero-length guard prevents NaN at the degenerate
-        case of looking straight down/up.
-        """
-        az = math.radians(self.azimuth)
-        el = math.radians(self.elevation)
-        # Horizontal right vector (always well-defined, perpendicular to Z)
-        right = np.array([-math.sin(az), math.cos(az), 0.0], dtype='f4')
-        # Forward vector toward target
+        az  = math.radians(self.azimuth)
+        right = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
         fwd = self.target - self.eye()
         fwd_len = np.linalg.norm(fwd)
         if fwd_len < 1e-9:
-            return   # degenerate: eye == target, nothing to pan
+            return
         fwd /= fwd_len
-        # Screen-up = cross(right, fwd); normalise with zero-length guard
         up = np.cross(right, fwd)
         up_len = np.linalg.norm(up)
         if up_len < 1e-9:
-            # Near-vertical look: fall back to world-right as a safe second vector
-            right2 = np.array([1.0, 0.0, 0.0], dtype='f4')
-            up = np.cross(right2, fwd)
-            up_len = np.linalg.norm(up)
-            if up_len < 1e-9:
-                up = np.array([0.0, 1.0, 0.0], dtype='f4')
-            else:
-                up /= up_len
+            up = np.array([0., 1., 0.], dtype='f4')
         else:
             up /= up_len
         scale = self.distance * 0.002
         self.target += right * dx * scale
         self.target -= up    * dy * scale
 
-    def frame(self, center: np.ndarray, radius: float):
+    def frame(self, center: "np.ndarray", radius: float):
         self.target = center.copy()
-        self.distance = max(1.0, radius * 2.5)
+        self.distance = max(1., radius * 2.5)
 
-    def ray_from_screen(self, sx: int, sy: int, W: int, H: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (origin, direction) ray from screen pixel (sx, sy)."""
+    def ray_from_screen(self, sx: int, sy: int, W: int, H: int
+                        ) -> Tuple["np.ndarray", "np.ndarray"]:
         aspect = W / max(H, 1)
-        # NDC
-        nx = (2.0 * sx / W) - 1.0
-        ny = 1.0 - (2.0 * sy / H)
+        nx = (2. * sx / W) - 1.
+        ny = 1. - (2. * sy / H)
         f  = math.tan(math.radians(self.fov) * 0.5)
-        # View-space direction
         eye = self.eye()
         fwd = self.target - eye
         fwd /= np.linalg.norm(fwd)
-        up  = np.array([0.0, 0.0, 1.0], dtype='f4')
+        up  = np.array([0., 0., 1.], dtype='f4')
         right = np.cross(fwd, up)
         right /= np.linalg.norm(right)
         up2  = np.cross(right, fwd)
@@ -243,11 +265,11 @@ class OrbitCamera:
         return eye, dir_
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  OpenGL Viewport Widget
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  GLSL Shaders
+# ═════════════════════════════════════════════════════════════════════════════
 
-_VERT_SHADER = """
+_VERT_FLAT = """
 #version 330 core
 in vec3 in_position;
 in vec3 in_color;
@@ -259,17 +281,14 @@ void main() {
 }
 """
 
-_FRAG_SHADER = """
+_FRAG_FLAT = """
 #version 330 core
 in vec3 v_color;
 out vec4 fragColor;
-void main() {
-    fragColor = vec4(v_color, 1.0);
-}
+void main() { fragColor = vec4(v_color, 1.0); }
 """
 
-# Lit mesh shader (for MDL geometry rendering in play mode)
-_VERT_MESH_SHADER = """
+_VERT_LIT = """
 #version 330 core
 in vec3 in_position;
 in vec3 in_normal;
@@ -285,13 +304,13 @@ void main() {
 }
 """
 
-_FRAG_MESH_SHADER = """
+_FRAG_LIT = """
 #version 330 core
 in vec3 v_normal;
 in vec3 v_world_pos;
 out vec4 fragColor;
 uniform vec3 diffuse_color;
-uniform vec3 light_dir;      // normalised, world space
+uniform vec3 light_dir;
 uniform float ambient;
 void main() {
     float diff = max(dot(normalize(v_normal), normalize(light_dir)), 0.0);
@@ -300,1287 +319,1036 @@ void main() {
 }
 """
 
-# Colors for different object types (RGB 0-1)
-_COLOR_PLACEABLE = (0.2, 0.6, 1.0)    # blue
-_COLOR_CREATURE  = (1.0, 0.4, 0.2)    # orange
-_COLOR_DOOR      = (0.8, 0.7, 0.1)    # yellow
-_COLOR_TRIGGER   = (0.2, 1.0, 0.5)    # green
-_COLOR_WAYPOINT  = (0.8, 0.2, 0.8)    # purple
-_COLOR_SOUND     = (0.2, 0.9, 0.9)    # cyan
-_COLOR_STORE     = (0.2, 0.9, 0.3)    # bright green
-_COLOR_SELECTED  = (1.0, 1.0, 0.0)    # bright yellow
-_COLOR_GRID      = (0.2, 0.2, 0.3)
-_COLOR_GRID_AXIS = (0.5, 0.5, 0.6)
-_COLOR_GROUND    = (0.12, 0.12, 0.18)
+# ═════════════════════════════════════════════════════════════════════════════
+#  Geometry helpers
+# ═════════════════════════════════════════════════════════════════════════════
+
+_COLOR_PLACEABLE = (0.2, 0.6, 1.0)
+_COLOR_CREATURE  = (1.0, 0.4, 0.2)
+_COLOR_DOOR      = (0.8, 0.7, 0.1)
+_COLOR_TRIGGER   = (0.2, 1.0, 0.5)
+_COLOR_WAYPOINT  = (0.8, 0.2, 0.8)
+_COLOR_SOUND     = (0.2, 0.9, 0.9)
+_COLOR_STORE     = (0.2, 0.9, 0.3)
+_COLOR_SELECTED  = (1.0, 1.0, 0.0)
 
 
-def _box_verts(cx: float, cy: float, cz: float, hw: float, hh: float, hd: float,
-               color: Tuple) -> np.ndarray:
-    """Generate a solid-colored wireframe box (12 lines, 24 verts)."""
-    r, g, b = color
-    xs = [cx - hw, cx + hw]
-    ys = [cy - hh, cy + hh]
-    zs = [cz,      cz + hd * 2]
-
-    corners = [
-        (xs[0], ys[0], zs[0]), (xs[1], ys[0], zs[0]),
-        (xs[1], ys[1], zs[0]), (xs[0], ys[1], zs[0]),
-        (xs[0], ys[0], zs[1]), (xs[1], ys[0], zs[1]),
-        (xs[1], ys[1], zs[1]), (xs[0], ys[1], zs[1]),
-    ]
-    edges = [
-        (0,1),(1,2),(2,3),(3,0),
-        (4,5),(5,6),(6,7),(7,4),
-        (0,4),(1,5),(2,6),(3,7),
-    ]
-    verts = []
-    for a, b_ in edges:
-        for idx in (a, b_):
-            verts.extend([*corners[idx], r, g, b])
-    return np.array(verts, dtype='f4')
-
-
-def _box_verts_solid(cx, cy, cz, hw, hh, hd, color):
-    """Filled box: 6 faces × 2 triangles × 3 verts × 6 floats."""
+def _box_solid(cx, cy, cz, hw, hh, hd, color) -> "np.ndarray":
+    """Filled box: 6 faces × 2 tri × 3 verts × 6 floats (xyz rgb)."""
     r, g, b = color
     x0, x1 = cx - hw, cx + hw
     y0, y1 = cy - hh, cy + hh
     z0, z1 = cz, cz + hd * 2
-
     faces = [
-        # Bottom
         (x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y0,z0, x1,y1,z0, x0,y1,z0),
-        # Top
         (x0,y0,z1, x1,y1,z1, x1,y0,z1, x0,y0,z1, x0,y1,z1, x1,y1,z1),
-        # Front (-Y)
         (x0,y0,z0, x1,y0,z1, x1,y0,z0, x0,y0,z0, x0,y0,z1, x1,y0,z1),
-        # Back (+Y)
         (x0,y1,z0, x1,y1,z0, x1,y1,z1, x0,y1,z0, x1,y1,z1, x0,y1,z1),
-        # Left (-X)
         (x0,y0,z0, x0,y1,z0, x0,y1,z1, x0,y0,z0, x0,y1,z1, x0,y0,z1),
-        # Right (+X)
         (x1,y0,z0, x1,y1,z1, x1,y1,z0, x1,y0,z0, x1,y0,z1, x1,y1,z1),
     ]
-    verts = []
+    v = []
     for face in faces:
-        coords = list(face)
-        for i in range(0, len(coords), 3):
-            verts.extend([coords[i], coords[i+1], coords[i+2], r, g, b])
-    return np.array(verts, dtype='f4')
+        c = list(face)
+        for i in range(0, len(c), 3):
+            v.extend([c[i], c[i+1], c[i+2], r, g, b])
+    return np.array(v, dtype='f4')
 
 
-def _grid_verts(n: int = 20, step: float = 1.0) -> np.ndarray:
-    """Generate an N×N grid on the Z=0 plane."""
-    verts = []
-    half  = n * step * 0.5
+def _box_wire(cx, cy, cz, hw, hh, hd, color) -> "np.ndarray":
+    """Wireframe box (12 edges × 2 verts × 6 floats)."""
+    r, g, b = color
+    xs = [cx - hw, cx + hw]
+    ys = [cy - hh, cy + hh]
+    zs = [cz, cz + hd * 2]
+    corners = [
+        (xs[0],ys[0],zs[0]),(xs[1],ys[0],zs[0]),
+        (xs[1],ys[1],zs[0]),(xs[0],ys[1],zs[0]),
+        (xs[0],ys[0],zs[1]),(xs[1],ys[0],zs[1]),
+        (xs[1],ys[1],zs[1]),(xs[0],ys[1],zs[1]),
+    ]
+    edges = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),
+             (0,4),(1,5),(2,6),(3,7)]
+    v = []
+    for a, b_ in edges:
+        for idx in (a, b_):
+            v.extend([*corners[idx], r, g, b])
+    return np.array(v, dtype='f4')
+
+
+# Backwards-compatible aliases (used by tests and older code)
+_box_verts       = _box_wire   # wireframe variant
+_box_verts_solid = _box_solid  # solid-filled variant
+
+
+def _grid_verts(n: int = 20, step: float = 1.0) -> "np.ndarray":
+    """N×N ground grid on the Z=0 plane."""
+    v = []
+    half = n * step * 0.5
     for i in range(-n, n + 1):
         x = i * step
-        br = 0.4 if (i % 5 == 0) else 0.18
-        # Along X axis
-        verts.extend([-half, x, 0, br, br, br + 0.1,
-                       half, x, 0, br, br, br + 0.1])
-        # Along Y axis
-        verts.extend([x, -half, 0, br, br, br + 0.1,
-                       x,  half, 0, br, br, br + 0.1])
-    # Axis lines
-    verts.extend([0, -half, 0, 0.6, 0.2, 0.2,    # X axis (red)
-                   half*2, -half, 0, 0.6, 0.2, 0.2])
-    verts.extend([-half, 0, 0, 0.2, 0.6, 0.2,    # Y axis (green)
-                  -half, half*2, 0, 0.2, 0.6, 0.2])
-    return np.array(verts, dtype='f4')
+        br = 0.35 if (i % 5 == 0) else 0.16
+        v.extend([-half, x, 0, br, br, br + .08,
+                   half, x, 0, br, br, br + .08])
+        v.extend([x, -half, 0, br, br, br + .08,
+                   x,  half, 0, br, br, br + .08])
+    v.extend([0, -half, 0, .55,.18,.18,  half*2,-half, 0, .55,.18,.18])
+    v.extend([-half, 0, 0, .18,.55,.18, -half, half*2, 0, .18,.55,.18])
+    return np.array(v, dtype='f4')
 
 
-# ── Gimbal / Translate Gizmo ─────────────────────────────────────────────────
-# Snap increments (KotOR world units)
-SNAP_UNIT  = 1.0    # Ctrl held
-SNAP_HALF  = 0.5    # Ctrl+Shift held
-SNAP_FINE  = 0.25   # Shift held alone
+# ═════════════════════════════════════════════════════════════════════════════
+#  Gizmo constants
+# ═════════════════════════════════════════════════════════════════════════════
 
-GIZMO_LEN  = 72     # arrow screen length (px)
-GIZMO_HEAD = 10     # arrowhead px
-GIZMO_HIT  = 14     # hit-test radius (px)
-
-_GIZMO_X_COL = QColor(230,  60,  60) if _HAS_QT else None   # red   — X
-_GIZMO_Y_COL = QColor( 60, 200,  60) if _HAS_QT else None   # green — Y
-_GIZMO_Z_COL = QColor( 60, 120, 230) if _HAS_QT else None   # blue  — Z
-_GIZMO_R_COL = QColor(220, 220,  50) if _HAS_QT else None   # yellow — rotate Z
-_GIZMO_ACT   = QColor(255, 255, 100) if _HAS_QT else None   # active highlight
-
+SNAP_UNIT, SNAP_HALF, SNAP_FINE = 1.0, 0.5, 0.25
+GIZMO_LEN, GIZMO_HEAD, GIZMO_HIT = 72, 10, 14
 _AX_X, _AX_Y, _AX_Z, _AX_R = 0, 1, 2, 3
 
+if _HAS_QT:
+    _GIZMO_X_COL = QColor(230,  60,  60)
+    _GIZMO_Y_COL = QColor( 60, 200,  60)
+    _GIZMO_Z_COL = QColor( 60, 120, 230)
+    _GIZMO_R_COL = QColor(220, 220,  50)
+    _GIZMO_ACT   = QColor(255, 255, 100)
+else:
+    _GIZMO_X_COL = _GIZMO_Y_COL = _GIZMO_Z_COL = _GIZMO_R_COL = _GIZMO_ACT = None
 
-class ViewportWidget(QOpenGLWidget_base):
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  EGL Renderer (offscreen moderngl)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _EGLRenderer:
     """
-    ModernGL-powered 3D viewport for GModular.
-    Supports both editor mode (orbit camera) and play/preview mode
-    (first-person walk with capsule controller on walkmesh).
+    Manages the ModernGL EGL context, shaders, VAOs and FBO.
+    Lives inside ViewportWidget and is created lazily on first resize/paint.
     """
 
-    # Qt signals
-    object_selected    = pyqtSignal(object)   # Emits selected GIT object or None
-    object_placed      = pyqtSignal(object)   # Emits newly placed GIT object
-    camera_moved       = pyqtSignal(float, float, float)  # x, y, z of target
-    play_mode_changed  = pyqtSignal(bool)     # True = play mode started
+    def __init__(self):
+        self.ctx = None          # moderngl.Context
+        self._prog_flat = None   # colour-per-vertex shader
+        self._prog_lit  = None   # Phong-lit shader
+        self._fbo = None         # current FBO
+        self._fbo_size = (0, 0)  # (W, H) of current FBO
+        self._grid_vao   = None
+        self._grid_count = 0
+        self._object_vaos: List[dict] = []
+        self._room_vaos: List[dict]   = []
+        self._mdl_vaos: List[dict]    = []   # play-mode only
+        self.ready = False
+
+    # ── Initialisation ────────────────────────────────────────────────────────
+
+    def init(self) -> bool:
+        """
+        Create a ModernGL standalone context + compile shaders.
+        Tries multiple backends in order:
+          1. EGL (Linux/headless — surfaceless, no display required)
+          2. Default (Windows WGL / macOS CGL — uses whatever is available)
+        Returns True on success.
+        """
+        if self.ready:
+            return True
+        if not _HAS_MODERNGL:
+            log.warning("moderngl not installed — 3D rendering unavailable")
+            return False
+
+        ctx = None
+        backend_used = "none"
+
+        # ── Attempt 1: EGL (Linux headless) ──────────────────────────────────
+        if os.name == "posix":
+            try:
+                import moderngl
+                os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+                os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "3.3")
+                os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "330")
+                os.environ.setdefault("EGL_PLATFORM", "surfaceless")
+                ctx = moderngl.create_standalone_context(backend="egl")
+                backend_used = "egl"
+                log.debug("GL: EGL backend initialised")
+            except Exception as e:
+                log.debug(f"EGL init failed ({e}), trying default backend")
+                ctx = None
+
+        # ── Attempt 2: Default backend (Windows WGL / macOS / fallback) ─────
+        if ctx is None:
+            try:
+                import moderngl
+                ctx = moderngl.create_standalone_context()
+                backend_used = "default"
+                log.debug("GL: default backend initialised")
+            except Exception as e:
+                log.error(f"GL default backend failed: {e}")
+                return False
+
+        try:
+            import moderngl
+            self.ctx = ctx
+            self.ctx.enable(moderngl.DEPTH_TEST)
+            self.ctx.enable(moderngl.CULL_FACE)
+            self.ctx.enable(moderngl.BLEND)
+            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            self._prog_flat = self.ctx.program(
+                vertex_shader=_VERT_FLAT, fragment_shader=_FRAG_FLAT)
+            try:
+                self._prog_lit = self.ctx.program(
+                    vertex_shader=_VERT_LIT, fragment_shader=_FRAG_LIT)
+            except Exception as e:
+                log.warning(f"Lit shader failed, using flat fallback: {e}")
+                self._prog_lit = None
+            self._build_grid()
+            self.ready = True
+            info = self.ctx.info
+            global _GL_BACKEND
+            _GL_BACKEND = backend_used
+            log.info(f"GL renderer ready [{backend_used}]: {info['GL_RENDERER']} "
+                     f"({info['GL_VERSION']})")
+            return True
+        except Exception as e:
+            log.error(f"GL shader/grid init failed: {e}")
+            try:
+                self.ctx.release()
+            except Exception:
+                pass
+            self.ctx = None
+            return False
+
+    def ensure_fbo(self, W: int, H: int):
+        """Resize FBO if dimensions changed."""
+        if not self.ctx:
+            return
+        W, H = max(W, 1), max(H, 1)
+        if (W, H) == self._fbo_size:
+            return
+        if self._fbo:
+            try:
+                self._fbo.release()
+            except Exception:
+                pass
+        self._fbo = self.ctx.simple_framebuffer((W, H), components=4)
+        self._fbo_size = (W, H)
+
+    # ── Grid ──────────────────────────────────────────────────────────────────
+
+    def _build_grid(self):
+        verts = _grid_verts(n=20, step=1.0)
+        vbo = self.ctx.buffer(verts.tobytes())
+        self._grid_vao = self.ctx.vertex_array(
+            self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
+        self._grid_count = len(verts) // 6
+
+    # ── VAO helpers ───────────────────────────────────────────────────────────
+
+    def _upload_flat(self, verts: "np.ndarray") -> dict:
+        vbo = self.ctx.buffer(verts.tobytes())
+        vao = self.ctx.vertex_array(
+            self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
+        return {"vao": vao, "vbo": vbo, "count": len(verts) // 6}
+
+    def _upload_lit_or_flat(self, positions, normals, color: tuple) -> Optional[dict]:
+        """Upload mesh triangles with normals (lit) or baked colour (flat)."""
+        if not positions:
+            return None
+        r, g, b = color
+        if self._prog_lit and normals:
+            v = []
+            for (px,py,pz),(nx,ny,nz) in zip(positions, normals):
+                v.extend([px,py,pz,nx,ny,nz])
+            arr = np.array(v, dtype='f4')
+            vbo = self.ctx.buffer(arr.tobytes())
+            vao = self.ctx.vertex_array(
+                self._prog_lit, [(vbo, "3f 3f", "in_position", "in_normal")])
+            return {"vao": vao, "vbo": vbo, "count": len(v)//6,
+                    "lit": True, "color": color}
+        else:
+            v = []
+            for (px,py,pz) in positions:
+                v.extend([px,py,pz, r,g,b])
+            arr = np.array(v, dtype='f4')
+            vbo = self.ctx.buffer(arr.tobytes())
+            vao = self.ctx.vertex_array(
+                self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
+            return {"vao": vao, "vbo": vbo, "count": len(v)//6,
+                    "lit": False, "color": color}
+
+    def _release_list(self, lst: list):
+        for e in lst:
+            try: e["vbo"].release()
+            except Exception: pass
+            try: e["vao"].release()
+            except Exception: pass
+        lst.clear()
+
+    # ── Object VAOs ───────────────────────────────────────────────────────────
+
+    def rebuild_object_vaos(self, state, selected_obj):
+        self._release_list(self._object_vaos)
+        if not self.ctx or not state or not state.git:
+            return
+
+        def _add(obj, hw, hh, hd, base_color):
+            col = _COLOR_SELECTED if (obj is selected_obj) else base_color
+            verts = _box_solid(obj.position.x, obj.position.y,
+                               obj.position.z, hw, hh, hd, col)
+            e = self._upload_flat(verts)
+            e["obj"] = obj
+            self._object_vaos.append(e)
+
+        for p in state.git.placeables: _add(p, .30,.30,.30, _COLOR_PLACEABLE)
+        for c in state.git.creatures:  _add(c, .35,.35,.70, _COLOR_CREATURE)
+        for d in state.git.doors:      _add(d, .50,.15,.90, _COLOR_DOOR)
+        for w in state.git.waypoints:  _add(w, .15,.15,.50, _COLOR_WAYPOINT)
+        for t in state.git.triggers:   _add(t, .50,.50,.05, _COLOR_TRIGGER)
+        for s in state.git.sounds:     _add(s, .20,.20,.20, _COLOR_SOUND)
+        for st in state.git.stores:    _add(st,.30,.30,.40, _COLOR_STORE)
+
+    # ── Room VAOs ─────────────────────────────────────────────────────────────
+
+    def rebuild_room_vaos(self, room_instances: list, game_dir: str):
+        self._release_list(self._room_vaos)
+        if not self.ctx:
+            return
+
+        PALETTE = [
+            (0.45, 0.42, 0.38), (0.38, 0.42, 0.45),
+            (0.42, 0.45, 0.38), (0.45, 0.38, 0.42),
+        ]
+
+        import moderngl
+        for idx, ri in enumerate(room_instances):
+            name   = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room{idx}')
+            tx     = float(getattr(ri, 'world_x', None) or
+                           getattr(ri, 'x', None) or
+                           (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
+            ty     = float(getattr(ri, 'world_y', None) or
+                           getattr(ri, 'y', None) or
+                           (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
+            tz     = float(getattr(ri, 'world_z', None) or
+                           getattr(ri, 'z', 0.0) or 0.0)
+            color  = PALETTE[idx % len(PALETTE)]
+            mdl_path = getattr(ri, 'mdl_path', '') or ''
+
+            # Try to load actual MDL geometry
+            loaded = False
+            if not mdl_path and game_dir:
+                for candidate in [
+                    os.path.join(game_dir, 'models', name.lower() + '.mdl'),
+                    os.path.join(game_dir, name.lower() + '.mdl'),
+                ]:
+                    if os.path.exists(candidate):
+                        mdl_path = candidate
+                        break
+
+            if mdl_path and _HAS_MDL:
+                try:
+                    mesh = get_model_cache().load(mdl_path)
+                    if mesh:
+                        nodes = (list(mesh.visible_mesh_nodes())
+                                 if hasattr(mesh, 'visible_mesh_nodes')
+                                 else mesh.mesh_nodes())
+                        for node in nodes:
+                            verts_raw  = getattr(node, 'vertices', [])
+                            faces_raw  = getattr(node, 'faces', [])
+                            norms_raw  = getattr(node, 'normals', [])
+                            if not verts_raw or not faces_raw:
+                                continue
+                            has_n = len(norms_raw) == len(verts_raw)
+                            positions, normals = [], []
+                            for f in faces_raw:
+                                if max(f) >= len(verts_raw):
+                                    continue
+                                for vi in f:
+                                    positions.append(verts_raw[vi])
+                                    normals.append(norms_raw[vi] if has_n
+                                                   else (0.,0.,1.))
+                            e = self._upload_lit_or_flat(positions, normals, color)
+                            if e:
+                                e.update({"name": name, "tx": tx, "ty": ty, "tz": tz})
+                                self._room_vaos.append(e)
+                                loaded = True
+                except Exception as exc:
+                    log.debug(f"room MDL load error ({name}): {exc}")
+
+            if not loaded:
+                # Placeholder box: 10×10×4 wu centred at world origin of room
+                w, h = 10.0, 10.0
+                verts = _box_wire(tx + w/2, ty + h/2, tz,
+                                  w/2, h/2, 2.0, color)
+                e = self._upload_flat(verts)
+                # tx/ty/tz=0 because world coords are baked into the vertices
+                e.update({"name": name, "tx": 0.0, "ty": 0.0, "tz": 0.0,
+                          "primitive": "lines"})
+                self._room_vaos.append(e)
+                log.debug(f"Room '{name}' @ ({tx:.0f},{ty:.0f}) — placeholder box")
+
+        log.info(f"Room VAOs: {len(self._room_vaos)} from {len(room_instances)} rooms")
+
+    # ── Render frame ──────────────────────────────────────────────────────────
+
+    def render(self, W: int, H: int, camera: OrbitCamera,
+               play_session=None) -> Optional[bytes]:
+        """
+        Render one frame into the FBO and return the raw RGBA pixel bytes
+        (bottom-row first, i.e. OpenGL convention — caller must flip).
+        Returns None if not ready.
+        """
+        if not self.ctx or not self._prog_flat:
+            return None
+        import moderngl
+
+        self.ensure_fbo(W, H)
+        if not self._fbo:
+            return None
+
+        self._fbo.use()
+        self.ctx.viewport = (0, 0, W, H)
+        self.ctx.clear(0.08, 0.08, 0.12, 1.0)
+
+        aspect = W / max(H, 1)
+        if play_session:
+            proj = camera.projection_matrix(aspect)
+            eye  = play_session.player_eye
+            look = play_session.player.look_at_target(0.0)
+            view = _look_at(
+                np.array(eye,  dtype='f4'),
+                np.array(look, dtype='f4'),
+                np.array([0., 0., 1.], dtype='f4'),
+            )
+        else:
+            proj = camera.projection_matrix(aspect)
+            view = camera.view_matrix()
+
+        vp = proj @ view
+
+        # ── Grid ──────────────────────────────────────────────────────────────
+        if self._grid_vao:
+            self._prog_flat["mvp"].write(vp.astype('f4').tobytes())
+            self._grid_vao.render(moderngl.LINES, vertices=self._grid_count)
+
+        # ── Room geometry ─────────────────────────────────────────────────────
+        for e in self._room_vaos:
+            vao, count = e["vao"], e["count"]
+            if not vao or count == 0:
+                continue
+            tx, ty, tz = e.get("tx", 0.), e.get("ty", 0.), e.get("tz", 0.)
+            model_m = _translation(tx, ty, tz)
+            mvp_m   = proj @ view @ model_m
+            color   = e.get("color", (.55,.52,.48))
+            primitive_hint = e.get("primitive", "triangles")
+            if e.get("lit") and self._prog_lit:
+                try:
+                    self._prog_lit["mvp"].write(mvp_m.astype('f4').tobytes())
+                    self._prog_lit["model"].write(model_m.astype('f4').tobytes())
+                    self._prog_lit["diffuse_color"].write(
+                        np.array(color, dtype='f4').tobytes())
+                    self._prog_lit["light_dir"].write(
+                        np.array([.57,.57,.57], dtype='f4').tobytes())
+                    self._prog_lit["ambient"].value = 0.35
+                    vao.render(moderngl.TRIANGLES, vertices=count)
+                except Exception as ex:
+                    log.debug(f"room lit render: {ex}")
+            else:
+                try:
+                    self._prog_flat["mvp"].write(mvp_m.astype('f4').tobytes())
+                    prim = moderngl.LINES if primitive_hint == "lines" else moderngl.TRIANGLES
+                    vao.render(prim, vertices=count)
+                except Exception as ex:
+                    log.debug(f"room flat render: {ex}")
+
+        # Re-set MVP for GIT boxes (no per-instance model matrix)
+        self._prog_flat["mvp"].write(vp.astype('f4').tobytes())
+
+        # ── GIT object boxes ──────────────────────────────────────────────────
+        for e in self._object_vaos:
+            try:
+                e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
+            except Exception:
+                pass
+
+        # ── Play-mode MDL models ──────────────────────────────────────────────
+        if play_session and self._mdl_vaos and self._prog_lit:
+            ident = np.eye(4, dtype='f4')
+            try:
+                self._prog_lit["mvp"].write(vp.astype('f4').tobytes())
+                self._prog_lit["model"].write(ident.tobytes())
+                self._prog_lit["light_dir"].write(
+                    np.array([.5,.5,1.], dtype='f4').tobytes())
+                self._prog_lit["ambient"].value = 0.3
+            except Exception:
+                pass
+            for e in self._mdl_vaos:
+                vao, count, color = e["vao"], e["count"], e.get("color", (.6,.6,.6))
+                if vao and count:
+                    try:
+                        self._prog_lit["diffuse_color"].write(
+                            np.array(color, dtype='f4').tobytes())
+                        vao.render(moderngl.TRIANGLES, vertices=count)
+                    except Exception:
+                        pass
+
+        return self._fbo.read(components=4)
+
+    def release(self):
+        if not self.ctx:
+            return
+        self._release_list(self._object_vaos)
+        self._release_list(self._room_vaos)
+        self._release_list(self._mdl_vaos)
+        try: self.ctx.release()
+        except Exception: pass
+        self.ctx = None
+        self.ready = False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  ViewportWidget
+# ═════════════════════════════════════════════════════════════════════════════
+
+class ViewportWidget(_QWidget_base):
+    """
+    ModernGL-powered 3D viewport.
+
+    Uses an EGL offscreen context (no display server required) and blits
+    the rendered frame to the Qt widget via QPainter + QImage.
+    Standalone — no external tools required.
+    """
+
+    # Signals
+    object_selected   = pyqtSignal(object)
+    object_placed     = pyqtSignal(object)
+    camera_moved      = pyqtSignal(float, float, float)
+    play_mode_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
-        # Force OpenGL 3.3 Core Profile
-        fmt = QSurfaceFormat()
-        fmt.setVersion(3, 3)
-        fmt.setProfile(QSurfaceFormat.CoreProfile)
-        fmt.setSamples(4)
-        QSurfaceFormat.setDefaultFormat(fmt)
-
         super().__init__(parent)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumSize(400, 300)
+        if _HAS_QT:
+            self.setFocusPolicy(Qt.StrongFocus)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumSize(400, 300)
 
         self.camera = OrbitCamera()
-        self._ctx: Optional["moderngl.Context"] = None
-        self._prog: Optional["moderngl.Program"] = None
-        self._prog_mesh: Optional["moderngl.Program"] = None   # lit mesh shader
-        self._grid_vao: Optional["moderngl.VertexArray"] = None
-        self._grid_verts_count: int = 0
-        self._object_vaos: List[dict] = []   # list of {vao, count, obj}
-        self._mdl_vaos: List[dict] = []      # list of {vao, count, resref, color} – play-mode only
-        self._room_vaos: List[dict] = []     # list of {vao, vbo, count, name, color} – editor room meshes
-        self._room_instances: List[dict] = []  # [{name, x, y, z, mdl_path}] from RoomAssemblyPanel
-        self._gl_ready: bool = False          # True once initializeGL has succeeded
+        self._renderer = _EGLRenderer()
+        self._last_frame: Optional[QImage] = None
 
         # Interaction state
         self._last_mouse: Optional[QPoint] = None
-        self._mouse_button: Optional[int]  = None
         self._keys: set = set()
-        self._placement_mode: bool = False
-        self._selected_obj = None
-        self._place_template: Optional[str] = None  # ResRef to place
-        self._place_asset_type: str = "placeable"   # GIT type to place
+        self._placement_mode = False
+        self._selected_obj   = None
+        self._place_template: Optional[str] = None
+        self._place_asset_type: str = "placeable"
 
-        # ── Play mode state ───────────────────────────────────────────────────
-        self._play_mode: bool = False
-        self._play_session: Optional[object] = None   # PlaySession
-        self._npc_registry: Optional[object] = None   # NPCRegistry
-        self._play_last_time: float = 0.0
-        self._play_mouse_last: Optional[QPoint] = None
-        self._play_pitch: float = 0.0    # camera pitch in degrees
-        self._game_dir: str = ""         # set from main_window
+        # Play mode
+        self._play_mode      = False
+        self._play_session   = None
+        self._npc_registry   = None
+        self._play_last_time = 0.0
+        self._play_pitch     = 0.0
+        self._game_dir: str  = ""
 
-        # Camera movement timer (WASD in editor mode, also used in play mode)
-        self._move_timer = QTimer(self)
-        self._move_timer.setInterval(16)  # ~60 fps
-        self._move_timer.timeout.connect(self._process_movement)
-
-        # ── Gimbal / Transform Gizmo state ───────────────────────────────────
-        # Active drag axis: None | _AX_X | _AX_Y | _AX_Z | _AX_R
-        self._gizmo_axis: Optional[int] = None
-        self._gizmo_hover: Optional[int] = None   # axis under cursor (for highlight)
+        # Gizmo
+        self._gizmo_axis: Optional[int]       = None
+        self._gizmo_hover: Optional[int]      = None
         self._gizmo_drag_start_mouse: Optional[QPoint] = None
-        self._gizmo_drag_start_pos: Optional[object] = None  # Vector3 copy
-        self._gizmo_drag_start_rot: float = 0.0  # bearing at drag start
-        # Screen-space positions of gizmo tip pixels (computed each frame)
-        self._gizmo_tips: Dict[int, QPoint] = {}
+        self._gizmo_drag_start_pos   = None
+        self._gizmo_drag_start_rot   = 0.0
+        self._gizmo_tips:  Dict[int, QPoint]  = {}
         self._gizmo_origin_screen: Optional[QPoint] = None
-        # Snap: Ctrl = 1-unit, Ctrl+Shift = 0.5, Shift = 0.25
-        self._snap_enabled: bool = False
-        self._snap_size: float = SNAP_UNIT
+        self._snap_enabled = False
+        self._snap_size    = SNAP_UNIT
 
-        # Refresh timer
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(33)  # ~30 fps
-        self._refresh_timer.timeout.connect(self.update)
-        self._refresh_timer.start()
+        # Room instances (from RoomAssemblyPanel)
+        self._room_instances: list = []
 
-        # Module state subscription
+        # Move timer (WASD)
+        if _HAS_QT:
+            self._move_timer = QTimer(self)
+            self._move_timer.setInterval(16)
+            self._move_timer.timeout.connect(self._process_movement)
+
+        # Redraw timer (~30 fps)
+        if _HAS_QT:
+            self._redraw_timer = QTimer(self)
+            self._redraw_timer.setInterval(33)
+            self._redraw_timer.timeout.connect(self.update)
+            self._redraw_timer.start()
+
+        # Subscribe to module state
         try:
             get_module_state().on_change(self._on_module_changed)
         except Exception:
             pass
 
-    # ── Placement mode ────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
-    def set_placement_mode(self, enabled: bool, template_resref: str = "",
+    def set_placement_mode(self, enabled: bool,
+                           template_resref: str = "",
                            asset_type: str = "placeable"):
         self._placement_mode = enabled
-        self._place_template = template_resref
+        self._place_template  = template_resref
         self._place_asset_type = asset_type
-        if enabled:
-            self.setCursor(Qt.CrossCursor)
-        else:
-            self.setCursor(Qt.ArrowCursor)
+        if _HAS_QT:
+            self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
 
     def select_object(self, obj):
         self._selected_obj = obj
         self._rebuild_object_vaos()
         self.update()
 
-    # ── OpenGL Lifecycle ─────────────────────────────────────────────────────
+    def load_rooms(self, rooms: list):
+        """Called by main_window when Room Grid changes."""
+        self._room_instances = list(rooms)
+        if not self._renderer.ready:
+            self._renderer.init()
+        self._renderer.rebuild_room_vaos(self._room_instances, self._game_dir)
+        if rooms:
+            self._frame_rooms()
+        self.update()
 
-    def initializeGL(self):
-        if not _HAS_MODERNGL:
-            log.warning("ModernGL not available — viewport will show 2D grid fallback")
+    def set_game_dir(self, game_dir: str):
+        self._game_dir = game_dir
+
+    def frame_all(self):
+        self._frame_all()
+
+    def frame_selected(self):
+        obj = self._selected_obj
+        if obj is None:
+            self._frame_all()
             return
         try:
-            self._ctx = moderngl.create_context()
-            self._ctx.enable(moderngl.DEPTH_TEST)
-            self._ctx.enable(moderngl.CULL_FACE)
-            self._ctx.enable(moderngl.BLEND)
-            self._ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            pos = obj.position
+            self.camera.frame(
+                np.array([pos.x, pos.y, pos.z], dtype='f4'), 5.0)
+            self.update()
+        except Exception:
+            pass
 
-            self._prog = self._ctx.program(
-                vertex_shader=_VERT_SHADER,
-                fragment_shader=_FRAG_SHADER,
-            )
-            try:
-                self._prog_mesh = self._ctx.program(
-                    vertex_shader=_VERT_MESH_SHADER,
-                    fragment_shader=_FRAG_MESH_SHADER,
-                )
-            except Exception as e:
-                log.warning(f"Mesh shader compile failed (using fallback): {e}")
-                self._prog_mesh = None
-            self._build_grid()
-            self._gl_ready = True
-            log.info("ModernGL context initialised — 3D rendering active")
-            # Rebuild any rooms that were queued before GL was ready
-            if self._room_instances:
-                self._rebuild_room_vaos()
-        except Exception as e:
-            log.error(f"GL init error: {e}")
-            self._ctx = None
+    @property
+    def is_play_mode(self) -> bool:
+        return self._play_mode
 
-    def resizeGL(self, w: int, h: int):
-        if self._ctx:
-            self._ctx.viewport = (0, 0, w, h)
-
-    def paintGL(self):
-        if not self._ctx or not self._prog:
-            # No GL context — the paintEvent fallback draws a 2D grid
-            return
-        try:
-            self._ctx.clear(0.08, 0.08, 0.12, 1.0)
-            W, H = self.width(), self.height()
-            aspect = W / max(H, 1)
-
-            # ── View/projection matrix ────────────────────────────────────────
-            if self._play_mode and self._play_session:
-                proj = self.camera.projection_matrix(aspect)
-                eye  = self._play_session.player_eye
-                look = self._play_session.player.look_at_target(self._play_pitch)
-                view = _look_at(
-                    np.array(eye,  dtype='f4'),
-                    np.array(look, dtype='f4'),
-                    np.array([0.0, 0.0, 1.0], dtype='f4'),
-                )
-                vp = proj @ view
-            else:
-                proj = self.camera.projection_matrix(aspect)
-                view = self.camera.view_matrix()
-                vp   = proj @ view
-
-            self._prog["mvp"].write(vp.astype('f4').tobytes())
-
-            # Grid
-            if self._grid_vao:
-                self._grid_vao.render(moderngl.LINES,
-                                      vertices=self._grid_verts_count)
-
-            # ── Room MDL geometry (editor + play mode) ────────────────────────
-            # Always render assembled rooms so user sees geometry as soon as
-            # rooms are dragged onto the Room Grid.
-            if self._room_vaos:
-                ident = np.eye(4, dtype='f4')
-                prog  = self._prog_mesh if self._prog_mesh else self._prog
-                if self._prog_mesh:
-                    try:
-                        self._prog_mesh["mvp"].write(vp.astype('f4').tobytes())
-                        self._prog_mesh["model"].write(ident.tobytes())
-                        self._prog_mesh["light_dir"].write(
-                            np.array([0.57, 0.57, 0.57], dtype='f4').tobytes())
-                        self._prog_mesh["ambient"].value = 0.35
-                    except Exception:
-                        pass
-                for entry in self._room_vaos:
-                    vao   = entry.get("vao")
-                    count = entry.get("count", 0)
-                    color = entry.get("color", (0.55, 0.52, 0.48))
-                    if not vao or count == 0:
-                        continue
-                    try:
-                        # Per-room model matrix (translate to room world position)
-                        tx = entry.get("tx", 0.0)
-                        ty = entry.get("ty", 0.0)
-                        tz = entry.get("tz", 0.0)
-                        model_m = _translation(tx, ty, tz)
-                        mvp_m   = proj @ view @ model_m
-                        if self._prog_mesh:
-                            self._prog_mesh["mvp"].write(mvp_m.astype('f4').tobytes())
-                            self._prog_mesh["model"].write(model_m.astype('f4').tobytes())
-                            self._prog_mesh["diffuse_color"].write(
-                                np.array(color, dtype='f4').tobytes())
-                        else:
-                            self._prog["mvp"].write(mvp_m.astype('f4').tobytes())
-                        vao.render(moderngl.TRIANGLES, vertices=count)
-                    except Exception as e:
-                        log.debug(f"room vao render error: {e}")
-
-            # Re-apply plain vp for GIT boxes (they have no per-instance model)
-            self._prog["mvp"].write(vp.astype('f4').tobytes())
-
-            # GIT object boxes (always shown in both modes)
-            for entry in self._object_vaos:
-                vao   = entry.get("vao")
-                count = entry.get("count", 0)
-                if vao and count > 0:
-                    try:
-                        vao.render(moderngl.TRIANGLES, vertices=count)
-                    except Exception:
-                        pass
-
-            # MDL mesh geometry (play mode — character / NPC models)
-            if self._play_mode and self._mdl_vaos and self._prog_mesh:
-                ident = np.eye(4, dtype='f4')
-                try:
-                    self._prog_mesh["mvp"].write(vp.astype('f4').tobytes())
-                    self._prog_mesh["model"].write(ident.tobytes())
-                    self._prog_mesh["light_dir"].write(
-                        np.array([0.5, 0.5, 1.0], dtype='f4').tobytes())
-                    self._prog_mesh["ambient"].value = 0.3
-                except Exception:
-                    pass
-                for entry in self._mdl_vaos:
-                    vao   = entry.get("vao")
-                    count = entry.get("count", 0)
-                    color = entry.get("color", (0.6, 0.6, 0.6))
-                    if vao and count > 0:
-                        try:
-                            if self._prog_mesh:
-                                self._prog_mesh["diffuse_color"].write(
-                                    np.array(color, dtype='f4').tobytes())
-                            vao.render(moderngl.TRIANGLES, vertices=count)
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            log.debug(f"paintGL error: {e}")
-
-    # ── 2D Gimbal Overlay (painted on top of GL) ──────────────────────────────
+    # ── Paint ─────────────────────────────────────────────────────────────────
 
     def paintEvent(self, event):
-        """QOpenGLWidget.paintEvent — called after GL is composited.
-        Two jobs:
-          1. When ModernGL is unavailable, paint a 2-D top-down fallback
-             that shows the grid and room footprints so the user still has
-             a usable layout view.
-          2. Always paint the 2-D gizmo overlay on top of the GL frame.
-        """
-        # Let the GL superclass draw first (renders the 3-D scene if GL is up)
-        super().paintEvent(event)
-
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
 
-        # ── 2-D fallback when GL is unavailable ──────────────────────────────
-        if not self._gl_ready:
-            self._paint_2d_fallback(p)
+        # ── Ensure renderer is initialised ────────────────────────────────────
+        if not self._renderer.ready:
+            self._renderer.init()
 
-        # ── Gizmo overlay ────────────────────────────────────────────────────
+        # ── GL render ─────────────────────────────────────────────────────────
+        if self._renderer.ready:
+            raw = self._renderer.render(
+                W, H, self.camera,
+                self._play_session if self._play_mode else None)
+            if raw:
+                # OpenGL reads bottom-to-top; QImage is top-to-bottom.
+                # IMPORTANT: QImage(data, ...) does NOT copy the buffer.
+                # We must call .copy() so Qt owns the pixel data before
+                # the Python bytes object is garbage-collected.
+                img = QImage(raw, W, H, W * 4,
+                             QImage.Format_RGBA8888).mirrored(False, True).copy()
+                p.drawImage(0, 0, img)
+                self._last_frame = img
+            else:
+                self._draw_fallback_2d(p, W, H)
+        else:
+            self._draw_fallback_2d(p, W, H)
+
+        # ── 2-D Gizmo overlay ─────────────────────────────────────────────────
+        self._draw_gizmo_overlay(p)
+        p.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._renderer.ready:
+            self._renderer.ensure_fbo(self.width(), self.height())
+
+    # ── 2-D fallback ─────────────────────────────────────────────────────────
+
+    def _draw_fallback_2d(self, p: "QPainter", W: int, H: int):
+        """Top-down 2-D schematic when GL is unavailable."""
+        p.fillRect(0, 0, W, H, QColor(20, 20, 30))
+
+        scale    = 10.0
+        origin_x = W // 2 - int(self.camera.target[0] * scale)
+        origin_y = H // 2 + int(self.camera.target[1] * scale)
+
+        step_px = max(int(scale), 4)
+        grid_pen = QPen(QColor(40, 40, 55), 1)
+        axis_pen = QPen(QColor(70, 70, 90), 1)
+
+        x0 = origin_x % step_px
+        while x0 < W:
+            ww = (x0 - origin_x) / scale
+            p.setPen(axis_pen if abs(ww) < 0.5 else grid_pen)
+            p.drawLine(x0, 0, x0, H)
+            x0 += step_px
+        y0 = origin_y % step_px
+        while y0 < H:
+            wy = -(y0 - origin_y) / scale
+            p.setPen(axis_pen if abs(wy) < 0.5 else grid_pen)
+            p.drawLine(0, y0, W, y0)
+            y0 += step_px
+
+        room_colors = [
+            QColor(80,120,160,160), QColor(80,140,90,160),
+            QColor(150,100,60,160), QColor(100,80,150,160),
+        ]
+        p.setFont(QFont("Consolas", 7))
+        for idx, ri in enumerate(self._room_instances):
+            name = getattr(ri,'model_name',None) or getattr(ri,'name',f'room{idx}')
+            rx = float(getattr(ri,'world_x',None) or
+                       getattr(ri,'x',None) or
+                       (getattr(ri,'grid_x',0)*10.0) or 0.0)
+            ry = float(getattr(ri,'world_y',None) or
+                       getattr(ri,'y',None) or
+                       (getattr(ri,'grid_y',0)*10.0) or 0.0)
+            col = room_colors[idx % len(room_colors)]
+            sx = origin_x + int(rx * scale)
+            sy = origin_y - int((ry + 10.0) * scale)
+            pw, ph = int(10.0*scale), int(10.0*scale)
+            p.fillRect(sx, sy, pw, ph, col)
+            p.setPen(QPen(col.lighter(160), 2))
+            p.drawRect(sx, sy, pw, ph)
+            p.setPen(QPen(QColor(230,230,230)))
+            p.drawText(sx+4, sy+14, name)
+
+        # GIT dots
+        try:
+            state = get_module_state()
+            if state and state.git:
+                tc = {'placeables':QColor(80,160,255),'creatures':QColor(255,120,60),
+                      'doors':QColor(220,200,40),'waypoints':QColor(200,60,200)}
+                for attr, col in tc.items():
+                    for obj in getattr(state.git,attr,[]):
+                        pos = getattr(obj,'position',None)
+                        if pos is None: continue
+                        px = origin_x + int(pos.x*scale)
+                        py = origin_y - int(pos.y*scale)
+                        dot = QColor(255,255,0) if obj is self._selected_obj else col
+                        p.setPen(Qt.NoPen)
+                        p.setBrush(QBrush(dot))
+                        r = 6 if obj is self._selected_obj else 4
+                        p.drawEllipse(px-r, py-r, r*2, r*2)
+        except Exception:
+            pass
+
+        # Status
+        if not _HAS_MODERNGL:
+            p.setPen(QPen(QColor(200, 100, 50)))
+            p.setFont(QFont("Consolas", 8, QFont.Bold))
+            p.drawText(8, H-38, "3D rendering unavailable — moderngl not installed.")
+            p.setPen(QPen(QColor(150, 200, 150)))
+            p.drawText(8, H-24, "Run:  pip install moderngl PyOpenGL  then restart GModular.")
+        elif _GL_INIT_ERROR:
+            p.setPen(QPen(QColor(200, 100, 50)))
+            p.setFont(QFont("Consolas", 8, QFont.Bold))
+            p.drawText(8, H-22, f"3D unavailable: {_GL_INIT_ERROR[:80]}")
+        p.setPen(QPen(QColor(100, 100, 100)))
+        p.setFont(QFont("Consolas", 7))
+        p.drawText(8, H-8, "2D top-down view  |  RMB=orbit  MMB=pan  Scroll=zoom")
+
+    # ── Gizmo overlay ─────────────────────────────────────────────────────────
+
+    def _draw_gizmo_overlay(self, p: "QPainter"):
         obj = self._selected_obj
         if obj is None or self._play_mode or self._placement_mode:
-            p.end()
             return
         if not hasattr(obj, 'position'):
-            p.end()
             return
-
         pos = obj.position
         sx, sy = self._world_to_screen(pos.x, pos.y, pos.z)
         if sx is None:
-            p.end()
             return
 
         origin = QPoint(int(sx), int(sy))
         self._gizmo_origin_screen = origin
 
-        # Project axis tip points
-        ax_tips = {
-            _AX_X: self._world_to_screen(pos.x + 1.0, pos.y, pos.z),
-            _AX_Y: self._world_to_screen(pos.x, pos.y + 1.0, pos.z),
-            _AX_Z: self._world_to_screen(pos.x, pos.y, pos.z + 1.0),
+        ax_tips_raw = {
+            _AX_X: self._world_to_screen(pos.x+1.,pos.y,pos.z),
+            _AX_Y: self._world_to_screen(pos.x,pos.y+1.,pos.z),
+            _AX_Z: self._world_to_screen(pos.x,pos.y,pos.z+1.),
         }
-
         tips: Dict[int, QPoint] = {}
-        for ax, (tx, ty) in ax_tips.items():
-            if tx is None:
-                continue
-            # Scale to fixed screen length
-            raw_dx = tx - sx
-            raw_dy = ty - sy
-            length = math.hypot(raw_dx, raw_dy) or 1.0
-            tip_x = int(sx + raw_dx / length * GIZMO_LEN)
-            tip_y = int(sy + raw_dy / length * GIZMO_LEN)
-            tips[ax] = QPoint(tip_x, tip_y)
-
-        # Rotation ring (circle around origin)
-        tips[_AX_R] = origin   # centre of ring
-
+        for ax, (tx, ty) in ax_tips_raw.items():
+            if tx is None: continue
+            raw_dx, raw_dy = tx-sx, ty-sy
+            length = math.hypot(raw_dx, raw_dy) or 1.
+            tips[ax] = QPoint(int(sx + raw_dx/length*GIZMO_LEN),
+                              int(sy + raw_dy/length*GIZMO_LEN))
+        tips[_AX_R] = origin
         self._gizmo_tips = tips
-        # (reuse the painter already created at the top of this method)
 
-        axis_colors = {
-            _AX_X: _GIZMO_X_COL,
-            _AX_Y: _GIZMO_Y_COL,
-            _AX_Z: _GIZMO_Z_COL,
-        }
-        labels = {_AX_X: "X", _AX_Y: "Y", _AX_Z: "Z"}
+        p.setRenderHint(QPainter.Antialiasing)
+        ax_colors = {_AX_X:_GIZMO_X_COL, _AX_Y:_GIZMO_Y_COL, _AX_Z:_GIZMO_Z_COL}
+        labels    = {_AX_X:"X", _AX_Y:"Y", _AX_Z:"Z"}
 
-        # Draw translate arrows
         for ax, tip in tips.items():
-            if ax == _AX_R:
-                continue
-            col = _GIZMO_ACT if (self._gizmo_axis == ax or self._gizmo_hover == ax) \
-                else axis_colors[ax]
-            pen = QPen(col, 3 if (self._gizmo_axis == ax) else 2)
-            p.setPen(pen)
+            if ax == _AX_R: continue
+            col = _GIZMO_ACT if (self._gizmo_axis==ax or self._gizmo_hover==ax) \
+                else ax_colors[ax]
+            p.setPen(QPen(col, 3 if self._gizmo_axis==ax else 2))
             p.drawLine(origin, tip)
-
-            # Arrowhead
-            dx = tip.x() - origin.x()
-            dy = tip.y() - origin.y()
-            length = math.hypot(dx, dy) or 1.0
-            ux, uy = dx / length, dy / length
-            px, py = -uy, ux  # perpendicular
-            head_pts = [
-                (tip.x(), tip.y()),
-                (tip.x() - ux * GIZMO_HEAD + px * GIZMO_HEAD * 0.4,
-                 tip.y() - uy * GIZMO_HEAD + py * GIZMO_HEAD * 0.4),
-                (tip.x() - ux * GIZMO_HEAD - px * GIZMO_HEAD * 0.4,
-                 tip.y() - uy * GIZMO_HEAD - py * GIZMO_HEAD * 0.4),
-            ]
-            poly = QPolygon([QPoint(int(x), int(y)) for x, y in head_pts])
-            p.setBrush(QBrush(col))
-            p.setPen(Qt.NoPen)
+            dx, dy = tip.x()-origin.x(), tip.y()-origin.y()
+            length = math.hypot(dx,dy) or 1.
+            ux, uy = dx/length, dy/length
+            px, py = -uy, ux
+            poly = QPolygon([
+                QPoint(tip.x(), tip.y()),
+                QPoint(int(tip.x()-ux*GIZMO_HEAD+px*GIZMO_HEAD*.4),
+                       int(tip.y()-uy*GIZMO_HEAD+py*GIZMO_HEAD*.4)),
+                QPoint(int(tip.x()-ux*GIZMO_HEAD-px*GIZMO_HEAD*.4),
+                       int(tip.y()-uy*GIZMO_HEAD-py*GIZMO_HEAD*.4)),
+            ])
+            p.setBrush(QBrush(col)); p.setPen(Qt.NoPen)
             p.drawPolygon(poly)
-
-            # Axis label near tip
             p.setPen(QPen(col))
             p.setFont(QFont("Consolas", 8, QFont.Bold))
-            p.drawText(tip.x() + 4, tip.y() - 4, labels[ax])
+            p.drawText(tip.x()+4, tip.y()-4, labels[ax])
 
-        # Draw rotation ring (dashed circle)
-        ring_col = _GIZMO_ACT if (self._gizmo_axis == _AX_R or self._gizmo_hover == _AX_R) \
-            else _GIZMO_R_COL
-        ring_pen = QPen(ring_col, 2, Qt.DashLine)
-        p.setPen(ring_pen)
-        p.setBrush(Qt.NoBrush)
-        ring_r = GIZMO_LEN // 2
-        p.drawEllipse(origin.x() - ring_r, origin.y() - ring_r, ring_r * 2, ring_r * 2)
-        p.setPen(QPen(ring_col))
-        p.setFont(QFont("Consolas", 7))
-        p.drawText(origin.x() + ring_r + 2, origin.y() + 4, "R")
+        ring_col = _GIZMO_ACT if (self._gizmo_axis==_AX_R or
+                                   self._gizmo_hover==_AX_R) else _GIZMO_R_COL
+        p.setPen(QPen(ring_col, 2, Qt.DashLine)); p.setBrush(Qt.NoBrush)
+        ring_r = GIZMO_LEN//2
+        p.drawEllipse(origin.x()-ring_r, origin.y()-ring_r, ring_r*2, ring_r*2)
+        p.setPen(QPen(ring_col)); p.setFont(QFont("Consolas", 7))
+        p.drawText(origin.x()+ring_r+2, origin.y()+4, "R")
 
-        # Snap indicator
         if self._snap_enabled:
             p.setFont(QFont("Consolas", 8, QFont.Bold))
-            snap_text = f"SNAP  {self._snap_size:.2f}u"
-            p.setPen(QPen(QColor(255, 220, 50)))
-            p.drawText(self.width() - 120, self.height() - 10, snap_text)
+            p.setPen(QPen(QColor(255,220,50)))
+            p.drawText(self.width()-120, self.height()-10,
+                       f"SNAP  {self._snap_size:.2f}u")
 
-        # Mode legend bottom-left
         p.setFont(QFont("Consolas", 7))
-        p.setPen(QPen(QColor(120, 120, 120)))
-        legend = "Gimbal: LMB drag axis  |  Ctrl=snap 1u  Shift=0.25u  Ctrl+Shift=0.5u"
-        p.drawText(6, self.height() - 6, legend)
+        p.setPen(QPen(QColor(100,100,100)))
+        p.drawText(6, self.height()-6,
+                   "Gimbal: LMB drag axis  |  Ctrl=1u  Shift=0.25u  Ctrl+Shift=0.5u")
 
-        p.end()
+    # ── World→screen projection ───────────────────────────────────────────────
 
-    def _world_to_screen(self, wx: float, wy: float, wz: float
-                         ) -> Tuple[Optional[float], Optional[float]]:
-        """Project a world-space point to screen pixels. Returns (None,None) if behind camera."""
+    def _world_to_screen(self, wx, wy, wz):
+        if not _HAS_NUMPY:
+            return None, None
         try:
             W, H = self.width(), self.height()
-            aspect = W / max(H, 1)
-            proj = self.camera.projection_matrix(aspect)
-            view = self.camera.view_matrix()
-            vp = proj @ view
-            world_pt = np.array([wx, wy, wz, 1.0], dtype='f4')
-            clip = vp @ world_pt
+            vp = self.camera.projection_matrix(W/max(H,1)) @ self.camera.view_matrix()
+            clip = vp @ np.array([wx, wy, wz, 1.], dtype='f4')
             if clip[3] <= 0:
                 return None, None
-            ndc_x = clip[0] / clip[3]
-            ndc_y = clip[1] / clip[3]
-            sx = (ndc_x + 1.0) * 0.5 * W
-            sy = (1.0 - (ndc_y + 1.0) * 0.5) * H
+            ndc_x = clip[0]/clip[3]
+            ndc_y = clip[1]/clip[3]
+            sx = (ndc_x+1.)*0.5*W
+            sy = (1.-(ndc_y+1.)*0.5)*H
             return sx, sy
         except Exception:
             return None, None
 
-    def _hit_gizmo(self, mx: int, my: int) -> Optional[int]:
-        """Return which gizmo axis (or None) the screen point (mx,my) hits."""
+    # ── Gizmo hit test ────────────────────────────────────────────────────────
+
+    def _hit_gizmo(self, mx, my):
         if self._gizmo_origin_screen is None:
             return None
         origin = self._gizmo_origin_screen
         ring_r = GIZMO_LEN // 2
-
-        # Check rotation ring (annular hit zone)
-        dist_to_centre = math.hypot(mx - origin.x(), my - origin.y())
-        if abs(dist_to_centre - ring_r) < GIZMO_HIT:
+        d = math.hypot(mx-origin.x(), my-origin.y())
+        if abs(d-ring_r) < GIZMO_HIT:
             return _AX_R
-
-        # Check translate arrows
         for ax in (_AX_X, _AX_Y, _AX_Z):
             tip = self._gizmo_tips.get(ax)
-            if tip is None:
-                continue
-            # Distance from point to line segment origin→tip
-            dx = tip.x() - origin.x()
-            dy = tip.y() - origin.y()
-            seg_len2 = dx * dx + dy * dy
-            if seg_len2 < 1:
-                continue
-            t = max(0.0, min(1.0,
-                ((mx - origin.x()) * dx + (my - origin.y()) * dy) / seg_len2))
-            cx = origin.x() + t * dx
-            cy = origin.y() + t * dy
-            if math.hypot(mx - cx, my - cy) < GIZMO_HIT:
+            if tip is None: continue
+            dx = tip.x()-origin.x(); dy = tip.y()-origin.y()
+            seg2 = dx*dx+dy*dy
+            if seg2 < 1: continue
+            t = max(0., min(1., ((mx-origin.x())*dx+(my-origin.y())*dy)/seg2))
+            cx = origin.x()+t*dx; cy = origin.y()+t*dy
+            if math.hypot(mx-cx, my-cy) < GIZMO_HIT:
                 return ax
         return None
 
-    def _apply_snap(self, value: float) -> float:
-        """Snap a world coordinate to the current snap grid."""
+    def _apply_snap(self, v):
         s = self._snap_size
-        return round(value / s) * s
+        return round(v/s)*s
 
-    # ── 2-D Fallback Painter (no GL) ─────────────────────────────────────────
-
-    def _paint_2d_fallback(self, p: "QPainter"):
-        """
-        Draw a top-down 2-D schematic when ModernGL is unavailable.
-        Shows:
-          • Dark background
-          • A ground grid (pixel scale: 1 world-unit = 10 px, panned)
-          • Assembled room footprints as labelled rectangles
-          • GIT object positions as coloured dots
-          • Status text explaining no-GL state
-        """
-        W, H = self.width(), self.height()
-
-        # Background
-        p.fillRect(0, 0, W, H, QColor(20, 20, 30))
-
-        # ── Grid ─────────────────────────────────────────────────────────────
-        scale   = 10.0   # pixels per world unit
-        origin_x = W // 2 - int(self.camera.target[0] * scale)
-        origin_y = H // 2 + int(self.camera.target[1] * scale)
-
-        grid_pen = QPen(QColor(40, 40, 55), 1)
-        axis_pen = QPen(QColor(70, 70, 90), 1)
-        p.setPen(grid_pen)
-
-        step_px = int(scale)
-        if step_px < 4:
-            step_px = 4
-
-        x0 = origin_x % step_px
-        while x0 < W:
-            world_x = (x0 - origin_x) / scale
-            pen = axis_pen if abs(world_x) < 0.5 else grid_pen
-            p.setPen(pen)
-            p.drawLine(x0, 0, x0, H)
-            x0 += step_px
-
-        y0 = origin_y % step_px
-        while y0 < H:
-            world_y = -(y0 - origin_y) / scale
-            pen = axis_pen if abs(world_y) < 0.5 else grid_pen
-            p.setPen(pen)
-            p.drawLine(0, y0, W, y0)
-            y0 += step_px
-
-        # ── Room footprints ──────────────────────────────────────────────────
-        room_colors_2d = [
-            QColor(100, 140, 180, 160),
-            QColor(140, 180, 100, 160),
-            QColor(180, 140, 100, 160),
-            QColor(140, 100, 180, 160),
-        ]
-        label_font = QFont("Consolas", 7)
-        p.setFont(label_font)
-
-        for idx, ri in enumerate(self._room_instances):
-            name = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room_{idx}')
-            rx = float(getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
-            ry = float(getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
-            rw = 10.0   # default tile size
-            rh = 10.0
-
-            sx = origin_x + int(rx * scale)
-            sy = origin_y - int((ry + rh) * scale)
-            pw = int(rw * scale)
-            ph = int(rh * scale)
-
-            col = room_colors_2d[idx % len(room_colors_2d)]
-            p.fillRect(sx, sy, pw, ph, col)
-            p.setPen(QPen(col.lighter(160), 2))
-            p.drawRect(sx, sy, pw, ph)
-            p.setPen(QPen(QColor(230, 230, 230)))
-            p.drawText(sx + 4, sy + 14, name)
-
-        # ── GIT object dots ──────────────────────────────────────────────────
-        try:
-            from ..core.module_state import get_module_state
-            state = get_module_state()
-            if state and state.git:
-                type_colors = {
-                    'placeables': QColor(80, 160, 255),
-                    'creatures':  QColor(255, 120, 60),
-                    'doors':      QColor(220, 200, 40),
-                    'waypoints':  QColor(200, 60, 200),
-                    'triggers':   QColor(60, 220, 120),
-                }
-                for attr, col in type_colors.items():
-                    for obj in getattr(state.git, attr, []):
-                        pos = getattr(obj, 'position', None)
-                        if pos is None:
-                            continue
-                        px_x = origin_x + int(pos.x * scale)
-                        px_y = origin_y - int(pos.y * scale)
-                        is_sel = (obj is self._selected_obj)
-                        dot_col = QColor(255, 255, 0) if is_sel else col
-                        p.setPen(Qt.NoPen)
-                        p.setBrush(QBrush(dot_col))
-                        r = 6 if is_sel else 4
-                        p.drawEllipse(px_x - r, px_y - r, r * 2, r * 2)
-        except Exception:
-            pass
-
-        # ── Status overlay ───────────────────────────────────────────────────
-        p.setPen(QPen(QColor(200, 100, 50)))
-        p.setFont(QFont("Consolas", 8, QFont.Bold))
-        status = "3D viewport offline (ModernGL unavailable)  —  2D top-down view"
-        p.drawText(8, H - 8, status)
-
-        p.setPen(QPen(QColor(120, 120, 120)))
-        p.setFont(QFont("Consolas", 7))
-        controls = "RMB drag: orbit/pan  |  Scroll: zoom  |  Rooms shown as footprints"
-        p.drawText(8, H - 22, controls)
-
-    # ── Grid ─────────────────────────────────────────────────────────────────
-
-    def _build_grid(self):
-        if not self._ctx or not self._prog:
-            return
-        verts = _grid_verts(n=20, step=1.0)
-        vbo = self._ctx.buffer(verts.tobytes())
-        self._grid_vao = self._ctx.vertex_array(
-            self._prog,
-            [(vbo, "3f 3f", "in_position", "in_color")]
-        )
-        self._grid_verts_count = len(verts) // 6
-
-    # ── Object VAOs ──────────────────────────────────────────────────────────
+    # ── Module changed ────────────────────────────────────────────────────────
 
     def _on_module_changed(self):
         self._rebuild_object_vaos()
 
     def _rebuild_object_vaos(self):
-        """Rebuild vertex arrays for all GIT objects (all 7 types)."""
-        if not self._ctx or not self._prog:
-            return
-
-        # Release old VAOs
-        for entry in self._object_vaos:
-            try:
-                entry["vbo"].release()
-                entry["vao"].release()
-            except Exception:
-                pass
-        self._object_vaos.clear()
-
-        try:
-            from ..core.module_state import get_module_state
-            state = get_module_state()
-            if not state.git:
+        if not self._renderer.ready:
+            if not self._renderer.init():
                 return
-
-            def _add_box(obj, hw, hh, hd, base_color):
-                is_sel = (obj is self._selected_obj)
-                color  = _COLOR_SELECTED if is_sel else base_color
-                verts  = _box_verts_solid(obj.position.x, obj.position.y,
-                                          obj.position.z, hw, hh, hd, color)
-                vbo = self._ctx.buffer(verts.tobytes())
-                vao = self._ctx.vertex_array(
-                    self._prog, [(vbo, "3f 3f", "in_position", "in_color")]
-                )
-                self._object_vaos.append({"vao": vao, "vbo": vbo,
-                                          "count": len(verts) // 6, "obj": obj})
-
-            # Placeables  — medium cube, blue
-            for p in state.git.placeables:
-                _add_box(p, 0.30, 0.30, 0.30, _COLOR_PLACEABLE)
-
-            # Creatures   — tall box, orange
-            for c in state.git.creatures:
-                _add_box(c, 0.35, 0.35, 0.70, _COLOR_CREATURE)
-
-            # Doors       — wide thin slab, yellow
-            for d in state.git.doors:
-                _add_box(d, 0.50, 0.15, 0.90, _COLOR_DOOR)
-
-            # Waypoints   — small pillar, purple
-            for w in state.git.waypoints:
-                _add_box(w, 0.15, 0.15, 0.50, _COLOR_WAYPOINT)
-
-            # Triggers    — flat wide diamond (rendered as thin box), green
-            for t in state.git.triggers:
-                _add_box(t, 0.50, 0.50, 0.05, _COLOR_TRIGGER)
-
-            # Sounds      — small sphere-ish cube, cyan
-            for s in state.git.sounds:
-                _add_box(s, 0.20, 0.20, 0.20, _COLOR_SOUND)
-
-            # Stores      — medium cube, bright green
-            for st in state.git.stores:
-                _add_box(st, 0.30, 0.30, 0.40, _COLOR_STORE)
-
-        except Exception as e:
-            log.debug(f"VAO rebuild error: {e}")
-
+        try:
+            state = get_module_state()
+        except Exception:
+            return
+        self._renderer.rebuild_object_vaos(state, self._selected_obj)
         self.update()
 
-    # ── Play Mode ─────────────────────────────────────────────────────────────
+    # ── Room framing ─────────────────────────────────────────────────────────
 
-    def set_game_dir(self, game_dir: str):
-        """Called by main_window when the user sets/changes the game directory."""
-        self._game_dir = game_dir
+    def _frame_rooms(self):
+        if not _HAS_NUMPY or not self._room_instances:
+            return
+        pts = []
+        for ri in self._room_instances:
+            x = float(getattr(ri,'world_x',None) or getattr(ri,'x',None) or
+                      (getattr(ri,'grid_x',0)*10.0) or 0.0)
+            y = float(getattr(ri,'world_y',None) or getattr(ri,'y',None) or
+                      (getattr(ri,'grid_y',0)*10.0) or 0.0)
+            z = float(getattr(ri,'world_z',0.) or getattr(ri,'z',0.) or 0.)
+            pts.append([x, y, z])
+        arr    = np.array(pts, dtype='f4')
+        center = arr.mean(axis=0)
+        radius = float(np.linalg.norm(arr-center,axis=1).max()) if len(pts)>1 else 10.
+        self.camera.frame(center, max(radius, 5.))
+
+    def _frame_all(self):
+        try:
+            state = get_module_state()
+            if not state.git: return
+            positions = []
+            for obj in state.git.iter_all():
+                pos = getattr(obj,'position',None)
+                if pos: positions.append([pos.x,pos.y,pos.z])
+            if not positions: return
+            pts    = np.array(positions, dtype='f4')
+            center = pts.mean(axis=0)
+            radius = float(np.linalg.norm(pts-center,axis=1).max())
+            self.camera.frame(center, max(radius, 1.))
+            self.update()
+        except Exception as e:
+            log.debug(f"frame_all: {e}")
+
+    # ── Pick ──────────────────────────────────────────────────────────────────
+
+    def _pick_object(self, sx, sy):
+        W, H = self.width(), self.height()
+        try:
+            state = get_module_state()
+            if not state.git: return None
+            origin, direction = self.camera.ray_from_screen(sx, sy, W, H)
+            best_t, best_obj = float("inf"), None
+
+            def slab(pos, hw, hh, hd):
+                bmin = np.array([pos.x-hw, pos.y-hh, pos.z],       dtype='f4')
+                bmax = np.array([pos.x+hw, pos.y+hh, pos.z+hd*2],  dtype='f4')
+                t1 = (bmin-origin)/(direction+1e-20)
+                t2 = (bmax-origin)/(direction+1e-20)
+                tN = np.minimum(t1,t2).max()
+                tF = np.maximum(t1,t2).min()
+                if tN<=tF and tF>0: return tN if tN>0 else tF
+                return None
+
+            tests = [
+                (state.git.placeables, .3, .3, .3),
+                (state.git.creatures,  .35,.35,.7),
+                (state.git.doors,      .5, .15,.9),
+                (state.git.waypoints,  .15,.15,.5),
+                (state.git.triggers,   .5, .5, .05),
+                (state.git.sounds,     .2, .2, .2),
+                (state.git.stores,     .3, .3, .4),
+            ]
+            for lst, hw,hh,hd in tests:
+                for obj in lst:
+                    t = slab(obj.position, hw,hh,hd)
+                    if t and t < best_t:
+                        best_t = t; best_obj = obj
+            return best_obj
+        except Exception as e:
+            log.debug(f"pick: {e}"); return None
+
+    def _ray_ground_intersect(self, sx, sy):
+        W, H = self.width(), self.height()
+        try:
+            origin, direction = self.camera.ray_from_screen(sx, sy, W, H)
+            if abs(direction[2]) < 1e-9: return None
+            t = -origin[2]/direction[2]
+            if t < 0: return None
+            from ..formats.gff_types import Vector3
+            pt = origin + direction*t
+            return Vector3(float(pt[0]), float(pt[1]), 0.)
+        except Exception:
+            return None
+
+    # ── Play mode ─────────────────────────────────────────────────────────────
 
     def start_play_mode(self):
-        """
-        Enter first-person preview / walk mode.
-        Builds walkmesh from WalkmeshPanel data or flat ground,
-        spawns the player at the first waypoint / centroid,
-        populates NPC registry, and switches to FPS camera.
-        """
         if not _HAS_ENGINE:
-            log.warning("Engine module not available — play mode disabled")
+            log.warning("Engine unavailable — play mode disabled")
             return
-
         try:
-            from ..core.module_state import get_module_state
             state = get_module_state()
-            git = state.git if state else None
-
-            # ── Build walkmesh triangles ───────────────────────────────────────
+            git   = state.git if state else None
             walk_tris = self._collect_walkmesh_triangles()
-
-            # ── Start play session ─────────────────────────────────────────────
             self._play_session = PlaySession.start(
-                git_data=git,
-                walkmesh_triangles=walk_tris,
-            )
-
-            # ── Populate NPC registry ──────────────────────────────────────────
+                git_data=git, walkmesh_triangles=walk_tris)
             self._npc_registry = NPCRegistry()
             if git:
-                count = self._npc_registry.populate_from_git(git)
-                log.info(f"Play mode: {count} NPCs registered")
-                # Try to load NPC models from game dir
-                if self._game_dir:
-                    self._npc_registry.try_load_models(self._game_dir)
-
-            # ── Build MDL VAOs for scene geometry ─────────────────────────────
-            self._build_mdl_vaos_from_game()
-
-            # ── Switch mode ───────────────────────────────────────────────────
-            self._play_mode  = True
-            self._play_pitch = 0.0
+                self._npc_registry.populate_from_git(git)
+            self._play_mode = True
+            self._play_pitch = 0.
             self._play_last_time = time.time()
-            self._play_mouse_last = None
-
-            # Capture mouse for FPS look
             self.setMouseTracking(True)
             self.grabMouse()
             self.setCursor(Qt.BlankCursor)
-
-            # Start movement timer at higher rate for smooth play
             self._move_timer.setInterval(16)
             if not self._move_timer.isActive():
                 self._move_timer.start()
-
             self.play_mode_changed.emit(True)
-            log.info("Play mode started")
         except Exception as e:
-            log.error(f"start_play_mode error: {e}")
-            import traceback; log.debug(traceback.format_exc())
+            log.error(f"start_play_mode: {e}")
 
     def stop_play_mode(self):
-        """Exit play mode and return to orbit camera editor mode."""
-        if not self._play_mode:
-            return
+        if not self._play_mode: return
         try:
             if self._play_session:
                 self._play_session.stop()
             self._play_session = None
             self._npc_registry = None
             self._play_mode    = False
-            self._play_pitch   = 0.0
-
-            # Release mouse
             self.releaseMouse()
             self.setCursor(Qt.ArrowCursor)
             self.setMouseTracking(False)
-
-            # Release MDL VAOs
-            self._release_mdl_vaos()
-
             self._move_timer.stop()
             self.play_mode_changed.emit(False)
-            log.info("Play mode stopped")
-            self.update()
         except Exception as e:
-            log.debug(f"stop_play_mode error: {e}")
+            log.debug(f"stop_play_mode: {e}")
 
-    @property
-    def is_play_mode(self) -> bool:
-        return self._play_mode
-
-    def _collect_walkmesh_triangles(self) -> List:
-        """
-        Collect walkable triangles from WalkmeshPanel data (if loaded)
-        or fall back to an empty list (flat Z=0 ground is used automatically).
-        """
+    def _collect_walkmesh_triangles(self):
         try:
-            # Try to get WOK data from the walkmesh panel via module state
-            from ..core.module_state import get_module_state
             state = get_module_state()
-            # The walkmesh panel exposes parsed triangles via state.wok_triangles
-            # (set by WalkmeshPanel when a WOK is loaded)
-            wok_tris = getattr(state, 'wok_triangles', None)
-            if wok_tris:
-                log.debug(f"Walk mode: using {len(wok_tris)} WOK triangles")
-                return wok_tris
-        except Exception:
-            pass
-        log.debug("Walk mode: no WOK triangles found, using flat Z=0 ground")
+            tris = getattr(state, 'wok_triangles', None)
+            if tris: return tris
+        except Exception: pass
         return []
 
-    def _build_mdl_vaos_from_game(self):
-        """
-        Build OpenGL VAOs from MDL models in the game directory.
-        Only processes the tile/environment MDLs, not character models.
-        Falls back gracefully if no MDLs are found.
-        """
-        self._release_mdl_vaos()
-        if not _HAS_MDL or not self._game_dir:
-            return
-        if not self._ctx or not self._prog:
-            return
-        # We load area room models if available; otherwise just use the
-        # existing GIT box placeholders for preview
-        try:
-            import os
-            models_dir = os.path.join(self._game_dir, 'models')
-            if not os.path.isdir(models_dir):
-                return
+    # ── Mouse events ─────────────────────────────────────────────────────────
 
-            from ..core.module_state import get_module_state
-            state = get_module_state()
-            are = getattr(state, 'are', None) if state else None
-            room_name = ""
-            if are:
-                # AREData typically has 'room_name' / 'tileset' info
-                room_name = getattr(are, 'tileset', '') or ""
-
-            cache = get_model_cache()
-            loaded = 0
-            # Try to load the room MDL (e.g. ebo_m01aa.mdl for Endar Spire)
-            if room_name:
-                candidates = [
-                    room_name.lower() + '.mdl',
-                    room_name.lower() + 'a.mdl',
-                ]
-                for cand in candidates:
-                    mdl_path = os.path.join(models_dir, cand)
-                    if os.path.exists(mdl_path):
-                        mesh = cache.load(mdl_path)
-                        if mesh:
-                            self._upload_mesh_to_gl(mesh, (0.45, 0.42, 0.38))
-                            loaded += 1
-                            break
-            log.debug(f"MDL VAOs built: {loaded} models, {len(self._mdl_vaos)} VAOs")
-        except Exception as e:
-            log.debug(f"_build_mdl_vaos_from_game error: {e}")
-
-    def _upload_mesh_to_gl(self, mesh_data, color: Tuple):
-        """Upload a MeshData object's geometry to GL as indexed triangle VAOs."""
-        if not self._ctx or not self._prog:
-            return
-        try:
-            prog = self._prog_mesh if self._prog_mesh else self._prog
-            for node in mesh_data.visible_mesh_nodes():
-                if not node.vertices or not node.faces:
-                    continue
-                # Build flat vertex/normal array for triangles
-                verts_out = []
-                has_normals = len(node.normals) == len(node.vertices)
-                for f in node.faces:
-                    if max(f) >= len(node.vertices):
-                        continue
-                    for vi in f:
-                        vx, vy, vz = node.vertices[vi]
-                        if has_normals:
-                            nx, ny, nz = node.normals[vi]
-                        else:
-                            nx, ny, nz = 0.0, 0.0, 1.0
-                        verts_out.extend([vx, vy, vz, nx, ny, nz])
-                if not verts_out:
-                    continue
-                arr = np.array(verts_out, dtype='f4')
-                vbo = self._ctx.buffer(arr.tobytes())
-                if self._prog_mesh:
-                    vao = self._ctx.vertex_array(
-                        self._prog_mesh,
-                        [(vbo, "3f 3f", "in_position", "in_normal")]
-                    )
-                else:
-                    # Fallback: use flat-colour shader with diffuse color baked in
-                    r, g, b = color
-                    flat = []
-                    for i in range(0, len(verts_out), 6):
-                        flat.extend(verts_out[i:i+3] + [r, g, b])
-                    arr2 = np.array(flat, dtype='f4')
-                    vbo  = self._ctx.buffer(arr2.tobytes())
-                    vao  = self._ctx.vertex_array(
-                        self._prog,
-                        [(vbo, "3f 3f", "in_position", "in_color")]
-                    )
-                self._mdl_vaos.append({
-                    "vao":   vao,
-                    "vbo":   vbo,
-                    "count": len(verts_out) // 6,
-                    "color": color,
-                    "resref": getattr(mesh_data, 'name', ''),
-                })
-        except Exception as e:
-            log.debug(f"_upload_mesh_to_gl error: {e}")
-
-    def _release_mdl_vaos(self):
-        for entry in self._mdl_vaos:
-            try:
-                entry["vbo"].release()
-                entry["vao"].release()
-            except Exception:
-                pass
-        self._mdl_vaos.clear()
-
-    # ── Room MDL rendering (editor mode) ─────────────────────────────────────
-
-    def load_rooms(self, rooms: list):
-        """
-        Public API — called by main_window whenever the Room Assembly grid
-        changes.  ``rooms`` is a list of RoomInstance (or plain dicts with
-        keys ``name``, ``x``, ``y``, ``z`` / ``grid_x`` / ``grid_y``).
-
-        We store the list, immediately try to build VAOs (if GL is ready),
-        and frame the camera on the first room centre.
-        """
-        self._room_instances = list(rooms)
-        if self._gl_ready:
-            self._rebuild_room_vaos()
-        else:
-            # GL not yet ready (widget not shown) — VAOs will be built in
-            # initializeGL() once the context is created.
-            log.debug("load_rooms: GL not ready yet, queued %d rooms", len(rooms))
-        if rooms:
-            self._frame_rooms()
-        self.update()
-
-    def _frame_rooms(self):
-        """Point the camera at the centroid of all current room positions."""
-        if not _HAS_NUMPY:
-            return
-        pts = []
-        for ri in self._room_instances:
-            x = getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0)
-            y = getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0)
-            z = getattr(ri, 'z', 0.0)
-            if x is None:
-                x = 0.0
-            if y is None:
-                y = 0.0
-            pts.append([float(x), float(y), float(z)])
-        if not pts:
-            return
-        arr    = np.array(pts, dtype='f4')
-        center = arr.mean(axis=0)
-        radius = float(np.linalg.norm(arr - center, axis=1).max()) if len(pts) > 1 else 10.0
-        self.camera.frame(center, max(radius, 5.0))
-
-    def _rebuild_room_vaos(self):
-        """
-        For each room in self._room_instances, attempt to parse its MDL from
-        the game directory and upload geometry to GL.  Falls back to a
-        coloured placeholder box so there is always something visible.
-        """
-        self._release_room_vaos()
-        if not self._ctx or not self._prog:
-            return
-
-        room_colors = [
-            (0.45, 0.42, 0.38),
-            (0.38, 0.42, 0.45),
-            (0.42, 0.45, 0.38),
-            (0.45, 0.38, 0.42),
-        ]
-
-        for idx, ri in enumerate(self._room_instances):
-            # Derive world position from RoomInstance attributes
-            name = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room_{idx}')
-            x    = float(getattr(ri, 'x', None) or (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
-            y    = float(getattr(ri, 'y', None) or (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
-            z    = float(getattr(ri, 'z', 0.0) or 0.0)
-            color = room_colors[idx % len(room_colors)]
-
-            loaded = False
-
-            # ── Try to load MDL from registered mdl_path ──────────────────
-            mdl_path = getattr(ri, 'mdl_path', None) or ''
-            if not mdl_path and self._game_dir:
-                import os
-                for ext in ('mdl',):
-                    candidate = os.path.join(self._game_dir, 'models',
-                                             name.lower() + '.' + ext)
-                    if os.path.exists(candidate):
-                        mdl_path = candidate
-                        break
-                    # Try directly under game_dir
-                    candidate2 = os.path.join(self._game_dir, name.lower() + '.' + ext)
-                    if os.path.exists(candidate2):
-                        mdl_path = candidate2
-                        break
-
-            if mdl_path and _HAS_MDL:
-                try:
-                    cache = get_model_cache()
-                    mesh  = cache.load(mdl_path)
-                    if mesh:
-                        self._upload_room_mesh(mesh, color, tx=x, ty=y, tz=z)
-                        loaded = True
-                except Exception as e:
-                    log.debug(f"room MDL load error for {name}: {e}")
-
-            if not loaded:
-                # Fallback: coloured wireframe box so user knows the room exists
-                try:
-                    w, h = 10.0, 10.0   # default KotOR tile footprint
-                    verts = _box_verts(x + w/2, y + h/2, z,
-                                       w/2, h/2, 2.0, color)
-                    vbo = self._ctx.buffer(verts.tobytes())
-                    vao = self._ctx.vertex_array(
-                        self._prog,
-                        [(vbo, "3f 3f", "in_position", "in_color")]
-                    )
-                    self._room_vaos.append({
-                        "vao": vao, "vbo": vbo,
-                        "count": len(verts) // 6,
-                        "name": name, "color": color,
-                        "tx": 0.0, "ty": 0.0, "tz": 0.0,
-                    })
-                    log.debug(f"Room '{name}' at ({x:.1f},{y:.1f}) — placeholder box")
-                except Exception as e:
-                    log.debug(f"placeholder box error: {e}")
-
-        log.info(f"Room VAOs rebuilt: {len(self._room_vaos)} entries "
-                 f"from {len(self._room_instances)} rooms")
-        self.update()
-
-    def _upload_room_mesh(self, mesh_data, color: tuple,
-                          tx: float = 0.0, ty: float = 0.0, tz: float = 0.0):
-        """Upload one parsed MDL's geometry as room VAO(s).  Mirrors
-        _upload_mesh_to_gl but tags entries as room_vaos."""
-        if not self._ctx or not self._prog:
-            return
-        try:
-            prog = self._prog_mesh if self._prog_mesh else self._prog
-            nodes = (list(mesh_data.visible_mesh_nodes())
-                     if hasattr(mesh_data, 'visible_mesh_nodes')
-                     else mesh_data.mesh_nodes())
-            uploaded = 0
-            for node in nodes:
-                verts_raw  = getattr(node, 'vertices', [])
-                faces_raw  = getattr(node, 'faces', [])
-                normals_raw = getattr(node, 'normals', [])
-                if not verts_raw or not faces_raw:
-                    continue
-                verts_out = []
-                has_normals = len(normals_raw) == len(verts_raw)
-                for f in faces_raw:
-                    if max(f) >= len(verts_raw):
-                        continue
-                    for vi in f:
-                        vx, vy, vz = verts_raw[vi]
-                        if has_normals:
-                            nx_, ny_, nz_ = normals_raw[vi]
-                        else:
-                            nx_, ny_, nz_ = 0.0, 0.0, 1.0
-                        if self._prog_mesh:
-                            verts_out.extend([vx, vy, vz, nx_, ny_, nz_])
-                        else:
-                            r, g, b = color
-                            verts_out.extend([vx, vy, vz, r, g, b])
-                if not verts_out:
-                    continue
-                arr = np.array(verts_out, dtype='f4')
-                vbo = self._ctx.buffer(arr.tobytes())
-                if self._prog_mesh:
-                    vao = self._ctx.vertex_array(
-                        self._prog_mesh,
-                        [(vbo, "3f 3f", "in_position", "in_normal")]
-                    )
-                else:
-                    vao = self._ctx.vertex_array(
-                        self._prog,
-                        [(vbo, "3f 3f", "in_position", "in_color")]
-                    )
-                self._room_vaos.append({
-                    "vao": vao, "vbo": vbo,
-                    "count": len(verts_out) // 6,
-                    "name": getattr(mesh_data, 'name', ''),
-                    "color": color,
-                    "tx": tx, "ty": ty, "tz": tz,
-                })
-                uploaded += 1
-            log.debug(f"_upload_room_mesh: {uploaded} node VAOs for {getattr(mesh_data,'name','?')}")
-        except Exception as e:
-            log.debug(f"_upload_room_mesh error: {e}")
-
-    def _release_room_vaos(self):
-        """Release all room geometry VAOs / VBOs."""
-        for entry in self._room_vaos:
-            try:
-                entry["vbo"].release()
-                entry["vao"].release()
-            except Exception:
-                pass
-        self._room_vaos.clear()
-
-    # ── Hit Testing ──────────────────────────────────────────────────────────
-
-    def _pick_object(self, sx: int, sy: int):
-        """Raycast against object bounding boxes. Returns best hit or None."""
-        W, H = self.width(), self.height()
-        try:
-            from ..core.module_state import get_module_state
-            state = get_module_state()
-            if not state.git:
-                return None
-
-            origin, direction = self.camera.ray_from_screen(sx, sy, W, H)
-
-            best_t   = float("inf")
-            best_obj = None
-
-            def ray_box(pos, hw, hh, hd):
-                """Slab test against AABB.
-
-                hw = half-width  (X axis)
-                hh = half-height (Y axis, must use hh not hw)
-                hd = half-depth  (Z, height/2 of the box above pos.z)
-                """
-                bmin = np.array([pos.x - hw, pos.y - hh, pos.z],       dtype='f4')
-                bmax = np.array([pos.x + hw, pos.y + hh, pos.z + hd*2], dtype='f4')
-                t_min = (bmin - origin) / (direction + 1e-20)
-                t_max = (bmax - origin) / (direction + 1e-20)
-                t_near = np.minimum(t_min, t_max)
-                t_far  = np.maximum(t_min, t_max)
-                t_enter = t_near.max()
-                t_exit  = t_far.min()
-                if t_enter <= t_exit and t_exit > 0:
-                    return t_enter if t_enter > 0 else t_exit
-                return None
-
-            for p in state.git.placeables:
-                t = ray_box(p.position, 0.3, 0.3, 0.3)
-                if t and t < best_t:
-                    best_t = t; best_obj = p
-
-            for c in state.git.creatures:
-                t = ray_box(c.position, 0.35, 0.35, 0.7)
-                if t and t < best_t:
-                    best_t = t; best_obj = c
-
-            for d in state.git.doors:
-                t = ray_box(d.position, 0.5, 0.15, 0.9)
-                if t and t < best_t:
-                    best_t = t; best_obj = d
-
-            for w in state.git.waypoints:
-                t = ray_box(w.position, 0.15, 0.15, 0.5)
-                if t and t < best_t:
-                    best_t = t; best_obj = w
-
-            for tr in state.git.triggers:
-                t = ray_box(tr.position, 0.5, 0.5, 0.05)
-                if t and t < best_t:
-                    best_t = t; best_obj = tr
-
-            for so in state.git.sounds:
-                t = ray_box(so.position, 0.2, 0.2, 0.2)
-                if t and t < best_t:
-                    best_t = t; best_obj = so
-
-            for st in state.git.stores:
-                t = ray_box(st.position, 0.3, 0.3, 0.4)
-                if t and t < best_t:
-                    best_t = t; best_obj = st
-
-            return best_obj
-        except Exception as e:
-            log.debug(f"Pick error: {e}")
-            return None
-
-    def _ray_ground_intersect(self, sx: int, sy: int) -> Optional[Vector3]:
-        """Find where mouse ray intersects Z=0 ground plane."""
-        W, H = self.width(), self.height()
-        try:
-            origin, direction = self.camera.ray_from_screen(sx, sy, W, H)
-            if abs(direction[2]) < 1e-9:
-                return None
-            t = -origin[2] / direction[2]
-            if t < 0:
-                return None
-            from ..formats.gff_types import Vector3
-            pt = origin + direction * t
-            return Vector3(float(pt[0]), float(pt[1]), 0.0)
-        except Exception:
-            return None
-
-    # ── Mouse Events ─────────────────────────────────────────────────────────
-
-    def mousePressEvent(self, event: QMouseEvent):
+    def mousePressEvent(self, event):
         self._last_mouse = event.pos()
-
         if self._play_mode:
-            self._mouse_button = event.button()
             return
-
         if event.button() == Qt.LeftButton:
-            # ── Gizmo hit test FIRST ──────────────────────────────────────────
             if self._selected_obj is not None and not self._placement_mode:
                 axis = self._hit_gizmo(event.x(), event.y())
                 if axis is not None:
                     self._gizmo_axis = axis
                     self._gizmo_drag_start_mouse = event.pos()
-                    # Deep-copy current position/rotation
                     obj = self._selected_obj
                     if hasattr(obj, 'position'):
                         from ..formats.gff_types import Vector3
                         p = obj.position
                         self._gizmo_drag_start_pos = Vector3(p.x, p.y, p.z)
                     if hasattr(obj, 'bearing'):
-                        self._gizmo_drag_start_rot = getattr(obj, 'bearing', 0.0)
-                    self._mouse_button = event.button()
-                    return   # consumed by gizmo
-
+                        self._gizmo_drag_start_rot = getattr(obj,'bearing',0.)
+                    return
             if self._placement_mode:
                 pos = self._ray_ground_intersect(event.x(), event.y())
                 if pos:
@@ -1588,200 +1356,122 @@ class ViewportWidget(QOpenGLWidget_base):
             else:
                 obj = self._pick_object(event.x(), event.y())
                 self._selected_obj = obj
-                self._gizmo_axis = None
+                self._gizmo_axis   = None
                 self._rebuild_object_vaos()
                 self.object_selected.emit(obj)
 
-        self._mouse_button = event.button()
-
-    def mouseMoveEvent(self, event: QMouseEvent):
+    def mouseMoveEvent(self, event):
         if self._play_mode and self._play_session:
-            if self._play_mouse_last is not None:
-                dx = event.x() - self._play_mouse_last.x()
-                dy = event.y() - self._play_mouse_last.y()
-                sensitivity = 0.20
-                self._play_session.player.yaw -= dx * sensitivity
-                self._play_pitch = max(-80.0, min(80.0,
-                                       self._play_pitch - dy * sensitivity))
-            self._play_mouse_last = event.pos()
-            cx, cy = self.width() // 2, self.height() // 2
-            QCursor.setPos(self.mapToGlobal(QPoint(cx, cy)))
+            cx, cy = self.width()//2, self.height()//2
+            if hasattr(self, '_play_mouse_last') and self._play_mouse_last:
+                dx = event.x()-self._play_mouse_last.x()
+                dy = event.y()-self._play_mouse_last.y()
+                self._play_session.player.yaw -= dx*0.20
+                self._play_pitch = max(-80., min(80., self._play_pitch-dy*0.20))
             self._play_mouse_last = QPoint(cx, cy)
+            QCursor.setPos(self.mapToGlobal(QPoint(cx, cy)))
             self.update()
             return
 
-        # ── Gizmo drag ────────────────────────────────────────────────────────
-        if (self._gizmo_axis is not None
-                and self._gizmo_drag_start_mouse is not None
-                and self._selected_obj is not None
-                and hasattr(self._selected_obj, 'position')
-                and self._gizmo_drag_start_pos is not None):
+        if (self._gizmo_axis is not None and
+                self._gizmo_drag_start_mouse is not None and
+                self._selected_obj is not None and
+                hasattr(self._selected_obj,'position') and
+                self._gizmo_drag_start_pos is not None):
             self._handle_gizmo_drag(event)
             return
 
-        # ── Gizmo hover highlight ─────────────────────────────────────────────
         if self._selected_obj is not None and not self._placement_mode:
-            old_hover = self._gizmo_hover
+            old = self._gizmo_hover
             self._gizmo_hover = self._hit_gizmo(event.x(), event.y())
-            if self._gizmo_hover != old_hover:
+            if self._gizmo_hover != old:
                 self.setCursor(Qt.SizeAllCursor if self._gizmo_hover is not None
                                else Qt.ArrowCursor)
                 self.update()
 
         if self._last_mouse is None:
-            self._last_mouse = event.pos()
-            return
-
-        dx = event.x() - self._last_mouse.x()
-        dy = event.y() - self._last_mouse.y()
+            self._last_mouse = event.pos(); return
+        dx = event.x()-self._last_mouse.x()
+        dy = event.y()-self._last_mouse.y()
         self._last_mouse = event.pos()
-
         if event.buttons() & Qt.RightButton:
-            self.camera.orbit(-dx * 0.4, -dy * 0.4)
+            self.camera.orbit(-dx*0.4, -dy*0.4)
         elif event.buttons() & Qt.MiddleButton:
             self.camera.pan(dx, dy)
-
-        target = self.camera.target
-        self.camera_moved.emit(float(target[0]), float(target[1]), float(target[2]))
+        t = self.camera.target
+        self.camera_moved.emit(float(t[0]), float(t[1]), float(t[2]))
         self.update()
 
-    def _handle_gizmo_drag(self, event: QMouseEvent):
-        """Translate or rotate the selected object by dragging a gizmo axis."""
-        obj = self._selected_obj
-        axis = self._gizmo_axis
-        start_mouse = self._gizmo_drag_start_mouse
-        start_pos   = self._gizmo_drag_start_pos
-
-        # Total pixel delta from drag start
-        total_dx = event.x() - start_mouse.x()
-        total_dy = event.y() - start_mouse.y()
-
-        # World-units per pixel: use camera distance as scale
-        dist = float(np.linalg.norm(
-            self.camera.eye - self.camera.target)) if hasattr(self.camera, 'eye') else 10.0
-        # Approx world units per screen pixel
-        fov_rad = math.radians(45.0)
-        world_per_px = (2.0 * dist * math.tan(fov_rad * 0.5)) / max(self.height(), 1)
-
-        # Axis screen direction — project unit vector along the axis
-        ox, oy = self._world_to_screen(start_pos.x, start_pos.y, start_pos.z)
-        if ox is None:
-            return
+    def _handle_gizmo_drag(self, event):
+        obj   = self._selected_obj
+        axis  = self._gizmo_axis
+        sm    = self._gizmo_drag_start_mouse
+        sp    = self._gizmo_drag_start_pos
+        total_dx = event.x()-sm.x()
+        total_dy = event.y()-sm.y()
 
         if axis == _AX_R:
-            # Rotation around Z: map horizontal drag to degrees
-            raw_angle = total_dx * 1.5   # 1.5 deg per pixel
+            raw = total_dx*1.5
             if self._snap_enabled:
-                snap_deg = 45.0 if (self._snap_size >= 1.0) else 15.0
-                raw_angle = round(raw_angle / snap_deg) * snap_deg
-            start_rot = getattr(self, '_gizmo_drag_start_rot', 0.0)
-            new_bearing = (start_rot + raw_angle) % 360.0
-            if hasattr(obj, 'bearing'):
-                obj.bearing = new_bearing
-            self._rebuild_object_vaos()
-            self.update()
-            return
+                snap_deg = 45. if self._snap_size>=1. else 15.
+                raw = round(raw/snap_deg)*snap_deg
+            if hasattr(obj,'bearing'):
+                obj.bearing = (self._gizmo_drag_start_rot+raw) % 360.
+            self._rebuild_object_vaos(); self.update(); return
 
-        # Translate axes: map screen delta to world delta along each axis
-        world_axes = {
-            _AX_X: (1.0, 0.0, 0.0),
-            _AX_Y: (0.0, 1.0, 0.0),
-            _AX_Z: (0.0, 0.0, 1.0),
-        }
-        wx, wy, wz = world_axes[axis]
-
-        # Project +1 world unit along axis to screen to get screen direction
-        tx, ty = self._world_to_screen(
-            start_pos.x + wx, start_pos.y + wy, start_pos.z + wz)
-        if tx is None:
-            return
-        sdx = tx - ox
-        sdy = ty - oy
-        slen = math.hypot(sdx, sdy) or 1.0
-        # Dot screen drag with axis screen direction
-        dot = (total_dx * sdx + total_dy * sdy) / slen
-        # Scale by world_per_px using the projected axis length
-        axis_screen_len = slen  # pixels per world unit
-        world_delta = dot * world_per_px / max(axis_screen_len * world_per_px, 0.001)
-        # Simpler: dot * (1.0 / axis_screen_len)
-        world_delta = dot / max(axis_screen_len, 0.1)
-
-        new_x = start_pos.x + wx * world_delta
-        new_y = start_pos.y + wy * world_delta
-        new_z = start_pos.z + wz * world_delta
-
-        # Apply snap
+        ox, oy = self._world_to_screen(sp.x, sp.y, sp.z)
+        if ox is None: return
+        world_axes = {_AX_X:(1.,0.,0.), _AX_Y:(0.,1.,0.), _AX_Z:(0.,0.,1.)}
+        wx,wy,wz = world_axes[axis]
+        tx,ty = self._world_to_screen(sp.x+wx, sp.y+wy, sp.z+wz)
+        if tx is None: return
+        sdx = tx-ox; sdy = ty-oy
+        slen = math.hypot(sdx,sdy) or 1.
+        dot = (total_dx*sdx+total_dy*sdy)/slen
+        delta = dot/max(slen, 0.1)
+        nx = sp.x+wx*delta; ny = sp.y+wy*delta; nz = sp.z+wz*delta
         if self._snap_enabled:
-            if wx: new_x = self._apply_snap(new_x)
-            if wy: new_y = self._apply_snap(new_y)
-            if wz: new_z = self._apply_snap(new_z)
+            if wx: nx = self._apply_snap(nx)
+            if wy: ny = self._apply_snap(ny)
+            if wz: nz = self._apply_snap(nz)
+        obj.position.x, obj.position.y, obj.position.z = nx, ny, nz
+        self._rebuild_object_vaos(); self.update()
 
-        obj.position.x = new_x
-        obj.position.y = new_y
-        obj.position.z = new_z
-
-        self._rebuild_object_vaos()
-        self.update()
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
+    def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._gizmo_axis is not None:
-            # Finish gizmo drag — clear all drag state
             self._gizmo_axis = None
             self._gizmo_drag_start_mouse = None
-            self._gizmo_drag_start_pos = None
+            self._gizmo_drag_start_pos   = None
             self._gizmo_hover = None
             self.setCursor(Qt.ArrowCursor)
             self.update()
-        self._mouse_button = None
 
-    def wheelEvent(self, event: QWheelEvent):
-        if self._play_mode:
-            return   # no zoom in play mode
-        delta = event.angleDelta().y() / 120.0
-        self.camera.zoom(-delta)
+    def wheelEvent(self, event):
+        if self._play_mode: return
+        self.camera.zoom(-event.angleDelta().y()/120.)
         self.update()
 
-    # ── Keyboard Events ───────────────────────────────────────────────────────
+    # ── Keyboard events ───────────────────────────────────────────────────────
 
-    def _update_snap_state(self):
-        """Recompute snap enabled/size from currently held modifier keys.
-
-        Matches Unreal Engine conventions:
-          Ctrl            → snap 1.0 u  (coarse)
-          Shift           → snap 0.25 u (fine)
-          Ctrl + Shift    → snap 0.5 u  (medium)
-          (no modifier)   → snap off
-        """
+    def _update_snap(self):
         ctrl  = Qt.Key_Control in self._keys
         shift = Qt.Key_Shift   in self._keys
-        if ctrl and shift:
-            self._snap_enabled = True
-            self._snap_size    = SNAP_HALF
-        elif ctrl:
-            self._snap_enabled = True
-            self._snap_size    = SNAP_UNIT
-        elif shift:
-            self._snap_enabled = True
-            self._snap_size    = SNAP_FINE
-        else:
-            self._snap_enabled = False
-            self._snap_size    = SNAP_UNIT
-        self.update()  # redraw snap indicator
+        if ctrl and shift:   self._snap_enabled=True;  self._snap_size=SNAP_HALF
+        elif ctrl:           self._snap_enabled=True;  self._snap_size=SNAP_UNIT
+        elif shift:          self._snap_enabled=True;  self._snap_size=SNAP_FINE
+        else:                self._snap_enabled=False; self._snap_size=SNAP_UNIT
+        self.update()
 
-    def keyPressEvent(self, event: QKeyEvent):
+    def keyPressEvent(self, event):
         self._keys.add(event.key())
         if self._play_mode:
             if event.key() == Qt.Key_Escape:
                 self.stop_play_mode()
-            # WASD handled in _process_movement; start timer
             if not self._move_timer.isActive():
                 self._move_timer.start()
             return
-
-        # Snap modifier keys (Ctrl / Shift)
         if event.key() in (Qt.Key_Control, Qt.Key_Shift):
-            self._update_snap_state()
-
+            self._update_snap()
         if event.key() == Qt.Key_F:
             self._frame_all()
         elif event.key() == Qt.Key_Delete:
@@ -1790,164 +1480,84 @@ class ViewportWidget(QOpenGLWidget_base):
             self._placement_mode = False
             self._gizmo_axis = None
             self._gizmo_drag_start_mouse = None
-            self._gizmo_drag_start_pos = None
+            self._gizmo_drag_start_pos   = None
             self.setCursor(Qt.ArrowCursor)
         if not self._move_timer.isActive():
             self._move_timer.start()
 
-    def keyReleaseEvent(self, event: QKeyEvent):
+    def keyReleaseEvent(self, event):
         self._keys.discard(event.key())
-        # Update snap when modifier is released
         if event.key() in (Qt.Key_Control, Qt.Key_Shift):
-            self._update_snap_state()
+            self._update_snap()
         if not self._play_mode and not self._keys:
             self._move_timer.stop()
 
     def _process_movement(self):
-        """WASD camera movement (editor) or player locomotion (play mode)."""
         if self._play_mode and self._play_session:
-            # ── Play mode locomotion ──────────────────────────────────────────
             now = time.time()
-            dt  = min(now - self._play_last_time, 0.1)   # cap at 100ms
+            dt  = min(now-self._play_last_time, 0.1)
             self._play_last_time = now
-
-            fwd   = 0.0
-            right = 0.0
-            turn  = 0.0
-            running = (Qt.Key_Shift in self._keys)
-
-            if Qt.Key_W in self._keys:    fwd   += 1.0
-            if Qt.Key_S in self._keys:    fwd   -= 1.0
-            if Qt.Key_A in self._keys:    turn  += 1.0   # turn left
-            if Qt.Key_D in self._keys:    turn  -= 1.0   # turn right
-            if Qt.Key_Q in self._keys:    right -= 1.0   # strafe left
-            if Qt.Key_E in self._keys:    right += 1.0   # strafe right
-
+            fwd=right=turn=0.
+            if Qt.Key_W in self._keys: fwd   += 1.
+            if Qt.Key_S in self._keys: fwd   -= 1.
+            if Qt.Key_A in self._keys: turn  += 1.
+            if Qt.Key_D in self._keys: turn  -= 1.
+            if Qt.Key_Q in self._keys: right -= 1.
+            if Qt.Key_E in self._keys: right += 1.
             self._play_session.update(dt, {
-                "move_forward": fwd,
-                "move_right":   right,
-                "turn_left":    turn,
-                "running":      running,
-            })
-            self.update()
-            return
+                "move_forward": fwd, "move_right": right,
+                "turn_left": turn,
+                "running": Qt.Key_Shift in self._keys})
+            self.update(); return
 
-        # ── Editor WASD ───────────────────────────────────────────────────────
         speed = 0.15
-        az = math.radians(self.camera.azimuth)
-        fwd   = np.array([math.cos(az), math.sin(az), 0.0], dtype='f4')
-        right = np.array([-math.sin(az), math.cos(az), 0.0], dtype='f4')
-        up    = np.array([0.0, 0.0, 1.0], dtype='f4')
-
+        az  = math.radians(self.camera.azimuth)
+        fwd   = np.array([math.cos(az), math.sin(az), 0.], dtype='f4')
+        right = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
+        up    = np.array([0., 0., 1.], dtype='f4')
         moved = False
-        if Qt.Key_W in self._keys:
-            self.camera.target += fwd * speed;   moved = True
-        if Qt.Key_S in self._keys:
-            self.camera.target -= fwd * speed;   moved = True
-        if Qt.Key_A in self._keys:
-            self.camera.target -= right * speed; moved = True
-        if Qt.Key_D in self._keys:
-            self.camera.target += right * speed; moved = True
-        if Qt.Key_Q in self._keys:
-            self.camera.target -= up * speed;    moved = True
-        if Qt.Key_E in self._keys:
-            self.camera.target += up * speed;    moved = True
+        if Qt.Key_W in self._keys: self.camera.target+=fwd*speed;   moved=True
+        if Qt.Key_S in self._keys: self.camera.target-=fwd*speed;   moved=True
+        if Qt.Key_A in self._keys: self.camera.target-=right*speed; moved=True
+        if Qt.Key_D in self._keys: self.camera.target+=right*speed; moved=True
+        if Qt.Key_Q in self._keys: self.camera.target-=up*speed;    moved=True
+        if Qt.Key_E in self._keys: self.camera.target+=up*speed;    moved=True
         if moved:
             t = self.camera.target
-            self.camera_moved.emit(float(t[0]), float(t[1]), float(t[2]))
+            self.camera_moved.emit(float(t[0]),float(t[1]),float(t[2]))
             self.update()
 
-    # ── Actions ──────────────────────────────────────────────────────────────
-
-    def _frame_all(self):
-        """Zoom/pan to frame all visible objects (all 7 GIT types)."""
-        try:
-            from ..core.module_state import get_module_state
-            state = get_module_state()
-            if not state.git:
-                return
-            positions = []
-            for obj in state.git.iter_all():
-                pos = getattr(obj, "position", None)
-                if pos is not None:
-                    positions.append([pos.x, pos.y, pos.z])
-            if not positions:
-                return
-            pts = np.array(positions, dtype='f4')
-            center = pts.mean(axis=0)
-            radius = float(np.linalg.norm(pts - center, axis=1).max())
-            self.camera.frame(center, max(radius, 1.0))
-            self.update()
-        except Exception as e:
-            log.debug(f"Frame all error: {e}")
+    # ── Object actions ────────────────────────────────────────────────────────
 
     def _place_object_at(self, pos):
-        """Place a new GIT object of the correct type at the given world position."""
         try:
             from ..core.module_state import get_module_state, PlaceObjectCommand
             from ..formats.gff_types import (
                 GITPlaceable, GITCreature, GITDoor, GITWaypoint,
-                GITTrigger, GITSoundObject, GITStoreObject,
-            )
+                GITTrigger, GITSoundObject, GITStoreObject)
             state = get_module_state()
-            if not state.git:
-                return
-
+            if not state.git: return
             resref = (self._place_template or "obj_default")[:16]
-            atype  = getattr(self, "_place_asset_type", "placeable")
-
-            _constructors = {
-                "placeable": GITPlaceable,
-                "creature":  GITCreature,
-                "door":      GITDoor,
-                "waypoint":  GITWaypoint,
-                "trigger":   GITTrigger,
-                "sound":     GITSoundObject,
-                "store":     GITStoreObject,
-            }
-            cls = _constructors.get(atype, GITPlaceable)
+            cls = {"placeable":GITPlaceable,"creature":GITCreature,
+                   "door":GITDoor,"waypoint":GITWaypoint,"trigger":GITTrigger,
+                   "sound":GITSoundObject,"store":GITStoreObject
+                   }.get(getattr(self,'_place_asset_type','placeable'), GITPlaceable)
             obj = cls()
-            obj.resref          = resref
-            obj.template_resref = resref
-            obj.tag             = resref
-            obj.position        = pos
-
+            obj.resref = obj.template_resref = obj.tag = resref
+            obj.position = pos
             state.execute(PlaceObjectCommand(state.git, obj))
             self.object_placed.emit(obj)
-            log.info(f"Placed {atype}: {resref} at ({pos.x:.2f},{pos.y:.2f},{pos.z:.2f})")
         except Exception as e:
-            log.debug(f"Place error: {e}")
+            log.debug(f"place: {e}")
 
     def _delete_selected(self):
-        """Delete the currently selected object (any GIT type)."""
-        if self._selected_obj is None:
-            return
+        if self._selected_obj is None: return
         try:
             from ..core.module_state import get_module_state, DeleteObjectCommand
             state = get_module_state()
-            if not state.git:
-                return
-            obj = self._selected_obj
-            state.execute(DeleteObjectCommand(state.git, obj))
+            if not state.git: return
+            state.execute(DeleteObjectCommand(state.git, self._selected_obj))
             self._selected_obj = None
             self.object_selected.emit(None)
         except Exception as e:
-            log.debug(f"Delete error: {e}")
-
-    def frame_selected(self):
-        """Move camera to look at selected object, or frame all if nothing selected."""
-        obj = self._selected_obj
-        if obj is None:
-            self._frame_all()
-            return
-        try:
-            pos = obj.position
-            center = np.array([pos.x, pos.y, pos.z], dtype='f4')
-            self.camera.frame(center, 5.0)
-            self.update()
-        except Exception:
-            pass
-
-    def frame_all(self):
-        """Public alias: frame all GIT objects regardless of selection."""
-        self._frame_all()
+            log.debug(f"delete: {e}")
