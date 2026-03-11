@@ -664,14 +664,17 @@ class RoomGridWidget(QWidget):
             world_x=gx * rw,
             world_y=gy * rh,
             width=rw, height=rh,
-            mdl_path=getattr(self, '_mdl_paths', {}).get(mdl_name.lower(), ""),
+            mdl_path=vars(self).get('_mdl_paths', {}).get(mdl_name.lower(), ""),
         )
         self._rooms.append(room)
         self._selected = room
         if _HAS_QT:
-            self.rooms_changed.emit()
-            self.room_selected.emit(room)
-            self.update()
+            try:
+                self.rooms_changed.emit()
+                self.room_selected.emit(room)
+                self.update()
+            except RuntimeError:
+                pass  # Qt object not fully initialised (e.g. unit-test stub)
         log.info(f"Room placed: {mdl_name} at ({gx},{gy}) world=({room.world_x:.1f},{room.world_y:.1f})")
         return True
 
