@@ -169,17 +169,20 @@ def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> "np.
 
 def _look_at(eye: "np.ndarray", target: "np.ndarray",
              up: "np.ndarray") -> "np.ndarray":
+    """Standard view matrix (row-major).  Write .T.tobytes() to GL uniforms."""
     f = target - eye
-    f /= max(np.linalg.norm(f), 1e-9)
+    f_len = np.linalg.norm(f)
+    f = f / f_len if f_len > 1e-9 else np.array([0., 1., 0.], dtype='f4')
     r = np.cross(f, up)
     r_len = np.linalg.norm(r)
     r = r / r_len if r_len > 1e-9 else np.array([1., 0., 0.], dtype='f4')
     u = np.cross(r, f)
-    m = np.eye(4, dtype='f4')
-    m[0, :3] = r;  m[3, 0] = -np.dot(r, eye)
-    m[1, :3] = u;  m[3, 1] = -np.dot(u, eye)
-    m[2, :3] = -f; m[3, 2] =  np.dot(f, eye)
-    return m.T
+    return np.array([
+        [ r[0],  r[1],  r[2], -np.dot(r, eye)],
+        [ u[0],  u[1],  u[2], -np.dot(u, eye)],
+        [-f[0], -f[1], -f[2],  np.dot(f, eye)],
+        [ 0.,    0.,    0.,    1.            ],
+    ], dtype='f4')
 
 
 def _translation(tx: float, ty: float, tz: float) -> "np.ndarray":
@@ -313,10 +316,33 @@ uniform vec3 diffuse_color;
 uniform vec3 light_dir;
 uniform float ambient;
 void main() {
-    float diff = max(dot(normalize(v_normal), normalize(light_dir)), 0.0);
-    vec3 col = diffuse_color * (ambient + diff * (1.0 - ambient));
-    fragColor = vec4(col, 1.0);
+    vec3 n = normalize(v_normal);
+    // Key light
+    float diff = max(dot(n, normalize(light_dir)), 0.0);
+    // Two-sided: dim backfaces rather than discard
+    float back = max(dot(-n, normalize(light_dir)), 0.0) * 0.3;
+    // Rim fill light from below (bounce)
+    float fill = max(dot(n, vec3(0.0, 0.0, -1.0)), 0.0) * 0.12;
+    vec3 col = diffuse_color * (ambient + (diff + back + fill) * (1.0 - ambient));
+    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
+"""
+
+# Uniform-colour + alpha (walkmesh, selection highlight overlay)
+_VERT_UNIFORM = """
+#version 330 core
+in vec3 in_position;
+uniform mat4 mvp;
+void main() {
+    gl_Position = mvp * vec4(in_position, 1.0);
+}
+"""
+
+_FRAG_UNIFORM = """
+#version 330 core
+out vec4 fragColor;
+uniform vec4 u_color;
+void main() { fragColor = u_color; }
 """
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -427,15 +453,19 @@ class _EGLRenderer:
 
     def __init__(self):
         self.ctx = None          # moderngl.Context
-        self._prog_flat = None   # colour-per-vertex shader
-        self._prog_lit  = None   # Phong-lit shader
+        self._prog_flat    = None   # colour-per-vertex shader
+        self._prog_lit     = None   # Phong-lit shader
+        self._prog_uniform = None   # uniform colour + alpha (overlay)
         self._fbo = None         # current FBO
         self._fbo_size = (0, 0)  # (W, H) of current FBO
         self._grid_vao   = None
         self._grid_count = 0
         self._object_vaos: List[dict] = []
         self._room_vaos: List[dict]   = []
+        self._walk_vaos: List[dict]   = []   # walkable tris (green overlay)
+        self._nowalk_vaos: List[dict] = []   # non-walkable tris (red overlay)
         self._mdl_vaos: List[dict]    = []   # play-mode only
+        self._show_walkmesh = True
         self.ready = False
 
     # ── Initialisation ────────────────────────────────────────────────────────
@@ -498,6 +528,12 @@ class _EGLRenderer:
             except Exception as e:
                 log.warning(f"Lit shader failed, using flat fallback: {e}")
                 self._prog_lit = None
+            try:
+                self._prog_uniform = self.ctx.program(
+                    vertex_shader=_VERT_UNIFORM, fragment_shader=_FRAG_UNIFORM)
+            except Exception as e:
+                log.warning(f"Uniform shader failed: {e}")
+                self._prog_uniform = None
             self._build_grid()
             self.ready = True
             info = self.ctx.info
@@ -546,6 +582,16 @@ class _EGLRenderer:
         vao = self.ctx.vertex_array(
             self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
         return {"vao": vao, "vbo": vbo, "count": len(verts) // 6}
+
+    def _upload_positions_only(self, positions: list) -> Optional[dict]:
+        """Upload raw position-only triangles for uniform-colour overlay."""
+        if not positions or not self._prog_uniform:
+            return None
+        arr = np.array(positions, dtype='f4').flatten()
+        vbo = self.ctx.buffer(arr.tobytes())
+        vao = self.ctx.vertex_array(
+            self._prog_uniform, [(vbo, "3f", "in_position")])
+        return {"vao": vao, "vbo": vbo, "count": len(positions)}
 
     def _upload_lit_or_flat(self, positions, normals, color: tuple) -> Optional[dict]:
         """Upload mesh triangles with normals (lit) or baked colour (flat)."""
@@ -603,6 +649,39 @@ class _EGLRenderer:
         for t in state.git.triggers:   _add(t, .50,.50,.05, _COLOR_TRIGGER)
         for s in state.git.sounds:     _add(s, .20,.20,.20, _COLOR_SOUND)
         for st in state.git.stores:    _add(st,.30,.30,.40, _COLOR_STORE)
+
+    def rebuild_walkmesh_vaos(self, walk_tris: list, nowalk_tris: list):
+        """
+        Upload walkmesh triangles as position-only geometry for overlay.
+        walk_tris  : list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) walkable
+        nowalk_tris: list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) blocked
+        """
+        self._release_list(self._walk_vaos)
+        self._release_list(self._nowalk_vaos)
+        if not self.ctx or not self._prog_uniform:
+            return
+
+        def _tris_to_pos(tris):
+            pts = []
+            for tri in tris:
+                for v in tri:
+                    pts.append(list(v))
+            return pts
+
+        walk_pos   = _tris_to_pos(walk_tris)
+        nowalk_pos = _tris_to_pos(nowalk_tris)
+
+        if walk_pos:
+            e = self._upload_positions_only(walk_pos)
+            if e:
+                self._walk_vaos.append(e)
+        if nowalk_pos:
+            e = self._upload_positions_only(nowalk_pos)
+            if e:
+                self._nowalk_vaos.append(e)
+
+        log.debug(f"Walkmesh VAOs: {len(walk_pos)//3} walk, "
+                  f"{len(nowalk_pos)//3} no-walk triangles")
 
     # ── Room VAOs ─────────────────────────────────────────────────────────────
 
@@ -688,7 +767,7 @@ class _EGLRenderer:
     # ── Render frame ──────────────────────────────────────────────────────────
 
     def render(self, W: int, H: int, camera: OrbitCamera,
-               play_session=None) -> Optional[bytes]:
+               play_session=None, show_walkmesh: bool = True) -> Optional[bytes]:
         """
         Render one frame into the FBO and return the raw RGBA pixel bytes
         (bottom-row first, i.e. OpenGL convention — caller must flip).
@@ -704,13 +783,18 @@ class _EGLRenderer:
 
         self._fbo.use()
         self.ctx.viewport = (0, 0, W, H)
-        self.ctx.clear(0.08, 0.08, 0.12, 1.0)
+        # Deep navy-blue background
+        self.ctx.clear(0.07, 0.08, 0.14, 1.0)
 
         aspect = W / max(H, 1)
         if play_session:
             proj = camera.projection_matrix(aspect)
-            eye  = play_session.player_eye
-            look = play_session.player.look_at_target(0.0)
+            try:
+                eye  = play_session.player_eye
+                look = play_session.player.look_at_target(0.0)
+            except Exception:
+                eye  = camera.eye().tolist()
+                look = camera.target.tolist()
             view = _look_at(
                 np.array(eye,  dtype='f4'),
                 np.array(look, dtype='f4'),
@@ -722,12 +806,16 @@ class _EGLRenderer:
 
         vp = proj @ view
 
-        # ── Grid ──────────────────────────────────────────────────────────────
+        # ── Ground grid ───────────────────────────────────────────────────────
         if self._grid_vao:
-            self._prog_flat["mvp"].write(vp.astype('f4').tobytes())
+            self._prog_flat["mvp"].write(vp.T.astype('f4').tobytes())
             self._grid_vao.render(moderngl.LINES, vertices=self._grid_count)
 
         # ── Room geometry ─────────────────────────────────────────────────────
+        # Disable back-face culling so interior faces show
+        self.ctx.disable(moderngl.CULL_FACE)
+        light_dir = np.array([0.6, 0.4, 0.8], dtype='f4')
+        light_dir = light_dir / np.linalg.norm(light_dir)
         for e in self._room_vaos:
             vao, count = e["vao"], e["count"]
             if not vao or count == 0:
@@ -739,45 +827,73 @@ class _EGLRenderer:
             primitive_hint = e.get("primitive", "triangles")
             if e.get("lit") and self._prog_lit:
                 try:
-                    self._prog_lit["mvp"].write(mvp_m.astype('f4').tobytes())
-                    self._prog_lit["model"].write(model_m.astype('f4').tobytes())
+                    self._prog_lit["mvp"].write(mvp_m.T.astype('f4').tobytes())
+                    self._prog_lit["model"].write(model_m.T.astype('f4').tobytes())
                     self._prog_lit["diffuse_color"].write(
                         np.array(color, dtype='f4').tobytes())
-                    self._prog_lit["light_dir"].write(
-                        np.array([.57,.57,.57], dtype='f4').tobytes())
-                    self._prog_lit["ambient"].value = 0.35
+                    self._prog_lit["light_dir"].write(light_dir.tobytes())
+                    self._prog_lit["ambient"].value = 0.40
                     vao.render(moderngl.TRIANGLES, vertices=count)
                 except Exception as ex:
                     log.debug(f"room lit render: {ex}")
             else:
                 try:
-                    self._prog_flat["mvp"].write(mvp_m.astype('f4').tobytes())
+                    self._prog_flat["mvp"].write(mvp_m.T.astype('f4').tobytes())
                     prim = moderngl.LINES if primitive_hint == "lines" else moderngl.TRIANGLES
                     vao.render(prim, vertices=count)
                 except Exception as ex:
                     log.debug(f"room flat render: {ex}")
 
-        # Re-set MVP for GIT boxes (no per-instance model matrix)
-        self._prog_flat["mvp"].write(vp.astype('f4').tobytes())
+        self.ctx.enable(moderngl.CULL_FACE)
+
+        # ── Walkmesh overlay (semi-transparent, depth-write off) ──────────────
+        if show_walkmesh and self._prog_uniform:
+            self.ctx.depth_mask = False
+            self.ctx.enable(moderngl.BLEND)
+            # Walkable: green
+            if self._walk_vaos:
+                try:
+                    self._prog_uniform["mvp"].write(vp.T.astype('f4').tobytes())
+                    self._prog_uniform["u_color"].write(
+                        np.array([0.1, 0.9, 0.3, 0.35], dtype='f4').tobytes())
+                    for e in self._walk_vaos:
+                        if e["vao"] and e["count"]:
+                            e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
+                except Exception as ex:
+                    log.debug(f"walk overlay: {ex}")
+            # Non-walkable: red
+            if self._nowalk_vaos:
+                try:
+                    self._prog_uniform["u_color"].write(
+                        np.array([0.9, 0.1, 0.1, 0.30], dtype='f4').tobytes())
+                    for e in self._nowalk_vaos:
+                        if e["vao"] and e["count"]:
+                            e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
+                except Exception as ex:
+                    log.debug(f"nowalk overlay: {ex}")
+            self.ctx.depth_mask = True
 
         # ── GIT object boxes ──────────────────────────────────────────────────
+        self._prog_flat["mvp"].write(vp.T.astype('f4').tobytes())
+        self.ctx.disable(moderngl.CULL_FACE)
         for e in self._object_vaos:
             try:
                 e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
             except Exception:
                 pass
+        self.ctx.enable(moderngl.CULL_FACE)
 
         # ── Play-mode MDL models ──────────────────────────────────────────────
         if play_session and self._mdl_vaos and self._prog_lit:
             ident = np.eye(4, dtype='f4')
             try:
-                self._prog_lit["mvp"].write(vp.astype('f4').tobytes())
-                self._prog_lit["model"].write(ident.tobytes())
-                self._prog_lit["light_dir"].write(
-                    np.array([.5,.5,1.], dtype='f4').tobytes())
+                self._prog_lit["mvp"].write(vp.T.astype('f4').tobytes())
+                self._prog_lit["model"].write(ident.T.tobytes())
+                self._prog_lit["light_dir"].write(light_dir.tobytes())
                 self._prog_lit["ambient"].value = 0.3
             except Exception:
                 pass
+            self.ctx.disable(moderngl.CULL_FACE)
             for e in self._mdl_vaos:
                 vao, count, color = e["vao"], e["count"], e.get("color", (.6,.6,.6))
                 if vao and count:
@@ -787,6 +903,7 @@ class _EGLRenderer:
                         vao.render(moderngl.TRIANGLES, vertices=count)
                     except Exception:
                         pass
+            self.ctx.enable(moderngl.CULL_FACE)
 
         return self._fbo.read(components=4)
 
@@ -795,6 +912,8 @@ class _EGLRenderer:
             return
         self._release_list(self._object_vaos)
         self._release_list(self._room_vaos)
+        self._release_list(self._walk_vaos)
+        self._release_list(self._nowalk_vaos)
         self._release_list(self._mdl_vaos)
         try: self.ctx.release()
         except Exception: pass
@@ -840,6 +959,13 @@ class ViewportWidget(_QWidget_base):
         self._place_template: Optional[str] = None
         self._place_asset_type: str = "placeable"
 
+        # App mode: 'module_editor' or 'level_builder'
+        self._app_mode: str = "level_builder"
+
+        # Walkmesh visibility
+        self._show_walkmesh: bool = True
+        self._walkmesh_loaded: bool = False
+
         # Play mode
         self._play_mode      = False
         self._play_session   = None
@@ -859,8 +985,15 @@ class ViewportWidget(_QWidget_base):
         self._snap_enabled = False
         self._snap_size    = SNAP_UNIT
 
+        # Room snapping state (snap_threshold in world units)
+        self._room_snap_threshold: float = 0.5
+
         # Room instances (from RoomAssemblyPanel)
         self._room_instances: list = []
+
+        # Walkmesh triangles
+        self._walk_tris: list   = []
+        self._nowalk_tris: list = []
 
         # Move timer (WASD)
         if _HAS_QT:
@@ -910,6 +1043,31 @@ class ViewportWidget(_QWidget_base):
     def set_game_dir(self, game_dir: str):
         self._game_dir = game_dir
 
+    def set_app_mode(self, mode: str):
+        """Switch between 'module_editor' and 'level_builder' modes."""
+        if mode in ("module_editor", "level_builder"):
+            self._app_mode = mode
+            self.update()
+
+    def toggle_walkmesh(self, visible: bool = None):
+        """Show/hide walkmesh overlay."""
+        if visible is None:
+            self._show_walkmesh = not self._show_walkmesh
+        else:
+            self._show_walkmesh = bool(visible)
+        self.update()
+
+    def load_walkmesh(self, walk_tris: list, nowalk_tris: list):
+        """Load walkmesh triangles for overlay rendering."""
+        self._walk_tris   = list(walk_tris)
+        self._nowalk_tris = list(nowalk_tris)
+        self._walkmesh_loaded = bool(walk_tris or nowalk_tris)
+        if not self._renderer.ready:
+            self._renderer.init()
+        if self._renderer.ready:
+            self._renderer.rebuild_walkmesh_vaos(self._walk_tris, self._nowalk_tris)
+        self.update()
+
     def frame_all(self):
         self._frame_all()
 
@@ -934,6 +1092,7 @@ class ViewportWidget(_QWidget_base):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         W, H = self.width(), self.height()
 
         # ── Ensure renderer is initialised ────────────────────────────────────
@@ -944,7 +1103,8 @@ class ViewportWidget(_QWidget_base):
         if self._renderer.ready:
             raw = self._renderer.render(
                 W, H, self.camera,
-                self._play_session if self._play_mode else None)
+                self._play_session if self._play_mode else None,
+                show_walkmesh=self._show_walkmesh)
             if raw:
                 # OpenGL reads bottom-to-top; QImage is top-to-bottom.
                 # IMPORTANT: QImage(data, ...) does NOT copy the buffer.
@@ -959,8 +1119,9 @@ class ViewportWidget(_QWidget_base):
         else:
             self._draw_fallback_2d(p, W, H)
 
-        # ── 2-D Gizmo overlay ─────────────────────────────────────────────────
+        # ── 2-D overlays ──────────────────────────────────────────────────────
         self._draw_gizmo_overlay(p)
+        self._paint_hud(p, W, H)
         p.end()
 
     def resizeEvent(self, event):
@@ -1052,6 +1213,119 @@ class ViewportWidget(_QWidget_base):
         p.setPen(QPen(QColor(100, 100, 100)))
         p.setFont(QFont("Consolas", 7))
         p.drawText(8, H-8, "2D top-down view  |  RMB=orbit  MMB=pan  Scroll=zoom")
+
+    # ── HUD overlay ───────────────────────────────────────────────────────────
+
+    def _paint_hud(self, p: "QPainter", W: int, H: int):
+        """Draw the heads-up display over the 3D viewport."""
+        if not _HAS_QT:
+            return
+        p.setRenderHint(QPainter.Antialiasing, True)
+        fn_small = QFont("Consolas", 8)
+        fn_badge = QFont("Consolas", 9, QFont.Bold)
+        fn_tiny  = QFont("Consolas", 7)
+
+        # ── Mode badge (top-left) ─────────────────────────────────────────────
+        if self._play_mode:
+            badge_col = QColor(50, 200, 80)
+            badge_txt = "▶  PLAY MODE"
+        elif self._placement_mode:
+            badge_col = QColor(230, 140, 20)
+            badge_txt = f"✚  PLACE  [{self._place_asset_type.upper()}]"
+        elif self._app_mode == "module_editor":
+            badge_col = QColor(100, 160, 240)
+            badge_txt = "✏  MODULE EDITOR"
+        else:
+            badge_col = QColor(80, 200, 180)
+            badge_txt = "⬛  LEVEL BUILDER"
+
+        p.setFont(fn_badge)
+        fm = p.fontMetrics()
+        bw = fm.horizontalAdvance(badge_txt) + 18
+        bh = 22
+        p.fillRect(8, 8, bw, bh, QColor(0, 0, 0, 160))
+        p.setPen(QPen(badge_col, 2))
+        p.drawRect(8, 8, bw, bh)
+        p.setPen(badge_col)
+        p.drawText(17, 8 + bh - 6, badge_txt)
+
+        # ── GL backend / error badge ──────────────────────────────────────────
+        if not _HAS_MODERNGL:
+            msg = "⚠ moderngl not installed — pip install moderngl"
+            p.setFont(fn_small)
+            p.setPen(QColor(240, 100, 60))
+            p.fillRect(8, 36, W-16, 20, QColor(0, 0, 0, 180))
+            p.drawText(12, 51, msg)
+        elif _GL_INIT_ERROR:
+            p.setFont(fn_tiny)
+            p.setPen(QColor(240, 120, 60))
+            p.fillRect(8, 36, W-16, 16, QColor(0, 0, 0, 180))
+            p.drawText(12, 49, f"⚠ GL: {_GL_INIT_ERROR[:90]}")
+        else:
+            # Show GL backend in corner
+            p.setFont(fn_tiny)
+            p.setPen(QColor(80, 80, 100))
+            p.drawText(bw + 16, 24, f"[{_GL_BACKEND}]")
+
+        # ── Camera info (bottom-right) ────────────────────────────────────────
+        t = self.camera.target
+        cam_lines = [
+            f"Az {self.camera.azimuth:.0f}°  El {self.camera.elevation:.0f}°  "
+            f"Dist {self.camera.distance:.1f}",
+            f"Target  X{t[0]:.2f}  Y{t[1]:.2f}  Z{t[2]:.2f}",
+        ]
+        p.setFont(fn_small)
+        fm2 = p.fontMetrics()
+        line_h = fm2.height() + 2
+        total_h = len(cam_lines) * line_h + 6
+        max_w = max(fm2.horizontalAdvance(l) for l in cam_lines) + 12
+        rx = W - max_w - 6
+        ry = H - total_h - 6
+        p.fillRect(rx, ry, max_w, total_h, QColor(0, 0, 0, 150))
+        p.setPen(QColor(160, 180, 200))
+        for i, line in enumerate(cam_lines):
+            p.drawText(rx + 6, ry + 6 + (i+1) * line_h - 2, line)
+
+        # ── Selected object info ──────────────────────────────────────────────
+        if self._selected_obj and not self._play_mode:
+            obj = self._selected_obj
+            otype = type(obj).__name__.replace("GIT", "")
+            resref = getattr(obj, "resref", getattr(obj, "template_resref", "?"))
+            pos = getattr(obj, "position", None)
+            if pos:
+                info = (f"{otype}  [{resref}]  "
+                        f"@  {pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}")
+            else:
+                info = f"{otype}  [{resref}]"
+            p.setFont(fn_small)
+            fw = p.fontMetrics().horizontalAdvance(info) + 16
+            bx = (W - fw) // 2
+            p.fillRect(bx, H-32, fw, 20, QColor(0, 0, 0, 180))
+            p.setPen(QColor(255, 220, 60))
+            p.drawText(bx + 8, H - 16, info)
+
+        # ── Controls hint (bottom-left) ───────────────────────────────────────
+        if self._play_mode:
+            hint = "WASD=move  Mouse=look  Esc=exit"
+        elif self._placement_mode:
+            hint = "LMB=place  Esc=cancel"
+        else:
+            hint = ("RMB=orbit  MMB=pan  Scroll=zoom  "
+                    "WASD=fly  F=frame  W=walkmesh  Del=delete")
+
+        p.setFont(fn_tiny)
+        p.setPen(QColor(100, 110, 130))
+        p.fillRect(0, H-16, W, 16, QColor(0, 0, 0, 100))
+        p.drawText(8, H - 4, hint)
+
+        # ── Walkmesh indicator ────────────────────────────────────────────────
+        if self._walkmesh_loaded:
+            wm_txt = ("WALKMESH ON" if self._show_walkmesh else "WALKMESH OFF")
+            wm_col = QColor(80, 220, 120) if self._show_walkmesh else QColor(160, 80, 80)
+            p.setFont(fn_tiny)
+            p.setPen(wm_col)
+            fw2 = p.fontMetrics().horizontalAdvance(wm_txt)
+            p.drawText(W - fw2 - 8, H - 20, wm_txt)
 
     # ── Gizmo overlay ─────────────────────────────────────────────────────────
 
@@ -1474,6 +1748,10 @@ class ViewportWidget(_QWidget_base):
             self._update_snap()
         if event.key() == Qt.Key_F:
             self._frame_all()
+        elif event.key() == Qt.Key_W and not (Qt.Key_Control in self._keys):
+            # W alone toggles walkmesh; Ctrl+W is reserved (would be used for movement)
+            if not self._keys.intersection({Qt.Key_A, Qt.Key_S, Qt.Key_D}):
+                self.toggle_walkmesh()
         elif event.key() == Qt.Key_Delete:
             self._delete_selected()
         elif event.key() == Qt.Key_Escape:
@@ -1482,6 +1760,7 @@ class ViewportWidget(_QWidget_base):
             self._gizmo_drag_start_mouse = None
             self._gizmo_drag_start_pos   = None
             self.setCursor(Qt.ArrowCursor)
+            self.update()
         if not self._move_timer.isActive():
             self._move_timer.start()
 
@@ -1510,7 +1789,10 @@ class ViewportWidget(_QWidget_base):
                 "running": Qt.Key_Shift in self._keys})
             self.update(); return
 
-        speed = 0.15
+        speed = max(0.08, min(0.8, self.camera.distance * 0.04))
+        # Shift doubles speed
+        if Qt.Key_Shift in self._keys:
+            speed *= 2.5
         az  = math.radians(self.camera.azimuth)
         fwd   = np.array([math.cos(az), math.sin(az), 0.], dtype='f4')
         right = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
