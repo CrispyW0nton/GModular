@@ -1183,3 +1183,41 @@ class RoomAssemblyPanel(QWidget):
     def get_vis(self) -> str:
         return self._grid.generate_vis_text()
 
+    def load_lyt(self, lyt: 'LYTData'):
+        """
+        Populate the Room Assembly Grid from a parsed LYTData object.
+        Rooms are placed using their world coordinates; grid cells are estimated.
+        """
+        if not lyt or not lyt.rooms:
+            return
+        # Estimate grid cell size from minimum inter-room spacing
+        xs = sorted(set(r.world_x for r in lyt.rooms))
+        ys = sorted(set(r.world_y for r in lyt.rooms))
+        cell_w = CELL_SIZE
+        cell_h = CELL_SIZE
+        if len(xs) > 1:
+            gaps = [xs[i+1]-xs[i] for i in range(len(xs)-1) if xs[i+1]-xs[i] > 0.5]
+            if gaps:
+                cell_w = min(gaps)
+        if len(ys) > 1:
+            gaps = [ys[i+1]-ys[i] for i in range(len(ys)-1) if ys[i+1]-ys[i] > 0.5]
+            if gaps:
+                cell_h = min(gaps)
+        # Normalize to grid coordinates
+        x_off = min(r.world_x for r in lyt.rooms)
+        y_off = min(r.world_y for r in lyt.rooms)
+        placed = []
+        for r in lyt.rooms:
+            gx = int(round((r.world_x - x_off) / max(cell_w, 1)))
+            gy = int(round((r.world_y - y_off) / max(cell_h, 1)))
+            placed.append(RoomInstance(
+                mdl_name=r.mdl_name,
+                grid_x=gx,
+                grid_y=gy,
+                world_x=r.world_x,
+                world_y=r.world_y,
+                world_z=r.world_z,
+            ))
+        self._grid.load_rooms(placed)
+        self._grid.update()
+
