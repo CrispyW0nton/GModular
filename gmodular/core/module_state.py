@@ -336,6 +336,208 @@ class ModuleState:
         self._emit_change()
         log.info(f"Module loaded from files: {self.git.object_count} objects")
 
+    def load_from_mod(self, mod_path: str, extract_dir: Optional[str] = None) -> dict:
+        """
+        Load a KotOR .mod (ERF) archive as the active module.
+
+        Extracts GIT / ARE / IFO (and optionally LYT / VIS) from the archive,
+        writes them to *extract_dir* (a temp folder next to the .mod by default),
+        then populates self.git / self.are / self.ifo.
+
+        Returns a summary dict::
+
+            {
+                "mod_path":    str,
+                "extract_dir": str,
+                "resref":      str,           # guessed from IFO or filename
+                "resources":   List[str],     # all resource keys in the archive
+                "lyt_text":    str | None,    # raw .lyt content if found
+                "vis_text":    str | None,    # raw .vis content if found
+                "errors":      List[str],
+            }
+        """
+        from ..formats.archives import ERFReader, EXT_TO_TYPE, RES_TYPE_MAP
+        from ..formats.gff_reader import load_git, load_are, load_ifo, GFFReader
+        import tempfile
+
+        errors: list = []
+        summary: dict = {
+            "mod_path":    mod_path,
+            "extract_dir": "",
+            "resref":      "",
+            "resources":   [],
+            "lyt_text":    None,
+            "vis_text":    None,
+            "errors":      errors,
+        }
+
+        # ── 1. Open the archive ───────────────────────────────────────────
+        erf = ERFReader(mod_path)
+        count = erf.load()
+        if count == 0:
+            errors.append(f"No resources found in {mod_path}")
+            log.error(f"MOD load: empty archive {mod_path}")
+
+        summary["resources"] = sorted(erf.resources.keys())
+
+        # ── 2. Choose / create extraction directory ───────────────────────
+        if extract_dir is None:
+            mod_stem = Path(mod_path).stem
+            base_dir = Path(mod_path).parent
+            extract_dir = str(base_dir / f"_{mod_stem}_extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        summary["extract_dir"] = extract_dir
+
+        def _extract(resref: str, ext: str) -> Optional[bytes]:
+            key = f"{resref.lower()}.{ext}"
+            entry = erf.resources.get(key)
+            if entry is None:
+                return None
+            return erf.read_resource(entry)
+
+        def _write(filename: str, data: bytes) -> str:
+            p = os.path.join(extract_dir, filename)
+            with open(p, "wb") as fh:
+                fh.write(data)
+            return p
+
+        # ── 3. Identify the module resref ─────────────────────────────────
+        # Prefer IFO entry_area; fall back to first .are resref; fall back to filename stem.
+        resref = Path(mod_path).stem.lower()
+
+        # Find the first .are resource to get the real resref
+        are_resref = None
+        for key in erf.resources:
+            if key.endswith(".are"):
+                are_resref = key[:-4]
+                resref = are_resref
+                break
+
+        summary["resref"] = resref
+
+        # ── 4. Load GIT ───────────────────────────────────────────────────
+        self.project = None
+        git_data = _extract(resref, "git")
+        if git_data is None:
+            # Try any .git in the archive
+            for key in erf.resources:
+                if key.endswith(".git"):
+                    entry = erf.resources[key]
+                    git_data = erf.read_resource(entry)
+                    resref = key[:-4]
+                    summary["resref"] = resref
+                    break
+
+        if git_data:
+            git_path = _write(f"{resref}.git", git_data)
+            try:
+                self.git = load_git(git_path)
+                log.info(f"MOD: GIT loaded — {self.git.object_count} objects")
+            except Exception as e:
+                errors.append(f"GIT parse error: {e}")
+                log.error(f"MOD GIT parse error: {e}")
+                self.git = GITData()
+        else:
+            errors.append("No .git resource found in archive")
+            self.git = GITData()
+
+        # ── 5. Load ARE ───────────────────────────────────────────────────
+        are_data = _extract(resref, "are")
+        if are_data:
+            are_path = _write(f"{resref}.are", are_data)
+            try:
+                self.are = load_are(are_path)
+            except Exception as e:
+                errors.append(f"ARE parse error: {e}")
+                self.are = AREData()
+        else:
+            self.are = AREData()
+
+        # ── 6. Load IFO ───────────────────────────────────────────────────
+        ifo_data = _extract("module", "ifo")
+        if ifo_data is None:
+            ifo_data = _extract(resref, "ifo")
+        if ifo_data is None:
+            # Any .ifo in the archive
+            for key in erf.resources:
+                if key.endswith(".ifo"):
+                    entry = erf.resources[key]
+                    ifo_data = erf.read_resource(entry)
+                    break
+
+        if ifo_data:
+            ifo_path = _write("module.ifo", ifo_data)
+            try:
+                self.ifo = load_ifo(ifo_path)
+                # Prefer IFO's entry_area as the resref
+                if self.ifo and self.ifo.entry_area:
+                    summary["resref"] = self.ifo.entry_area.lower()
+            except Exception as e:
+                errors.append(f"IFO parse error: {e}")
+                self.ifo = IFOData()
+        else:
+            self.ifo = IFOData()
+
+        # ── 7. Extract LYT / VIS (for room display) ───────────────────────
+        lyt_resref = summary["resref"]
+        lyt_data = _extract(lyt_resref, "lyt")
+        if lyt_data is None:
+            # Try any .lyt
+            for key in erf.resources:
+                if key.endswith(".lyt"):
+                    entry = erf.resources[key]
+                    lyt_data = erf.read_resource(entry)
+                    lyt_resref = key[:-4]
+                    break
+
+        if lyt_data:
+            lyt_text = lyt_data.decode("utf-8", errors="replace")
+            summary["lyt_text"] = lyt_text
+            _write(f"{lyt_resref}.lyt", lyt_data)
+            log.info(f"MOD: LYT extracted ({len(lyt_text)} chars)")
+
+        vis_resref = lyt_resref
+        vis_data = _extract(vis_resref, "vis")
+        if vis_data:
+            vis_text = vis_data.decode("utf-8", errors="replace")
+            summary["vis_text"] = vis_text
+            _write(f"{vis_resref}.vis", vis_data)
+
+        # ── 8. Extract remaining resources to extract_dir ─────────────────
+        for key, entry in erf.resources.items():
+            ext = key.rsplit(".", 1)[-1] if "." in key else "bin"
+            # Skip what we already wrote
+            dest = os.path.join(extract_dir, key)
+            if not os.path.exists(dest):
+                try:
+                    raw = erf.read_resource(entry)
+                    if raw:
+                        with open(dest, "wb") as fh:
+                            fh.write(raw)
+                except Exception as e:
+                    log.debug(f"MOD extract {key}: {e}")
+
+        # Store extraction dir as a light-weight "project" so Save As works
+        # We create a minimal ModuleProject pointing at extract_dir
+        try:
+            project = ModuleProject(
+                name=self.ifo.mod_name if (self.ifo and self.ifo.mod_name) else Path(mod_path).stem,
+                game="K1",
+                module_resref=summary["resref"],
+                project_dir=extract_dir,
+            )
+            self.project = project
+        except Exception as e:
+            log.warning(f"Could not create project from MOD: {e}")
+
+        self._dirty = False
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._emit_change()
+        log.info(f"MOD loaded: {mod_path} → {self.git.object_count} objects, "
+                 f"{len(summary['resources'])} resources")
+        return summary
+
     def new_module(self, project: ModuleProject):
         """Create a brand-new empty module."""
         self.project = project
