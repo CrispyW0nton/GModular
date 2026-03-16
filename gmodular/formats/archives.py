@@ -73,6 +73,10 @@ RES_TYPE_MAP: Dict[int, str] = {
     3000:"ndb",
     3001:"ptm",
     3002:"ptt",
+    3006:"lyt",   # KotOR room layout (plain text)
+    3007:"vis",   # KotOR room visibility (plain text)
+    3008:"rev",
+    3009:"res",
 }
 
 EXT_TO_TYPE: Dict[str, int] = {v: k for k, v in RES_TYPE_MAP.items()}
