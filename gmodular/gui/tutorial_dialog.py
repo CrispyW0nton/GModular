@@ -74,6 +74,24 @@ _STEPS: List[dict] = [
 <b>Star Wars: KotOR 1 &amp; 2</b> module files without needing
 the original Aurora Toolset.</p>
 
+<h3 style='color:#9cdcfe;'>Two Modes</h3>
+<table style='border-collapse:collapse;width:100%;'>
+  <tr>
+    <td style='padding:6px 10px;background:#1a3a2a;'>
+      <b style='color:#4ec9b0;'>⬛ Level Builder</b><br>
+      Assemble rooms on the grid, place objects, preview your map.
+      Best for building new content from scratch.
+    </td>
+  </tr>
+  <tr>
+    <td style='padding:6px 10px;background:#1a2a3a;margin-top:4px;'>
+      <b style='color:#9cdcfe;'>✏ Module Editor</b><br>
+      Full KotOR module editing: import existing GIT files, edit all GFF fields,
+      inspect walkmeshes, export cleaned modules.
+    </td>
+  </tr>
+</table>
+
 <h3 style='color:#9cdcfe;'>What you can do</h3>
 <ul>
   <li><b>Assemble rooms</b> on the Room Grid and export a <code>.lyt</code> /
@@ -81,8 +99,9 @@ the original Aurora Toolset.</p>
   <li><b>Edit GIT objects</b> — placeables, creatures, doors, waypoints,
       triggers, sounds and stores — using the Asset Palette and 3-D Viewport.</li>
   <li><b>Inspect &amp; edit</b> any GFF field in the Inspector panel.</li>
+  <li><b>View the walkmesh overlay</b> — see walkable (green) and blocked (red) surfaces.</li>
   <li><b>Pack a playable <code>.mod</code></b> archive with the Module Packager.</li>
-  <li><b>Live-preview</b> your module in first-person walk mode (Preview button).</li>
+  <li><b>Live-preview</b> your module in first-person walk mode (▶ Play).</li>
   <li><b>Script integration</b> via GhostScripter IPC (NWScript editing &amp; compile).</li>
 </ul>
 
@@ -90,8 +109,10 @@ the original Aurora Toolset.</p>
 <p>Click a topic in the <b>left sidebar</b> or use the
 <b>← Prev / Next →</b> buttons to walk through every feature step by step.
 You can keep this window open while you work — it is non-modal.</p>
+<p style='color:#569cd6;'>This tutorial appears automatically on first launch.
+Press <kbd>F1</kbd> at any time to re-open it.</p>
 """,
-        "tip": "Press F1 at any time to re-open this tutorial.",
+        "tip": "Start with 'Level Builder vs Module Editor' to understand the two modes.",
     },
 
     # ── 1. Setting the game directory ─────────────────────────────────────────
@@ -688,6 +709,143 @@ room_panel.set_rooms(lyt.rooms)
 </table>
 """,
         "tip": "All shortcuts work when the respective widget has keyboard focus.",
+    },
+
+    # ── New: Two Operating Modes ──────────────────────────────────────────────
+    {
+        "title": "Level Builder vs Module Editor",
+        "category": "Getting Started",
+        "icon": "⚙",
+        "body": """
+<h2 style='color:#4ec9b0;'>Two Operating Modes</h2>
+<p>GModular has two distinct modes accessible from the <b>mode switcher</b>
+in the top bar:</p>
+
+<h3 style='color:#80d4b0;'>⬛  Level Builder</h3>
+<p>Designed for <b>building new maps from scratch</b>.</p>
+<ul>
+  <li>Assemble rooms on the <b>Room Grid</b> (bottom panel).</li>
+  <li>Rooms snap together edge-to-edge so walkmeshes connect seamlessly.</li>
+  <li>Place placeables, creatures, doors, waypoints in the 3-D viewport.</li>
+  <li>Preview your map in <b>first-person walk mode</b> (▶ Play).</li>
+  <li>Export <code>.lyt</code>, <code>.vis</code>, and <code>.git</code>.</li>
+  <li>Pack to <code>.mod</code> with the Module Packager.</li>
+</ul>
+
+<h3 style='color:#9cdcfe;'>✏  Module Editor</h3>
+<p>Designed for <b>editing existing KotOR modules</b> — full Blender-like power.</p>
+<ul>
+  <li>Import <code>.git</code> files from existing <code>.mod</code>/<code>.rim</code>
+      archives.</li>
+  <li>Move, rotate, and resize placed objects with the <b>transform gizmo</b>.</li>
+  <li>Edit every GFF field in the <b>Inspector</b> panel.</li>
+  <li>View and edit the <b>walkmesh overlay</b> in the 3-D viewport.</li>
+  <li>Use the <b>Walkmesh Editor</b> (bottom tab) to load and inspect
+      <code>.wok</code> files.</li>
+  <li>Export cleaned modules for use with KotOR / TSL override directories.</li>
+</ul>
+
+<h3 style='color:#9cdcfe;'>How to switch</h3>
+<p>Click the <b>mode dropdown</b> in the top viewport bar (reads
+<em>⬛ Level Builder</em> or <em>✏ Module Editor</em>).
+The viewport badge and toolbar update immediately.</p>
+""",
+        "tip": "You can switch modes at any time — your work is preserved.",
+    },
+
+    # ── New: Walkmesh Tools ───────────────────────────────────────────────────
+    {
+        "title": "Walkmesh — Overlay & Editor",
+        "category": "Advanced",
+        "icon": "🗺",
+        "body": """
+<h2 style='color:#4ec9b0;'>Walkmesh Overlay &amp; Editor</h2>
+
+<h3 style='color:#80d4b0;'>What is a walkmesh?</h3>
+<p>In KotOR every area has a <b>walkmesh</b> (<code>.wok</code> file) that defines
+which triangles characters can walk on.  GModular shows this as a
+<b>semi-transparent colour overlay</b> on top of room geometry:</p>
+<ul>
+  <li><span style='color:#44ff44;'>■ Green</span> — walkable surface</li>
+  <li><span style='color:#ff4444;'>■ Red</span> — blocked / non-walkable</li>
+</ul>
+
+<h3 style='color:#9cdcfe;'>Toggling the overlay</h3>
+<ul>
+  <li>Press <kbd>W</kbd> in the 3-D viewport (while not flying) to toggle.</li>
+  <li>Or click <b>⊞ Walkmesh</b> in the viewport toolbar.</li>
+  <li>The <em>WALKMESH ON/OFF</em> indicator appears at the bottom-right.</li>
+</ul>
+
+<h3 style='color:#9cdcfe;'>Walkmesh Editor tab</h3>
+<p>Open the <b>Walkmesh Editor</b> in the bottom panel to:</p>
+<ul>
+  <li>Load a <code>.wok</code> file from disk.</li>
+  <li>Inspect all face types (Walk, Dirt, Grass, Water, etc.).</li>
+  <li>Change surface type for individual triangles.</li>
+  <li>Export a modified <code>.wok</code> for use in-game.</li>
+</ul>
+
+<h3 style='color:#9cdcfe;'>Room-snapping &amp; walkmesh connectivity</h3>
+<p>When rooms are placed on the Room Grid, GModular automatically aligns them
+so that shared edges are within <b>0.5 world units</b> of each other.
+This ensures the walkmeshes of adjacent rooms connect without gaps that
+would trap characters.</p>
+<ul>
+  <li>Rooms snap at 10-unit boundaries in the Level Builder.</li>
+  <li>Shared walkmesh edges are marked in the overlay so you can verify
+      connectivity at a glance.</li>
+</ul>
+""",
+        "tip": "If characters get stuck at room borders, check the walkmesh overlay for red gaps.",
+    },
+
+    # ── New: Viewport Navigation Deep-Dive ───────────────────────────────────
+    {
+        "title": "Viewport Navigation & Flying",
+        "category": "3D Viewport",
+        "icon": "✈",
+        "body": """
+<h2 style='color:#4ec9b0;'>Viewport Navigation &amp; Flying</h2>
+
+<h3 style='color:#9cdcfe;'>Orbit / Pan / Zoom (all modes)</h3>
+<table style='border-collapse:collapse;width:100%;'>
+  <tr style='background:#2a2a3a;'>
+    <th style='padding:4px 10px;text-align:left;'>Mouse</th>
+    <th style='padding:4px 10px;text-align:left;'>Action</th>
+  </tr>
+  <tr><td style='padding:3px 10px;'>Right-drag</td><td>Orbit (rotate around target)</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'>Middle-drag</td><td>Pan (slide target)</td></tr>
+  <tr><td style='padding:3px 10px;'>Scroll wheel</td><td>Zoom in/out</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'>Left-click</td><td>Select object (or place in PLACE mode)</td></tr>
+</table>
+
+<h3 style='color:#9cdcfe;'>Keyboard fly-through (WASD)</h3>
+<p>While the viewport has <b>keyboard focus</b>:</p>
+<table style='border-collapse:collapse;width:100%;'>
+  <tr style='background:#2a2a3a;'>
+    <th style='padding:4px 10px;text-align:left;'>Key</th>
+    <th style='padding:4px 10px;text-align:left;'>Action</th>
+  </tr>
+  <tr><td style='padding:3px 10px;'><kbd>W / S</kbd></td><td>Fly forward / back</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'><kbd>A / D</kbd></td><td>Strafe left / right</td></tr>
+  <tr><td style='padding:3px 10px;'><kbd>Q / E</kbd></td><td>Fly down / up</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'><kbd>Shift</kbd> + any</td><td>2.5× speed boost</td></tr>
+  <tr><td style='padding:3px 10px;'><kbd>F</kbd></td><td>Frame all objects</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'><kbd>W</kbd> alone</td><td>Toggle walkmesh overlay</td></tr>
+  <tr><td style='padding:3px 10px;'><kbd>Delete</kbd></td><td>Delete selected</td></tr>
+  <tr style='background:#2a2a3a;'><td style='padding:3px 10px;'><kbd>Escape</kbd></td><td>Cancel action</td></tr>
+</table>
+
+<h3 style='color:#9cdcfe;'>Play Preview mode</h3>
+<p>Click <b>▶ Play</b> to enter first-person walk mode:</p>
+<ul>
+  <li>Mouse controls look direction.</li>
+  <li><kbd>W/A/S/D</kbd> to walk, <kbd>Shift</kbd> to run.</li>
+  <li>Press <kbd>Esc</kbd> to return to the editor.</li>
+</ul>
+""",
+        "tip": "Speed automatically scales with zoom distance — zoom in for precise placement, zoom out for fast navigation.",
     },
 ]
 
