@@ -131,15 +131,22 @@ class WelcomePanel(QWidget):
         row = QHBoxLayout()
         self._btn_new = QPushButton("New Module\u2026")
         self._btn_new.setStyleSheet(btn_style)
+        self._btn_open_mod = QPushButton("\u2b07 Open .MOD File\u2026")
+        self._btn_open_mod.setStyleSheet(btn_style)
         self._btn_open = QPushButton("Open .GIT File\u2026")
         self._btn_open.setStyleSheet(btn_style2)
         row.addWidget(self._btn_new)
         row.addSpacing(8)
+        row.addWidget(self._btn_open_mod)
+        row.addSpacing(8)
         row.addWidget(self._btn_open)
         row.addStretch()
         g2l.addLayout(row)
-        note = QLabel("New Module creates a blank module. Open .GIT loads an existing one.")
+        note = QLabel(
+            "\u2b07 Open .MOD imports a full KotOR module archive (.mod / .erf / .rim).  "
+            "Open .GIT loads a loose GIT file.  New Module creates a blank module.")
         note.setStyleSheet("color:#666; font-size:7pt; margin-top:2px;")
+        note.setWordWrap(True)
         g2l.addWidget(note)
         layout.addWidget(card2)
 
@@ -161,10 +168,12 @@ class WelcomePanel(QWidget):
 
         layout.addStretch()
 
-    def connect_actions(self, new_cb, open_cb, room_cb):
+    def connect_actions(self, new_cb, open_cb, room_cb, open_mod_cb=None):
         self._btn_new.clicked.connect(new_cb)
         self._btn_open.clicked.connect(open_cb)
         self._btn_room.clicked.connect(room_cb)
+        if open_mod_cb and hasattr(self, '_btn_open_mod'):
+            self._btn_open_mod.clicked.connect(open_mod_cb)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +229,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME}  ·  v{APP_VERSION}")
         self.setMinimumSize(1200, 700)
         self.resize(1440, 860)
+        self.setAcceptDrops(True)   # enable drag-drop of .mod / .git files
 
         self._state = get_module_state()
         self._rm    = get_resource_manager()
@@ -332,7 +342,8 @@ class MainWindow(QMainWindow):
         self._center_stack = QStackedWidget()
         self._welcome_panel = WelcomePanel()
         self._welcome_panel.connect_actions(
-            self.new_module, self.open_git, self._focus_room_tab)
+            self.new_module, self.open_git, self._focus_room_tab,
+            open_mod_cb=self.open_mod)
         self._center_stack.addWidget(self._welcome_panel)   # index 0
         self._center_stack.addWidget(self._viewport)         # index 1
         self._center_stack.setCurrentIndex(0)               # show welcome first
@@ -736,9 +747,10 @@ class MainWindow(QMainWindow):
 
         # File
         fm = mb.addMenu("File")
-        fm.addAction(self._action("New Module…",    self.new_module,  "Ctrl+Shift+N"))
-        fm.addAction(self._action("Open GIT File…", self.open_git,    "Ctrl+O"))
-        fm.addAction(self._action("Open Project…",  self.open_project))
+        fm.addAction(self._action("New Module…",           self.new_module,  "Ctrl+Shift+N"))
+        fm.addAction(self._action("Open Module (.mod/.erf)…", self.open_mod, "Ctrl+O"))
+        fm.addAction(self._action("Open GIT File…",          self.open_git,    "Ctrl+Shift+O"))
+        fm.addAction(self._action("Open Project…",           self.open_project))
         fm.addSeparator()
         fm.addAction(self._action("Save GIT",       self._save_module, "Ctrl+S"))
         fm.addAction(self._action("Save GIT As…",   self._save_as))
@@ -770,6 +782,8 @@ class MainWindow(QMainWindow):
         # Module
         mm = mb.addMenu("Module")
         mm.addAction(self._action("Module Properties…", self._show_module_props))
+        mm.addSeparator()
+        mm.addAction(self._action("Import Module Archive…", self.open_mod, "Ctrl+I"))
         mm.addSeparator()
         mm.addAction(self._action("Validate",      self._validate_module))
         mm.addAction(self._action("Validate Module (Full Report)", self._open_validation_report))
@@ -838,8 +852,9 @@ class MainWindow(QMainWindow):
             return b
 
         tb.addWidget(btn("New Module",  self.new_module,     "Create new module"))
-        tb.addWidget(btn("Open GIT",    self.open_git,       "Open .GIT file"))
-        tb.addWidget(btn("Save",        self._save_module,   "Save .GIT", accent=True))
+        tb.addWidget(btn("Open .MOD",   self.open_mod,       "Open .mod/.erf module archive (Ctrl+O)", accent=True))
+        tb.addWidget(btn("Open GIT",    self.open_git,       "Open loose .GIT file (Ctrl+Shift+O)"))
+        tb.addWidget(btn("Save",        self._save_module,   "Save .GIT"))
         tb.addSeparator()
         tb.addWidget(btn("Undo",        self._undo,          "Undo last action (Ctrl+Z)"))
         tb.addWidget(btn("Redo",        self._redo,          "Redo (Ctrl+Y)"))
@@ -1004,6 +1019,105 @@ class MainWindow(QMainWindow):
         self._add_recent_file(path)
         if self._ipc_server:
             self._ipc_server.update_module_info(path, self._state.git.object_count)
+
+    def open_mod(self, path: str = ""):
+        """
+        Import a KotOR .mod / .erf / .rim archive as the active module.
+
+        Opens the ModImportDialog which lets the user browse archive contents
+        before importing. Loads GIT, ARE, IFO, and (if present) LYT into the
+        viewport and Room Assembly Grid.
+        """
+        try:
+            from .mod_import_dialog import ModImportDialog
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error",
+                                 f"Could not load import dialog:\n{e}")
+            return
+
+        # If path was supplied (e.g. drag-drop or CLI) skip the browse step
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open Module Archive", "",
+                "KotOR Module Archives (*.mod *.erf *.rim);;All Files (*)"
+            )
+        if not path:
+            return
+
+        dlg = ModImportDialog(self, mod_path=path)
+        dlg.module_loaded.connect(self._on_mod_loaded)
+        dlg.exec_()
+
+    def _on_mod_loaded(self, summary: dict):
+        """Called by ModImportDialog after a successful import."""
+        mod_path = summary.get("mod_path", "")
+        resref   = summary.get("resref", "")
+        lyt_text = summary.get("lyt_text")
+        vis_text = summary.get("vis_text")
+        errors   = summary.get("errors", [])
+        extract_dir = summary.get("extract_dir", "")
+
+        # ── Update UI ────────────────────────────────────────────────────
+        self._update_title()
+        self._update_object_count()
+        self._scene_outline._refresh()
+        if mod_path:
+            self._add_recent_file(mod_path)
+
+        n_obj = self._state.git.object_count if self._state.git else 0
+        n_res = len(summary.get("resources", []))
+        self.log(f"✓ Opened module archive: {Path(mod_path).name}")
+        self.log(f"  ResRef: {resref}  |  Objects: {n_obj}  |  Archive resources: {n_res}")
+        if extract_dir:
+            self.log(f"  Extracted to: {extract_dir}")
+        for err in errors:
+            self.log(f"  ⚠ {err}")
+
+        # ── Load LYT into Room Assembly panel ────────────────────────────
+        if lyt_text:
+            try:
+                from .room_assembly import LYTData, RoomInstance
+                lyt = LYTData.from_text(lyt_text)
+                if lyt.rooms:
+                    self.log(f"  LYT: {len(lyt.rooms)} rooms loaded")
+                    # Push into room panel if available
+                    try:
+                        self._room_panel.load_lyt(lyt)
+                    except AttributeError:
+                        pass
+                    # Push into viewport room instances
+                    self._load_lyt_into_viewport(lyt.rooms)
+            except Exception as e:
+                self.log(f"  ⚠ LYT parse error: {e}")
+                log.warning(f"LYT parse from MOD: {e}")
+
+        # ── Switch to viewport ───────────────────────────────────────────
+        self._center_stack.setCurrentIndex(1)
+        # Force a full rebuild of object VAOs and viewport
+        self._viewport._on_module_changed()
+        self._viewport.update()
+
+        # ── Update IPC ───────────────────────────────────────────────────
+        if self._ipc_server and self._state.git:
+            self._ipc_server.update_module_info(mod_path, n_obj)
+
+    def _load_lyt_into_viewport(self, rooms):
+        """Push a list of RoomInstance objects into the viewport for 3D display."""
+        try:
+            from .room_assembly import RoomInstance
+            # Convert to viewport-compatible room instances
+            vp_rooms = []
+            for r in rooms:
+                vp_rooms.append(r)
+            if hasattr(self._viewport, 'room_instances'):
+                self._viewport.room_instances = vp_rooms
+                if hasattr(self._viewport, '_renderer') and self._viewport._renderer:
+                    game_dir = getattr(self, '_game_dir', "") or ""
+                    self._viewport._renderer.rebuild_room_vaos(vp_rooms, game_dir)
+                self._viewport.frame_all()
+                self._viewport.update()
+        except Exception as e:
+            log.warning(f"_load_lyt_into_viewport: {e}")
 
     def open_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Open GModular Project")
@@ -1861,3 +1975,48 @@ class MainWindow(QMainWindow):
         self._state.close()
         self._save_settings()
         super().closeEvent(event)
+
+    # ── Drag-and-Drop ─────────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        """Accept drops of .mod / .erf / .rim / .git files."""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                ext = Path(url.toLocalFile()).suffix.lower()
+                if ext in (".mod", ".erf", ".rim", ".git"):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle dropped .mod / .erf / .rim / .git files."""
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            ext  = Path(path).suffix.lower()
+            if ext in (".mod", ".erf", ".rim"):
+                event.acceptProposedAction()
+                self.open_mod(path)
+                return
+            elif ext == ".git":
+                event.acceptProposedAction()
+                stem  = Path(path).stem
+                are_p = str(Path(path).with_suffix(".are"))
+                ifo_p = str(Path(path).with_suffix(".ifo"))
+                self._state.load_from_files(
+                    path,
+                    are_p if os.path.exists(are_p) else "",
+                    ifo_p if os.path.exists(ifo_p) else "",
+                )
+                self._update_title()
+                self._update_object_count()
+                self._scene_outline._refresh()
+                self._add_recent_file(path)
+                self.log(f"✓ Dropped GIT: {Path(path).name}")
+                return
+        event.ignore()
