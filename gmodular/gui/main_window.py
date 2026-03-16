@@ -269,6 +269,11 @@ class MainWindow(QMainWindow):
         if self._game_dir:
             self.log(f"Game directory: {self._game_dir}")
 
+        # ── Auto-show tutorial on first launch ────────────────────────────────
+        if getattr(self, "_is_first_launch", True):
+            QTimer.singleShot(800, lambda: self._open_tutorial(0))
+            self._save_settings()   # mark seen
+
     # ── UI Setup ─────────────────────────────────────────────────────────────
 
     def _setup_ui(self):
@@ -385,7 +390,27 @@ class MainWindow(QMainWindow):
         self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
         layout.addWidget(self._mode_label)
 
-        layout.addSpacing(16)
+        layout.addSpacing(8)
+
+        # ── App Mode Switcher ────────────────────────────────────────────────
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("⬛  Level Builder", "level_builder")
+        self._mode_combo.addItem("✏  Module Editor", "module_editor")
+        self._mode_combo.setFixedHeight(22)
+        self._mode_combo.setFixedWidth(160)
+        self._mode_combo.setToolTip(
+            "Level Builder: assemble rooms and build new maps\n"
+            "Module Editor: full KotOR-style editing with Maya-like tools")
+        self._mode_combo.setStyleSheet(
+            "QComboBox{background:#1e3a5f;color:#4ec9b0;border:1px solid #2a5a8f;"
+            "border-radius:3px;padding:0 6px;font-size:8pt;font-weight:bold;}"
+            "QComboBox:hover{background:#1a4a7a;border-color:#4ec9b0;}"
+            "QComboBox::drop-down{border:none;}"
+        )
+        self._mode_combo.currentIndexChanged.connect(self._on_app_mode_changed)
+        layout.addWidget(self._mode_combo)
+
+        layout.addSpacing(8)
 
         self._module_label = QLabel("No module loaded")
         self._module_label.setStyleSheet("color:#969696; font-size:8pt;")
@@ -415,6 +440,13 @@ class MainWindow(QMainWindow):
         frame_btn = quick_btn("⊡ Frame All", "Fit camera to all objects (F)")
         frame_btn.clicked.connect(self._viewport.frame_all)
         layout.addWidget(frame_btn)
+
+        wm_btn = quick_btn("⊞ Walkmesh", "Toggle walkmesh overlay (W)")
+        wm_btn.setCheckable(True)
+        wm_btn.setChecked(True)
+        wm_btn.clicked.connect(lambda checked: self._viewport.toggle_walkmesh(checked))
+        self._walkmesh_btn = wm_btn
+        layout.addWidget(wm_btn)
 
         validate_btn = quick_btn("✓ Validate", "Check for errors")
         validate_btn.clicked.connect(self._validate_module)
@@ -1164,6 +1196,25 @@ class MainWindow(QMainWindow):
             self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
             self.log("■ Play mode stopped — back to edit mode")
 
+    def _on_app_mode_changed(self, index: int):
+        """Handle switch between Level Builder and Module Editor modes."""
+        mode = self._mode_combo.currentData()
+        if not mode:
+            return
+        self._viewport.set_app_mode(mode)
+        if mode == "level_builder":
+            self._mode_label.setText("LEVEL BUILDER")
+            self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
+            self.log("⬛ Mode: Level Builder — assemble rooms, place objects, build your map")
+            # Show Room Grid tab
+            if self._bottom_tabs:
+                self._bottom_tabs.setCurrentIndex(0)
+        else:
+            self._mode_label.setText("MODULE EDITOR")
+            self._mode_label.setStyleSheet("color:#9cdcfe; font-weight:bold; font-size:8pt;")
+            self.log("✏  Mode: Module Editor — full KotOR module editing, "
+                     "walkmesh tools, MDL import/export")
+
     def _on_object_selected(self, obj):
         """Called when user selects an object in the viewport."""
         self._inspector.inspect(obj)
@@ -1572,6 +1623,7 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         settings_path = Path.home() / ".gmodular" / "settings.json"
+        self._is_first_launch = True
         try:
             if settings_path.exists():
                 data = json.loads(settings_path.read_text())
@@ -1583,6 +1635,8 @@ class MainWindow(QMainWindow):
                     p for p in data.get("recent_files", [])
                     if isinstance(p, str) and Path(p).exists()
                 ][:10]
+                # If settings file exists, not first launch
+                self._is_first_launch = data.get("first_launch", True)
         except Exception:
             pass
 
@@ -1593,6 +1647,7 @@ class MainWindow(QMainWindow):
             data = {
                 "game_dir": str(self._game_dir) if self._game_dir else "",
                 "recent_files": getattr(self, "_recent_files", [])[:10],
+                "first_launch": False,   # mark as seen after first save
             }
             settings_path.write_text(json.dumps(data, indent=2))
         except Exception:
