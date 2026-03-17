@@ -6,7 +6,7 @@ Architecture mirrors GhostScripter's own GhostRiggerBridge:
   - Qt signals deliver results back to main thread
   - Drain timer (50ms) empties result queue — never blocks UI
 
-Port contract (GHOSTWORKS BLUEPRINT v1.0):
+Port contract (PIPELINE_SPEC v1.0):
   GhostRigger    port 7001 — receives asset-edit requests
   GhostScripter  port 7002 — receives script/dlg requests
   GModular       port 7003 — receives refresh/update calls
@@ -37,7 +37,7 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
-# IPC configuration — GHOSTWORKS BLUEPRINT fixed ports (do not change)
+# IPC configuration — PIPELINE_SPEC fixed ports (do not change)
 GHOSTSCRIPTER_PORT = 7002
 GHOSTRIGGER_PORT   = 7001
 GMODULAR_PORT      = 7003   # GModular's own callback server
@@ -373,7 +373,7 @@ class GhostRiggerBridge(QObject):
         P9 — Ask GhostRigger to open a blueprint for editing.
 
         blueprint_type: "utc", "utp", or "utd"
-        Payload matches GHOSTWORKS BLUEPRINT IPC spec:
+        Payload matches PIPELINE_SPEC IPC contract:
           POST /api/open_utc  {"resref": "...", "module_dir": "..."}
           POST /api/open_utp  {...}
           POST /api/open_utd  {...}

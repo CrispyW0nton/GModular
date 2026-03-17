@@ -491,22 +491,22 @@ class TestRoomAssemblyGrid:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestIPCPorts:
-    """IPC port constants match GHOSTWORKS BLUEPRINT v1.0 spec."""
+    """IPC port constants match PIPELINE_SPEC v1.0."""
 
     def test_ghostscripter_port(self):
         from gmodular.ipc.bridges import GHOSTSCRIPTER_PORT
         assert GHOSTSCRIPTER_PORT == 7002, \
-            "GhostScripter must be on port 7002 per GHOSTWORKS BLUEPRINT"
+            "GhostScripter must be on port 7002 per PIPELINE_SPEC"
 
     def test_ghostrigger_port(self):
         from gmodular.ipc.bridges import GHOSTRIGGER_PORT
         assert GHOSTRIGGER_PORT == 7001, \
-            "GhostRigger must be on port 7001 per GHOSTWORKS BLUEPRINT"
+            "GhostRigger must be on port 7001 per PIPELINE_SPEC"
 
     def test_gmodular_port(self):
         from gmodular.ipc.bridges import GMODULAR_PORT
         assert GMODULAR_PORT == 7003, \
-            "GModular callback server must be on port 7003 per GHOSTWORKS BLUEPRINT"
+            "GModular callback server must be on port 7003 per PIPELINE_SPEC"
 
     def test_callback_server_port(self):
         from gmodular.ipc.callback_server import GMODULAR_CALLBACK_PORT

@@ -33,34 +33,57 @@ It is designed to work alongside [GhostScripter](https://github.com/CrispyW0nton
 | GFF V3.2 binary reader/writer (GIT/ARE/IFO/DLG) | ✅ Complete |
 | All 18 GFF field types — full round-trip | ✅ Complete |
 | MDL/MDX binary parser — KotOR 1 & 2 | ✅ Complete |
+| MDL controller data (position, orientation, scale, alpha keyframes) | ✅ Complete |
 | 3D model rendering (ModernGL VAO pipeline, Phong lighting) | ✅ Complete |
+| Wireframe and normal-debug render overlays | ✅ Complete |
+| LRU model cache (max 64 models) | ✅ Complete |
+| Frustum culling (6 half-space tests) | ✅ Complete |
 | Walkmesh parser (.wok) with ray-cast height queries | ✅ Complete |
+| Walkmesh AABB tree for fast ray-cast (`height_at`, `face_at`, `clamp_to_walkmesh`) | ✅ Complete |
+| Walkmesh editor panel — paint walkable/non-walkable faces, AABB visualiser | ✅ Complete |
+| Walkmesh export (GWOK interchange format for GhostRigger) | ✅ Complete |
 | TPC texture reader (DXT1/DXT5/RGBA, mip maps, cubemaps) | ✅ Complete |
-| 2DA table loader (`surfacemat.2da` walkability) | ✅ Complete |
+| TGA texture reader | ✅ Complete |
+| 2DA table loader — full table with typed getters, column search, options list | ✅ Complete |
+| 2DA-backed dropdowns in Inspector (appearance, faction, class, soundset…) | ✅ Complete |
 | ERF/RIM/MOD archive reader & writer | ✅ Complete |
-| LYT/VIS room layout parser | ✅ Complete |
+| BIF/KEY archive reader | ✅ Complete |
+| LYT/VIS room layout parser & writer | ✅ Complete |
+| Room Assembly Grid — drag-and-drop 2D room layout, auto-generates LYT & VIS | ✅ Complete |
+| Room door-hook detection and connection indicators | ✅ Complete |
 | Module state — undo/redo, dirty flag, autosave | ✅ Complete |
-| Undoable commands (Place, Delete, Move, Rotate, ModifyProperty) | ✅ Complete |
+| Undoable commands (Place, Delete, Move, Rotate, ModifyProperty, IFOModify) | ✅ Complete |
 | Asset Palette (search, tabs, custom ResRef) | ✅ Complete |
-| Scene Outline / Hierarchy panel | ✅ Complete |
-| Inspector Panel (editable object properties) | ✅ Complete |
-| 3D Viewport (orbit camera, object picking, walkmesh overlay) | ✅ Complete |
-| Walkmesh Editor panel | ✅ Complete |
-| .MOD/.ERF/.RIM module import dialog | ✅ Complete |
+| Content Browser — tile/list view, category tree, search, drag to place | ✅ Complete |
+| Scene Outline / Hierarchy panel (search, debounced filter, context menu) | ✅ Complete |
+| Inspector Panel — all 7 GIT object types, all script slots, cardinal presets | ✅ Complete |
+| Inspector script pencil buttons — opens script in GhostScripter via IPC | ✅ Complete |
+| Inspector "Edit in GhostRigger" button — opens UTC/UTP/UTD via IPC | ✅ Complete |
+| 3D Viewport (orbit/pan/zoom, object picking, play mode, walkmesh overlay) | ✅ Complete |
+| Transform gizmo (translate/rotate with gimbal snap) | ✅ Complete |
+| Play mode — FPS camera + walkmesh collision | ✅ Complete |
+| .MOD/.ERF/.RIM module import dialog with resource browser | ✅ Complete |
+| Module packager — dependency walker, validation report, ERF/MOD export | ✅ Complete |
+| Module validation — tag uniqueness, ResRef length, script presence, door links, patrol waypoints | ✅ Complete |
+| Visual patrol waypoint editor — click-to-place, auto-naming, dashed path preview | ✅ Complete |
 | Resource Manager (Override + Modules directory scan, BIF/KEY) | ✅ Complete |
-| IPC Bridges — GhostScripter (port 5002) & GhostRigger (port 5001) | ✅ Complete |
-| IPC Callback Server on port 5003 | ✅ Complete |
+| IPC Bridges — GhostScripter (port 7002) & GhostRigger (port 7001) | ✅ Complete |
+| IPC Callback Server on port 7003 | ✅ Complete |
 | File watcher (watchdog) for .ncs / .mdl hot-reload | ✅ Complete |
 | Settings persistence (`~/.gmodular/settings.json`) | ✅ Complete |
+| Recent files menu (last 10, deduped) | ✅ Complete |
+| Tutorial dialog (step-by-step onboarding) | ✅ Complete |
+| How-to-build guide (printed to Output Log on new module) | ✅ Complete |
 | Dark theme (VS Code-inspired) | ✅ Complete |
+| PyOpenGL fallback when ModernGL is unavailable | ✅ Complete |
 | Full test suite — 641 tests, 100% pass rate | ✅ Complete |
 
 ### 🔜 Planned
 
-- NWScript compiler integration via GhostScripter
-- Full walkmesh bake & export
-- Animation playback (controller parsing is in progress)
-- DLG dialogue tree editor
+- **Animation playback** — MDL controller data (position/orientation/scale keyframes) is fully parsed; wiring a viewport timeline scrubber to play animations back is the remaining step
+- **Native KotOR .wok export** — GWOK interchange format export exists; writing KotOR-native binary `.wok` output requires GhostRigger to complete the round-trip
+- **DLG dialogue tree editor** — GFF reads and writes `.dlg` files correctly; a visual node-graph editor for building/editing dialogue trees is not yet implemented
+- **NWScript compiler** — script editing requires GhostScripter running alongside GModular; the IPC bridge is complete, the compiler itself lives in GhostScripter
 
 ---
 
@@ -95,9 +118,9 @@ It is designed to work alongside [GhostScripter](https://github.com/CrispyW0nton
           ▼                                    ▼
 ┌─────────────────┐                ┌──────────────────────┐
 │   ModuleState   │                │   IPC Bridges        │
-│  (GITData,      │                │  GhostScripter :5002 │
-│   AREData,      │                │  GhostRigger   :5001 │
-│   IFOData,      │                │  Callback Srv  :5003 │
+│  (GITData,      │                │  GhostScripter :7002 │
+│   AREData,      │                │  GhostRigger   :7001 │
+│   IFOData,      │                │  Callback Srv  :7003 │
 │   undo/redo)    │                └──────────────────────┘
 └─────────────────┘
           │
@@ -300,9 +323,9 @@ GModular connects to its sibling tools via HTTP:
 
 | Service | Port | Direction | Purpose |
 |---|---|---|---|
-| GhostScripter | 5002 | GM → GS | Open / compile NWScript files |
-| GhostRigger   | 5001 | GM → GR | Request model rigs |
-| GModular CB   | 5003 | GS / GR → GM | Receive compile results & model updates |
+| GhostScripter | 7002 | GM → GS | Open / compile NWScript files |
+| GhostRigger   | 7001 | GM → GR | Request model rigs |
+| GModular CB   | 7003 | GS / GR → GM | Receive compile results & model updates |
 
 Bridges poll every 8 seconds and emit Qt signals (`connected`, `disconnected`, `scripts_updated`, etc.).
 

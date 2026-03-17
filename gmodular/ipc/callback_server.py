@@ -40,7 +40,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 GMODULAR_CALLBACK_PORT = 7003
-GMODULAR_VERSION = "1.0.0"
+GMODULAR_VERSION = "2.0.0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

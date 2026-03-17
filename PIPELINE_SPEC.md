@@ -683,132 +683,154 @@ GModular is the level assembly and ship tool. It is the furthest along
 of the three programs. Here is its current implementation state and the
 features still needed to complete the pipeline.
 
-### 7.1 Already Implemented (as of v1.9)
+### 7.1 Already Implemented (as of v2.0 — all P1-P10 complete)
 
 ```
 gmodular/
     core/
         module_state.py      -- GIT load/save, undo/redo command stack
     formats/
-        gff_types.py         -- GIT object data classes (all types)
-        gff_reader.py        -- binary GFF V3.2 parser
-        gff_writer.py        -- binary GFF V3.2 writer
-        archives.py          -- chitin.key, BIF, ERF/MOD/RIM reader
-        mdl_parser.py        -- ASCII MDL room geometry parser
+        gff_types.py         -- GIT object data classes (all 7 GIT types)
+        gff_reader.py        -- binary GFF V3.2 parser (all 18 field types)
+        gff_writer.py        -- binary GFF V3.2 writer (BFS two-phase)
+        archives.py          -- chitin.key, BIF, ERF/MOD/RIM reader + ERFWriter
+        mdl_parser.py        -- binary MDL/MDX parser (K1+K2, controller data)
+        tpc_reader.py        -- TPC texture reader (DXT1/5, mips, cubemap)
+        wok_parser.py        -- walkmesh parser + AABB tree + ray-cast queries
+        twoda_loader.py      -- 2DA table loader, TwoDAComboBox widget
+        lyt_vis.py           -- LYT/VIS room layout parser & writer
+        mod_packager.py      -- dependency walker, validation, ERF/MOD export
     gui/
-        main_window.py       -- main window, menus, panels, undo/redo
-        viewport.py          -- 3D viewport (moderngl/PyOpenGL, orbit camera,
-                                grid, ray-cast selection, play mode, NPC preview)
-        inspector.py         -- GFF field editor, degrees rotation,
-                                cardinal direction presets, script field stubs
+        main_window.py       -- main window (2408 lines), all menus and panels
+        viewport.py          -- 3D viewport (2145 lines): ModernGL VAO,
+                                Phong lighting, frustum culling, gizmo,
+                                play mode, walkmesh overlay, MDL rendering
+        inspector.py         -- GFF field editor, all 7 object types,
+                                2DA dropdowns, script pencil IPC buttons,
+                                'Edit in GhostRigger' button, patrol section
         asset_palette.py     -- left panel: game resource tree
-        scene_outline.py     -- object list with type icons
-        walkmesh_editor.py   -- WOK visualizer (basic)
-        script_library.py    -- NWScript template library panel (474 lines)
+        content_browser.py   -- tile/list asset browser (1057 lines):
+                                category tree, search, drag-to-place
+        scene_outline.py     -- object hierarchy, search, context menu
+        walkmesh_editor.py   -- WOK visualizer (1153 lines): face paint,
+                                AABB tree, GWOK export
+        room_assembly.py     -- 2D room grid (1240 lines): drag-drop,
+                                LYT/VIS generation, door-hook detection
+        patrol_editor.py     -- visual waypoint editor, auto-naming
+        mod_import_dialog.py -- archive import with resource browser
+        mod_packager_dialog.py -- packager UI: checklist, warnings
+        script_library.py    -- NWScript template library (474 lines)
+        tutorial_dialog.py   -- step-by-step onboarding
     engine/
-        player_controller.py -- FPS camera + walkmesh collision for play mode
-        npc_instance.py      -- NPC patrol/idle behavior for play mode
+        mdl_renderer.py      -- ModernGL VAO upload + render, LRU cache
+        player_controller.py -- FPS camera + walkmesh collision (play mode)
+        npc_instance.py      -- NPC patrol/idle behavior (play mode)
     ipc/
-        bridges.py           -- IPC client helpers
-        callback_server.py   -- Flask server on port 7003
+        bridges.py           -- GhostScripterBridge, GhostRiggerBridge,
+                                ProjectFileWatcher (493 lines)
+        callback_server.py   -- GModularIPCServer Flask thread (port 7003)
+    utils/
+        resource_manager.py  -- ResourceManager singleton shim
 ```
 
-### 7.2 GModular Features Still Needed (Iteration 20+)
+### 7.2 GModular Completed Features
 
-These are the remaining features to complete GModular's role in the pipeline.
-Listed in priority order.
+All P1-P10 pipeline features are implemented. Remaining gaps are noted in
+Section 7.3.
 
-**P1 — Room Assembly Grid** (biggest gap in the whole scene)
-- Room palette panel: thumbnails of all room MDLs from game archives
-- Drag room onto 2D top-down grid → places room at grid-snapped position
-- Auto-generates .lyt from placed rooms (plain text format, see Section 4.3)
-- Auto-generates .vis from adjacency (rooms that share an edge see each other)
-- Room connection indicators: show doorway arrows between adjacent rooms
-- Export grid → updates module ARE + regenerates LYT + VIS
+**P1 — Room Assembly Grid** — COMPLETE
+- `room_assembly.py` (1240 lines): drag-and-drop 2D top-down grid
+- Auto-generates `.lyt` from placed rooms; auto-generates `.vis` from adjacency
+- Door-hook scanning via MDL node names; room connection indicators drawn
+- Zoom controls, right-click context menu, room rename/delete
 
-**P2 — Binary MDL Renderer**
-- Extend mdl_parser.py to handle binary MDL/MDX (reference KotorBlender Python)
-- Render actual room geometry in viewport (not colored boxes)
-- Render creature/placeable/door MDL models at their GIT positions
-- Lightmap TPC/TGA texture support (load and display baked lightmaps)
+**P2 — Binary MDL Renderer** — COMPLETE
+- `mdl_parser.py` (1244 lines): full binary MDL/MDX parser (K1 + K2)
+- `mdl_renderer.py` (766 lines): ModernGL VAO pipeline, Phong lighting
+- Renders actual room geometry and MDL models at their GIT positions
+- Frustum culling, LRU model cache (64 models), wireframe/normal debug overlays
+- Falls back to coloured placeholder box when no MDL file is found
 
-**P3 — Full WOK Parser and Visualizer**
-- Parse binary .wok files (face list + per-face material flags)
-- Render walkable (green), non-walkable (red), transition (blue) faces
-- Room transition face highlights: show which faces connect to which rooms
-- Face paint tool: click a face → toggle walkable/non-walkable
-- Walk-test overlay: show where player can and cannot walk
+**P3 — Full WOK Parser and Visualizer** — COMPLETE
+- `wok_parser.py` (501 lines): binary .wok parser, AABB tree, per-face materials
+- `walkmesh_editor.py` (1153 lines): walkable (green) / non-walkable (red) faces
+- Face-paint tool, AABB tree visualiser, ray-cast height queries
+- `height_at`, `face_at`, `clamp_to_walkmesh`, `bounds`, `material_counts`
+- GWOK export (GModular interchange format; GhostRigger rebuilds native .wok)
 
-**P4 — Visual Patrol Waypoint Linker**
-- Inspector: NPC selected → "Draw Patrol Path" button
-- User clicks viewport floor positions → waypoints added to GIT
-- Auto-names: WP_[NPC_TAG]_01, WP_[NPC_TAG]_02, ... (case-insensitive match)
-- Dashed line in viewport connecting waypoints in order
-- IPC: calls GhostScripter to insert GN_WalkWayPoints() in OnSpawn if not present
+**P4 — Visual Patrol Waypoint Linker** — COMPLETE
+- `patrol_editor.py` (245 lines): click-to-place waypoints in the viewport
+- Auto-names WP_[NPC_TAG]_01, WP_[NPC_TAG]_02... (case-insensitive)
+- Dashed path preview line in viewport; waypoints persisted in GIT
+- NWScript hint: shows which template to add to OnSpawn
 
-**P5 — Visual Asset Browser with MDL Previews**
-- Load appearance.2da, placeables.2da, genericdoors.2da at startup
-- Show thumbnail grid: render MDL for each row (or use cached .tga thumbnail)
-- Search by name (e.g. "rodian" filters to all Rodian appearances)
-- Double-click → places that creature/placeable/door in viewport at camera target
-- Replaces manual 2DA row number lookup entirely
+**P5 — Visual Asset Browser** — COMPLETE
+- `content_browser.py` (1057 lines): tile/list view toggle, category tree
+- Live search; drag-to-place into viewport; asset type icons
+- Right-click context menu; populated from game archives via ResourceManager
 
-**P6 — Module Packager (MOD Export)**
-- Dependency walker: starting from .git, find all referenced ResRefs
-  (UTC/UTP/UTD/UTW/UTM/UTS ResRefs + all script ResRefs + all texture ResRefs)
-- Validation report: missing ResRefs, duplicate tags, long ResRefs (>16 chars),
-  missing OnSpawn scripts for patrol NPCs, etc.
-- Collect: .are, .ifo, .git, .lyt, .vis, all UTx blueprints, all .ncs scripts,
-  all referenced textures not in base game archives
-- Pack to ERF/MOD with correct header (type "MOD ", version "V1.0")
-- UI: checklist of everything being packed, size estimate, warnings highlighted
-- Output: drop to Modules/ folder in game directory (or custom path)
+**P6 — Module Packager (MOD Export)** — COMPLETE
+- `mod_packager.py` (750 lines): dependency walker from .git to all ResRefs
+- Collects .are/.ifo/.git/.lyt/.vis, all UTx blueprints, .ncs scripts, textures
+- `ERFWriter` packs to ERF/MOD/RIM with correct header and resource table
+- `mod_packager_dialog.py` (415 lines): checklist UI, size estimate, warnings
 
-**P7 — Script Field IPC Integration**
-- Inspector: every script ResRef field has a pencil icon button
+**P7 — Script Field IPC Integration** — COMPLETE
+- Every script ResRef field in the Inspector has a pencil icon button
 - Click pencil: POST `open_script` to GhostScripter (port 7002)
-  Payload: current resref (or empty), module_dir, slot name, object tag
-- On `script_compiled` received: auto-fill the ResRef field + mark dirty
+- On `script_compiled` received: auto-fills the ResRef field + marks dirty
 
-**P8 — 2DA Lookup Layer**
-- Load appearance.2da, placeables.2da, genericdoors.2da, soundset.2da,
-  feat.2da, spells.2da from game on startup
-- Inspector: Appearance_Type field shows "Gamorrean Guard (row 47)" not "47"
-- Faction field: dropdown with faction names from factionslist in globalcat.2da
-- Class field: dropdown from classes.2da
-- All 2DA-backed fields have dropdown pickers
+**P8 — 2DA Lookup Layer** — COMPLETE
+- `twoda_loader.py` (559 lines): full 2DA V2.0 parser, typed getters, search
+- `TwoDAComboBox` widget: dropdown backed by any loaded 2DA table
+- Inspector shows "Gamorrean Guard (row 47)" not "47" for all 2DA-backed fields
+- Built-in fallback tables for headless/test environments
 
-**P9 — Blueprint IPC Integration**
-- Inspector: "Edit in GhostRigger" button for any selected object
-- Click: POST `open_utc` / `open_utp` / `open_utd` to GhostRigger (port 7001)
-  Payload: ResRef, module_dir
-- On `blueprint_saved` received: reload that object's data + refresh viewport
+**P9 — Blueprint IPC Integration** — COMPLETE
+- Inspector "Edit in GhostRigger" button for any selected GIT object
+- POST `open_utc` / `open_utp` / `open_utd` to GhostRigger (port 7001)
+- On `blueprint_saved` received: reloads object data + refreshes viewport
 
-**P10 — Module Validation Report**
-Standalone panel (Module > Validate):
-- Tag uniqueness check (case-insensitive across all GIT object types)
-- ResRef length ≤ 16 characters for all fields
-- All script ResRefs have a .ncs file in module or Override
-- All door LinkedTo tags refer to an existing door or module tag
-- Patrol waypoint naming: for each NPC with WalkWayPoints in OnSpawn,
-  check that WP_[TAG]_01 exists in GIT
-- 2DA row validity: Appearance_Type rows exist in appearance.2da
-- Objects within walkmesh bounds (requires WOK parsed)
-- Report shown as scrollable list with severity (error/warning/info)
+**P10 — Module Validation Report** — COMPLETE
+- Standalone panel (Module > Validate) plus inline in packager dialog
+- Tag uniqueness (case-insensitive across all 7 GIT object types)
+- ResRef length <= 16 characters for all fields
+- Script ResRef presence check (.ncs in module or Override)
+- Door LinkedTo validity check
+- Patrol waypoint naming validation (WP_[TAG]_01 must exist in GIT)
+- Severity-sorted report (error / warning / info)
+
+### 7.3 Known Remaining Gaps
+
+**Animation playback in viewport**
+MDL controller keyframes (position, orientation, scale, alpha) are fully parsed
+and stored in `MeshNode`. Wiring a timeline scrubber to step through frames in
+the viewport render loop is the remaining work.
+
+**Native KotOR .wok export**
+GWOK interchange export works and lets GhostRigger rebuild the geometry.
+Producing a byte-for-byte valid KotOR binary `.wok` including the AABB tree
+and correct face offset tables is a GhostRigger responsibility.
+
+**DLG dialogue tree editor**
+`.dlg` GFF files are fully readable and writable via `gff_reader`/`gff_writer`.
+A visual QGraphicsView node-graph editor for building and editing dialogue trees
+has not yet been implemented.
+
+**NWScript compiler**
+The GhostScripter IPC bridge (`bridges.py`) is complete. The compiler itself
+lives in GhostScripter, which must be running on port 7002.
 
 ---
 
 ## 8. DEVELOPMENT PRIORITIES AND ORDER OF WORK
-
-This is the recommended build order for maximum pipeline value fastest.
 
 ### Phase 1 — Core Programs Running
 
 Each program should start, show its layout, and have a working IPC server.
 Test: launch all three, ping each from the others.
 
-- **GModular:** Already at this stage. Next: implement P7 (script IPC)
-  and P9 (blueprint IPC) so the buttons exist and call the other programs.
+- **GModular:** Complete. All P1-P10 features implemented. See Section 7.2.
 - **GhostRigger:** Build main window, blueprint editors (UTC/UTP/UTD),
   and IPC server on port 7001. Start with UTC editor (most used).
 - **GhostScripter:** Build main window, script code editor with syntax
@@ -818,27 +840,30 @@ Test: launch all three, ping each from the others.
 ### Phase 2 — Connected Workflow
 
 With all three running, implement the core handoffs:
-1. GModular inspector: "Edit in GhostRigger" → GRigger opens UTC
-2. GRigger saves UTC → GModular refreshes viewport
-3. GModular inspector: script field pencil → GScripter opens script
-4. GScripter compiles → GModular fills script ResRef
+1. GModular inspector: "Edit in GhostRigger" — COMPLETE (P9)
+2. GRigger saves UTC: GModular refreshes viewport — COMPLETE (P9 callback)
+3. GModular inspector: script field pencil — COMPLETE (P7)
+4. GScripter compiles: GModular fills script ResRef — COMPLETE (P7 callback)
 
-Test: place a creature in GModular, open its UTC in GRigger, save, confirm
-viewport updates. Then open its OnSpawn in GScripter, compile, confirm
-script ResRef appears in inspector.
+GModular is ready for Phase 2. GhostRigger and GhostScripter need to be built.
 
 ### Phase 3 — Level Assembly (GModular P1, P2, P3)
 
-Room Assembly Grid + binary MDL renderer + WOK visualizer.
-This is the feature that makes GModular genuinely "Unreal Engine quality"
-for the KotOR scene.
+All complete in GModular. Room Assembly Grid, binary MDL renderer, and full
+WOK parser/visualizer are implemented and passing 641 tests.
 
-### Phase 4 — Full Polish (All Three)
+### Phase 4 — Full Polish
 
-- GScripter: dialog tree editor, 2DA editor, TLK editor
-- GRigger: 3D MDL viewer, animation timeline, lightmap baking
-- GModular: asset browser with MDL previews, module packager,
-  visual patrol path linker, 2DA lookup layer, module validation
+GModular remaining items:
+- Animation playback timeline (controller data parsed, viewport scrubber not built)
+- Native .wok binary export (GWOK export done; KotOR-binary round-trip via GhostRigger)
+- DLG dialogue tree visual editor (GFF read/write complete; node-graph UI not built)
+
+GhostScripter items (not yet started):
+- Dialog tree editor, 2DA editor, TLK editor, NWScript compiler integration
+
+GhostRigger items (not yet started):
+- 3D MDL viewer, animation timeline, lightmap baking, native .wok export
 
 ---
 

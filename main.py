@@ -96,8 +96,8 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("GModular")
-    app.setOrganizationName("KotorModTools")
-    app.setOrganizationDomain("kotormodtools.github.io")
+    app.setOrganizationName("GModular")
+    app.setOrganizationDomain("github.com/CrispyW0nton")
 
     # Default font
     font = QFont("Segoe UI", 9)

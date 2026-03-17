@@ -53,7 +53,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 APP_NAME    = "GModular"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Welcome / Quick-Start Panel  (shown over viewport when no module is open)
@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
         self._dirty_timer.start()
 
         self.log("GModular initialized. Ready.")
-        self.log(f"Version {APP_VERSION}  |  KotorModTools Suite")
+        self.log(f"Version {APP_VERSION}  |  Ghostworks Pipeline")
         self.log("Suite: GModular (7003) ↔ GhostScripter (7002) ↔ GhostRigger (7001)")
         if self._game_dir:
             self.log(f"Game directory: {self._game_dir}")
@@ -2112,11 +2112,11 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, f"About {APP_NAME}",
             f"<b>GModular</b> v{APP_VERSION}<br><br>"
             "KotOR Module Editor — Unreal Engine experience for the Odyssey Engine<br><br>"
-            "Part of the KotorModTools Suite:<br>"
+            "Part of the Ghostworks Pipeline:<br>"
             "• GModular — Module Editor<br>"
             "• GhostScripter — Script IDE<br>"
             "• GhostRigger — Model Rigger<br><br>"
-            "GPL-3.0  |  KotOR Community"
+            "MIT License  |  KotOR Community"
         )
 
     # ── Settings ──────────────────────────────────────────────────────────────

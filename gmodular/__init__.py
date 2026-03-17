@@ -1,3 +1,3 @@
 """GModular — KotOR Module Editor."""
-__version__ = "1.0.0-MVP"
-__author__  = "KotorModTools"
+__version__ = "2.0.0"
+__author__  = "GModular Contributors"
