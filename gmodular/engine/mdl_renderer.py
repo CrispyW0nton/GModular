@@ -665,8 +665,11 @@ class MDLRenderer:
         ld = (lx/mag, ly/mag, lz/mag)
 
         prog = self._prog
-        prog['u_mvp'].write(mvp_mat.astype('f4').tobytes())
-        prog['u_model'].write(model_mat.astype('f4').tobytes())
+        # ModernGL mat4 uniform expects column-major order (same as OpenGL).
+        # NumPy arrays are row-major, so we must transpose before writing.
+        # The caller provides a standard row-major MVP; we transpose here.
+        prog['u_mvp'].write(mvp_mat.T.astype('f4').tobytes())
+        prog['u_model'].write(model_mat.T.astype('f4').tobytes())
         prog['u_light_dir'].value = ld
         prog['u_use_tint'].value  = (self._mode == RenderMode.NORMALS)
 
@@ -696,7 +699,7 @@ class MDLRenderer:
             # ── Wireframe overlay ─────────────────────────────────────────────
             if draw_wire and um.vao_wire is not None and self._prog_wire is not None:
                 prog_w = self._prog_wire
-                prog_w['u_mvp'].write(mvp_mat.astype('f4').tobytes())
+                prog_w['u_mvp'].write(mvp_mat.T.astype('f4').tobytes())
                 prog_w['u_color'].value = self._wire_color
                 um.vao_wire.render(moderngl.LINES)
 

@@ -317,13 +317,21 @@ uniform vec3 light_dir;
 uniform float ambient;
 void main() {
     vec3 n = normalize(v_normal);
-    // Key light
-    float diff = max(dot(n, normalize(light_dir)), 0.0);
-    // Two-sided: dim backfaces rather than discard
-    float back = max(dot(-n, normalize(light_dir)), 0.0) * 0.3;
-    // Rim fill light from below (bounce)
-    float fill = max(dot(n, vec3(0.0, 0.0, -1.0)), 0.0) * 0.12;
-    vec3 col = diffuse_color * (ambient + (diff + back + fill) * (1.0 - ambient));
+    // Primary key light (top-right, slightly warm)
+    vec3 key = normalize(light_dir);
+    float NdL_key = max(dot(n, key), 0.0);
+    // Secondary fill light (opposite side, cooler, weaker)
+    vec3 fill_dir = normalize(vec3(-key.x * 0.6, -key.y * 0.6, 0.4));
+    float NdL_fill = max(dot(n, fill_dir), 0.0) * 0.25;
+    // Rim light from below (KotOR bounce light)
+    float NdL_rim = max(dot(n, vec3(0.0, 0.0, -1.0)), 0.0) * 0.08;
+    // Two-sided: slightly light backfaces so interior rooms aren't pure black
+    float back = max(dot(-n, key), 0.0) * 0.15;
+    // Combine: ambient + key + fill + rim
+    float light_total = ambient + (NdL_key + NdL_fill + NdL_rim + back) * (1.0 - ambient);
+    // Subtle darkening at grazing angles (simulates AO)
+    float ao = 0.85 + 0.15 * abs(n.z);
+    vec3 col = diffuse_color * light_total * ao;
     fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -408,18 +416,26 @@ _box_verts_solid = _box_solid  # solid-filled variant
 
 
 def _grid_verts(n: int = 20, step: float = 1.0) -> "np.ndarray":
-    """N×N ground grid on the Z=0 plane."""
+    """N×N ground grid — slightly below Z=0 to avoid z-fighting with floor meshes."""
     v = []
     half = n * step * 0.5
+    Z = -0.002   # push below floor to avoid z-fighting
     for i in range(-n, n + 1):
         x = i * step
-        br = 0.35 if (i % 5 == 0) else 0.16
-        v.extend([-half, x, 0, br, br, br + .08,
-                   half, x, 0, br, br, br + .08])
-        v.extend([x, -half, 0, br, br, br + .08,
-                   x,  half, 0, br, br, br + .08])
-    v.extend([0, -half, 0, .55,.18,.18,  half*2,-half, 0, .55,.18,.18])
-    v.extend([-half, 0, 0, .18,.55,.18, -half, half*2, 0, .18,.55,.18])
+        if i % 10 == 0:
+            br = 0.40   # major lines every 10 units
+        elif i % 5 == 0:
+            br = 0.28   # medium lines every 5 units
+        else:
+            br = 0.14   # minor lines
+        v.extend([-half, x, Z, br, br, br + .06,
+                   half, x, Z, br, br, br + .06])
+        v.extend([x, -half, Z, br, br, br + .06,
+                   x,  half, Z, br, br, br + .06])
+    # Axis lines — X=red, Y=green — clearly extend beyond the grid
+    ext = half * 1.5
+    v.extend([0,    -ext, Z, .60,.18,.18,  ext,  -ext, Z, .60,.18,.18])
+    v.extend([-ext, 0,   Z, .18,.60,.18, -ext,   ext, Z, .18,.60,.18])
     return np.array(v, dtype='f4')
 
 
@@ -635,41 +651,65 @@ class _EGLRenderer:
             return
 
         def _add(obj, hw, hh, hd, base_color):
-            col = _COLOR_SELECTED if (obj is selected_obj) else base_color
+            is_sel = obj is selected_obj
+            col = _COLOR_SELECTED if is_sel else base_color
+            # Solid fill
             verts = _box_solid(obj.position.x, obj.position.y,
                                obj.position.z, hw, hh, hd, col)
             e = self._upload_flat(verts)
             e["obj"] = obj
             self._object_vaos.append(e)
+            # Wireframe outline — brighter than fill, always drawn
+            wire_r = min(col[0] + 0.45, 1.0)
+            wire_g = min(col[1] + 0.45, 1.0)
+            wire_b = min(col[2] + 0.45, 1.0)
+            wire_col = (wire_r, wire_g, wire_b)
+            wverts = _box_wire(obj.position.x, obj.position.y,
+                               obj.position.z, hw, hh, hd, wire_col)
+            ew = self._upload_flat(wverts)
+            ew["obj"]  = obj
+            ew["wire"] = True
+            self._object_vaos.append(ew)
 
-        for p in state.git.placeables: _add(p, .30,.30,.30, _COLOR_PLACEABLE)
-        for c in state.git.creatures:  _add(c, .35,.35,.70, _COLOR_CREATURE)
-        for d in state.git.doors:      _add(d, .50,.15,.90, _COLOR_DOOR)
-        for w in state.git.waypoints:  _add(w, .15,.15,.50, _COLOR_WAYPOINT)
-        for t in state.git.triggers:   _add(t, .50,.50,.05, _COLOR_TRIGGER)
-        for s in state.git.sounds:     _add(s, .20,.20,.20, _COLOR_SOUND)
-        for st in state.git.stores:    _add(st,.30,.30,.40, _COLOR_STORE)
+        # UE-style object sizes: taller, clearer shapes
+        for p in state.git.placeables: _add(p, .35,.35,.50, _COLOR_PLACEABLE)
+        for c in state.git.creatures:  _add(c, .30,.30,.90, _COLOR_CREATURE)
+        for d in state.git.doors:      _add(d, .60,.15,.95, _COLOR_DOOR)
+        for w in state.git.waypoints:  _add(w, .18,.18,.65, _COLOR_WAYPOINT)
+        for t in state.git.triggers:   _add(t, .60,.60,.06, _COLOR_TRIGGER)
+        for s in state.git.sounds:     _add(s, .22,.22,.22, _COLOR_SOUND)
+        for st in state.git.stores:    _add(st,.35,.35,.55, _COLOR_STORE)
 
     def rebuild_walkmesh_vaos(self, walk_tris: list, nowalk_tris: list):
         """
-        Upload walkmesh triangles as position-only geometry for overlay.
-        walk_tris  : list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) walkable
-        nowalk_tris: list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) blocked
+        Upload walkmesh triangles as position-only geometry for overlay rendering.
+
+        walk_tris  : list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) walkable faces
+        nowalk_tris: list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) non-walkable faces
+
+        Each element is a 3-tuple of (x,y,z) vertex coordinate tuples.
+        The overlay is rendered in paintEvent using the Unreal-style green fill.
         """
         self._release_list(self._walk_vaos)
         self._release_list(self._nowalk_vaos)
         if not self.ctx or not self._prog_uniform:
             return
 
-        def _tris_to_pos(tris):
+        def _tris_to_flat_positions(tris):
+            """Convert list of triangles to flat list of [x,y,z] vertex positions."""
             pts = []
             for tri in tris:
-                for v in tri:
-                    pts.append(list(v))
+                if not tri or len(tri) < 3:
+                    continue
+                for v in tri[:3]:
+                    try:
+                        pts.append([float(v[0]), float(v[1]), float(v[2])])
+                    except (TypeError, IndexError, ValueError):
+                        pts.append([0.0, 0.0, 0.0])
             return pts
 
-        walk_pos   = _tris_to_pos(walk_tris)
-        nowalk_pos = _tris_to_pos(nowalk_tris)
+        walk_pos   = _tris_to_flat_positions(walk_tris)
+        nowalk_pos = _tris_to_flat_positions(nowalk_tris)
 
         if walk_pos:
             e = self._upload_positions_only(walk_pos)
@@ -680,91 +720,227 @@ class _EGLRenderer:
             if e:
                 self._nowalk_vaos.append(e)
 
-        log.debug(f"Walkmesh VAOs: {len(walk_pos)//3} walk, "
-                  f"{len(nowalk_pos)//3} no-walk triangles")
+        n_walk   = len(walk_pos) // 3
+        n_nowalk = len(nowalk_pos) // 3
+        log.debug(f"Walkmesh VAOs: {n_walk} walkable + {n_nowalk} non-walkable triangles")
 
     # ── Room VAOs ─────────────────────────────────────────────────────────────
 
     def rebuild_room_vaos(self, room_instances: list, game_dir: str):
+        """
+        Build GPU VAOs for all room meshes.
+
+        Tries to load real MDL/MDX geometry for each room.
+        Falls back to a solid placeholder box + wireframe outline when no MDL found.
+
+        game_dir can be the KotOR install directory OR the extract_dir from
+        a .mod import — the method searches for .mdl files in multiple locations.
+        """
         self._release_list(self._room_vaos)
         if not self.ctx:
             return
 
+        # Warm colour palette — rooms get distinct soft colours for easy ID
         PALETTE = [
-            (0.45, 0.42, 0.38), (0.38, 0.42, 0.45),
-            (0.42, 0.45, 0.38), (0.45, 0.38, 0.42),
+            (0.55, 0.52, 0.45),   # warm stone
+            (0.40, 0.48, 0.56),   # cool slate
+            (0.46, 0.54, 0.40),   # earthy green
+            (0.54, 0.42, 0.50),   # dusty rose
+            (0.48, 0.50, 0.38),   # olive
+            (0.38, 0.44, 0.52),   # denim
         ]
 
         import moderngl
+
+        # Build a case-insensitive filename index of the game_dir for fast lookup
+        dir_file_index: dict = {}
+        if game_dir and os.path.isdir(game_dir):
+            try:
+                for fname in os.listdir(game_dir):
+                    dir_file_index[fname.lower()] = os.path.join(game_dir, fname)
+            except OSError:
+                pass
+
+        def _resolve_mdl(name: str, explicit_path: str) -> str:
+            """Return the filesystem path to the .mdl file, or '' if not found."""
+            # 1. Explicit path already set on the RoomInstance
+            if explicit_path and os.path.exists(explicit_path):
+                return explicit_path
+            if not game_dir:
+                return ''
+            n_lo = name.lower()
+            # 2. Direct game_dir lookup (case-insensitive) — covers extract_dir
+            for candidate_name in (n_lo + '.mdl', name + '.mdl',
+                                   name.upper() + '.MDL', n_lo + '.MDL'):
+                p = dir_file_index.get(candidate_name.lower())
+                if p and os.path.exists(p):
+                    return p
+            # 3. Standard KotOR sub-directories
+            for subdir in ('models', 'Models', 'override', 'Override', ''):
+                base = os.path.join(game_dir, subdir) if subdir else game_dir
+                for ext in ('.mdl', '.MDL'):
+                    p = os.path.join(base, n_lo + ext)
+                    if os.path.exists(p):
+                        return p
+            return ''
+
+        def _resolve_mdx(mdl_path: str) -> str:
+            """Find the matching .mdx file next to the .mdl file."""
+            if not mdl_path:
+                return ''
+            stem = os.path.splitext(mdl_path)[0]
+            for ext in ('.mdx', '.MDX'):
+                p = stem + ext
+                if os.path.exists(p):
+                    return p
+            return ''
+
+        total_mesh_count = 0
+
         for idx, ri in enumerate(room_instances):
-            name   = getattr(ri, 'model_name', None) or getattr(ri, 'name', f'room{idx}')
-            tx     = float(getattr(ri, 'world_x', None) or
-                           getattr(ri, 'x', None) or
-                           (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
-            ty     = float(getattr(ri, 'world_y', None) or
-                           getattr(ri, 'y', None) or
-                           (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
-            tz     = float(getattr(ri, 'world_z', None) or
-                           getattr(ri, 'z', 0.0) or 0.0)
-            color  = PALETTE[idx % len(PALETTE)]
-            mdl_path = getattr(ri, 'mdl_path', '') or ''
+            name = (getattr(ri, 'mdl_name',   None) or
+                    getattr(ri, 'model_name', None) or
+                    getattr(ri, 'name',       None) or f'room{idx}')
+            name = str(name).strip()
 
-            # Try to load actual MDL geometry
-            loaded = False
-            if not mdl_path and game_dir:
-                for candidate in [
-                    os.path.join(game_dir, 'models', name.lower() + '.mdl'),
-                    os.path.join(game_dir, name.lower() + '.mdl'),
-                ]:
-                    if os.path.exists(candidate):
-                        mdl_path = candidate
-                        break
+            tx = float(getattr(ri, 'world_x', None) or
+                       getattr(ri, 'x',       None) or
+                       (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
+            ty = float(getattr(ri, 'world_y', None) or
+                       getattr(ri, 'y',       None) or
+                       (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
+            tz = float(getattr(ri, 'world_z', None) or
+                       getattr(ri, 'z',       0.0)  or 0.0)
 
+            color    = PALETTE[idx % len(PALETTE)]
+            mdl_path = _resolve_mdl(name, getattr(ri, 'mdl_path', '') or '')
+            mdx_path = _resolve_mdx(mdl_path)
+
+            # ── Load real MDL geometry ────────────────────────────────────
+            loaded_mesh_count = 0
             if mdl_path and _HAS_MDL:
                 try:
-                    mesh = get_model_cache().load(mdl_path)
+                    from ..formats.mdl_parser import MDLParser, get_model_cache
+                    cache = get_model_cache()
+                    mesh = cache.get(mdl_path)
+                    if mesh is None:
+                        # Load with MDX for normals/UVs
+                        mdl_bytes = open(mdl_path, 'rb').read()
+                        mdx_bytes = open(mdx_path, 'rb').read() if mdx_path else b''
+                        parser    = MDLParser(mdl_bytes, mdx_bytes)
+                        mesh      = parser.parse()
+                        cache.put(mdl_path, mesh)
+
                     if mesh:
-                        nodes = (list(mesh.visible_mesh_nodes())
-                                 if hasattr(mesh, 'visible_mesh_nodes')
-                                 else mesh.mesh_nodes())
-                        for node in nodes:
-                            verts_raw  = getattr(node, 'vertices', [])
-                            faces_raw  = getattr(node, 'faces', [])
-                            norms_raw  = getattr(node, 'normals', [])
+                        # Filter nodes: skip AABB (collision tree), skin, and
+                        # non-renderable dummies. Only render true mesh nodes
+                        # with actual triangles and render=True.
+                        if hasattr(mesh, 'visible_mesh_nodes'):
+                            visible_nodes = mesh.visible_mesh_nodes()
+                        else:
+                            from ..formats.mdl_parser import NODE_AABB, NODE_SKIN
+                            visible_nodes = [
+                                n for n in mesh.mesh_nodes()
+                                if not (n.flags & NODE_AABB) and
+                                   not (n.flags & NODE_SKIN) and
+                                   getattr(n, 'render', True)
+                            ]
+                        for node in visible_nodes:
+                            verts_raw = node.vertices or []
+                            faces_raw = node.faces    or []
+                            norms_raw = node.normals   or []
                             if not verts_raw or not faces_raw:
                                 continue
-                            has_n = len(norms_raw) == len(verts_raw)
+
+                            n_verts = len(verts_raw)
+                            has_n   = (len(norms_raw) == n_verts)
                             positions, normals = [], []
+
                             for f in faces_raw:
-                                if max(f) >= len(verts_raw):
+                                if len(f) < 3:
                                     continue
-                                for vi in f:
+                                a, b, c = int(f[0]), int(f[1]), int(f[2])
+                                if a >= n_verts or b >= n_verts or c >= n_verts:
+                                    continue
+                                for vi in (a, b, c):
                                     positions.append(verts_raw[vi])
-                                    normals.append(norms_raw[vi] if has_n
-                                                   else (0.,0.,1.))
-                            e = self._upload_lit_or_flat(positions, normals, color)
+                                    if has_n:
+                                        normals.append(norms_raw[vi])
+                                    else:
+                                        # Compute face normal inline
+                                        v0 = verts_raw[a]; v1 = verts_raw[b]; v2 = verts_raw[c]
+                                        ex = v1[0]-v0[0]; ey = v1[1]-v0[1]; ez = v1[2]-v0[2]
+                                        fx = v2[0]-v0[0]; fy = v2[1]-v0[1]; fz = v2[2]-v0[2]
+                                        nx = ey*fz - ez*fy
+                                        ny = ez*fx - ex*fz
+                                        nz = ex*fy - ey*fx
+                                        mag = (nx*nx+ny*ny+nz*nz)**0.5 or 1.0
+                                        normals.append((nx/mag, ny/mag, nz/mag))
+
+                            if not positions:
+                                continue
+
+                            # Use node diffuse colour if available, else palette
+                            node_col = getattr(node, 'diffuse', None)
+                            if node_col and len(node_col) >= 3 and max(node_col) > 0.05:
+                                render_color = (
+                                    max(0.15, min(1.0, node_col[0])),
+                                    max(0.15, min(1.0, node_col[1])),
+                                    max(0.15, min(1.0, node_col[2])),
+                                )
+                            else:
+                                render_color = color
+
+                            e = self._upload_lit_or_flat(positions, normals, render_color)
                             if e:
                                 e.update({"name": name, "tx": tx, "ty": ty, "tz": tz})
                                 self._room_vaos.append(e)
-                                loaded = True
+                                loaded_mesh_count += 1
+
+                        if loaded_mesh_count > 0:
+                            total_mesh_count += loaded_mesh_count
+                            log.debug(f"Room '{name}' @ ({tx:.1f},{ty:.1f},{tz:.1f}): "
+                                      f"{loaded_mesh_count} mesh(es) from {os.path.basename(mdl_path)}")
+                        else:
+                            log.debug(f"Room '{name}': MDL parsed but no renderable mesh nodes")
+
                 except Exception as exc:
-                    log.debug(f"room MDL load error ({name}): {exc}")
+                    log.warning(f"Room '{name}' MDL load error: {exc}", exc_info=False)
+                    loaded_mesh_count = 0
 
-            if not loaded:
-                # Placeholder box: 10×10×4 wu centred at world origin of room
-                w, h = 10.0, 10.0
-                verts = _box_wire(tx + w/2, ty + h/2, tz,
-                                  w/2, h/2, 2.0, color)
-                e = self._upload_flat(verts)
-                # tx/ty/tz=0 because world coords are baked into the vertices
-                e.update({"name": name, "tx": 0.0, "ty": 0.0, "tz": 0.0,
-                          "primitive": "lines"})
-                self._room_vaos.append(e)
-                log.debug(f"Room '{name}' @ ({tx:.0f},{ty:.0f}) — placeholder box")
+            if loaded_mesh_count == 0:
+                # ── Placeholder: solid box + brighter wireframe outline ───
+                # LYT world_x/world_y are the room's origin corner.
+                # KotOR rooms are typically ~10 units wide.
+                # Center the box AT the tx,ty position (rooms are placed at corner).
+                rw = float(getattr(ri, 'width',  10.0) or 10.0)
+                rh = float(getattr(ri, 'height', 10.0) or 10.0)
+                # Center box: tx/ty are corner → add half-width to center
+                cx = tx + rw * 0.5
+                cy = ty + rh * 0.5
 
-        log.info(f"Room VAOs: {len(self._room_vaos)} from {len(room_instances)} rooms")
+                solid_verts = _box_solid(cx, cy, tz, rw*0.5, rh*0.5, 2.0, color)
+                e_solid = self._upload_flat(solid_verts)
+                e_solid.update({"name": name, "tx": 0., "ty": 0., "tz": 0.,
+                                "primitive": "triangles"})
+                self._room_vaos.append(e_solid)
 
-    # ── Render frame ──────────────────────────────────────────────────────────
+                # Wireframe outline — brighter version of the same palette colour
+                wire_c = (min(color[0]+0.40, 1.), min(color[1]+0.40, 1.),
+                          min(color[2]+0.40, 1.))
+                wire_verts = _box_wire(cx, cy, tz, rw*0.5, rh*0.5, 2.0, wire_c)
+                e_wire = self._upload_flat(wire_verts)
+                e_wire.update({"name": name + "_outline", "tx": 0., "ty": 0.,
+                               "tz": 0., "primitive": "lines"})
+                self._room_vaos.append(e_wire)
+
+                if mdl_path:
+                    log.debug(f"Room '{name}': MDL found at {mdl_path} but no meshes — placeholder box")
+                else:
+                    log.debug(f"Room '{name}' @ ({tx:.1f},{ty:.1f}): no MDL — placeholder box")
+
+        log.info(f"Room VAOs: {len(self._room_vaos)} entries "
+                 f"({total_mesh_count} real meshes) from {len(room_instances)} rooms")
 
     def render(self, W: int, H: int, camera: OrbitCamera,
                play_session=None, show_walkmesh: bool = True) -> Optional[bytes]:
@@ -846,31 +1022,77 @@ class _EGLRenderer:
 
         self.ctx.enable(moderngl.CULL_FACE)
 
-        # ── Walkmesh overlay (semi-transparent, depth-write off) ──────────────
+        # ── Walkmesh overlay — Unreal Engine-style navmesh ────────────────────
+        # UE5 navmesh style: translucent teal/green fill + bright edge outlines.
+        # Rendered AFTER room geometry with depth-write disabled so it floats
+        # on top without disturbing depth buffer for objects drawn later.
+        # Uses polygon offset to avoid z-fighting with coplanar floor geometry.
         if show_walkmesh and self._prog_uniform:
             self.ctx.depth_mask = False
             self.ctx.enable(moderngl.BLEND)
-            # Walkable: green
+            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            self.ctx.disable(moderngl.CULL_FACE)
+
+            # Polygon offset: strongly push navmesh in front of floor tris
+            # (factor=-2, units=-2 works better than -1,-1 on software rasterizer)
+            try:
+                self.ctx.enable(moderngl.POLYGON_OFFSET_FILL)
+                self.ctx.polygon_offset = (-2.0, -2.0)
+            except Exception:
+                pass
+
+            walk_mvp = vp.T.astype('f4').tobytes()
+
+            # ── Walkable: UE5 teal-green fill ──────────────────────────
             if self._walk_vaos:
                 try:
-                    self._prog_uniform["mvp"].write(vp.T.astype('f4').tobytes())
+                    self._prog_uniform["mvp"].write(walk_mvp)
+                    # UE5 navmesh: #00C8A0 style teal-green at 45% opacity
                     self._prog_uniform["u_color"].write(
-                        np.array([0.1, 0.9, 0.3, 0.35], dtype='f4').tobytes())
+                        np.array([0.00, 0.78, 0.63, 0.45], dtype='f4').tobytes())
                     for e in self._walk_vaos:
-                        if e["vao"] and e["count"]:
+                        if e.get("vao") and e.get("count", 0):
                             e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
                 except Exception as ex:
-                    log.debug(f"walk overlay: {ex}")
-            # Non-walkable: red
-            if self._nowalk_vaos:
+                    log.debug(f"walk fill overlay: {ex}")
+
+                # Bright edge outlines — thinner, more UE5-like
                 try:
                     self._prog_uniform["u_color"].write(
-                        np.array([0.9, 0.1, 0.1, 0.30], dtype='f4').tobytes())
+                        np.array([0.00, 0.96, 0.78, 0.80], dtype='f4').tobytes())
+                    self.ctx.line_width = 1.0  # crisp 1px lines
+                    for e in self._walk_vaos:
+                        if e.get("vao") and e.get("count", 0):
+                            e["vao"].render(moderngl.LINES, vertices=e["count"])
+                except Exception as ex:
+                    log.debug(f"walk edge overlay: {ex}")
+
+            # ── Non-walkable: red fill + red edges ──────────────────────
+            if self._nowalk_vaos:
+                try:
+                    self._prog_uniform["mvp"].write(walk_mvp)
+                    self._prog_uniform["u_color"].write(
+                        np.array([0.90, 0.10, 0.08, 0.40], dtype='f4').tobytes())
                     for e in self._nowalk_vaos:
-                        if e["vao"] and e["count"]:
+                        if e.get("vao") and e.get("count", 0):
                             e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
                 except Exception as ex:
-                    log.debug(f"nowalk overlay: {ex}")
+                    log.debug(f"nowalk fill overlay: {ex}")
+                try:
+                    self._prog_uniform["u_color"].write(
+                        np.array([1.00, 0.20, 0.10, 0.80], dtype='f4').tobytes())
+                    for e in self._nowalk_vaos:
+                        if e.get("vao") and e.get("count", 0):
+                            e["vao"].render(moderngl.LINES, vertices=e["count"])
+                except Exception as ex:
+                    log.debug(f"nowalk edge overlay: {ex}")
+
+            try:
+                self.ctx.disable(moderngl.POLYGON_OFFSET_FILL)
+                self.ctx.polygon_offset = (0.0, 0.0)
+            except Exception:
+                pass
+            self.ctx.enable(moderngl.CULL_FACE)
             self.ctx.depth_mask = True
 
         # ── GIT object boxes ──────────────────────────────────────────────────
@@ -878,7 +1100,10 @@ class _EGLRenderer:
         self.ctx.disable(moderngl.CULL_FACE)
         for e in self._object_vaos:
             try:
-                e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
+                if e.get("wire"):
+                    e["vao"].render(moderngl.LINES, vertices=e["count"])
+                else:
+                    e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
             except Exception:
                 pass
         self.ctx.enable(moderngl.CULL_FACE)
@@ -1068,6 +1293,55 @@ class ViewportWidget(_QWidget_base):
             self._renderer.rebuild_walkmesh_vaos(self._walk_tris, self._nowalk_tris)
         self.update()
 
+    def load_walkmesh_from_rooms(self, room_instances: list,
+                                  game_dir: str = "") -> bool:
+        """
+        Automatically load and merge walkmesh data from .wok files
+        for all rooms in room_instances.
+
+        Uses the WOKParser to read binary .wok files and translates
+        each face to world space based on room position.
+
+        Args:
+            room_instances: List of RoomInstance objects with resref + position.
+            game_dir:       KotOR game or extract directory containing .wok files.
+
+        Returns True if at least one walkmesh was loaded.
+        """
+        try:
+            from ..formats.wok_parser import build_module_walkmesh
+            from ..utils.resource_manager import get_resource_manager
+
+            # Convert room_instances to iterable of objects with resref + position
+            # RoomInstance has .mdl_name, .world_x, .world_y, .world_z
+            class _RoomProxy:
+                def __init__(self, ri):
+                    self.resref   = getattr(ri, 'mdl_name',
+                                    getattr(ri, 'resref',
+                                    getattr(ri, 'name', 'unknown'))).lower()
+                    x = getattr(ri, 'world_x', getattr(ri, 'x', 0.0))
+                    y = getattr(ri, 'world_y', getattr(ri, 'y', 0.0))
+                    z = getattr(ri, 'world_z', getattr(ri, 'z', 0.0))
+                    self.position = (float(x), float(y), float(z))
+
+            proxies = [_RoomProxy(ri) for ri in room_instances]
+            rm = get_resource_manager()
+
+            wm = build_module_walkmesh(proxies, resource_manager=rm,
+                                       game_dir=game_dir)
+
+            walk_tris   = [f.as_tuple() for f in wm.walkable_faces]
+            nowalk_tris = [f.as_tuple() for f in wm.non_walkable_faces]
+
+            self.load_walkmesh(walk_tris, nowalk_tris)
+            log.info(f"Loaded walkmesh: {len(walk_tris)} walkable, "
+                     f"{len(nowalk_tris)} non-walkable triangles")
+            return bool(walk_tris or nowalk_tris)
+
+        except Exception as e:
+            log.warning(f"load_walkmesh_from_rooms: {e}", exc_info=False)
+            return False
+
     def frame_all(self):
         self._frame_all()
 
@@ -1214,118 +1488,144 @@ class ViewportWidget(_QWidget_base):
         p.setFont(QFont("Consolas", 7))
         p.drawText(8, H-8, "2D top-down view  |  RMB=orbit  MMB=pan  Scroll=zoom")
 
-    # ── HUD overlay ───────────────────────────────────────────────────────────
+    # ── HUD overlay ─────────────────────────────────────────────────────────
 
     def _paint_hud(self, p: "QPainter", W: int, H: int):
-        """Draw the heads-up display over the 3D viewport."""
+        """Draw a UE5-style heads-up display over the 3D viewport."""
         if not _HAS_QT:
             return
         p.setRenderHint(QPainter.Antialiasing, True)
-        fn_small = QFont("Consolas", 8)
-        fn_badge = QFont("Consolas", 9, QFont.Bold)
-        fn_tiny  = QFont("Consolas", 7)
+        fn_badge = QFont("Segoe UI", 8, QFont.Bold)
+        fn_mono  = QFont("Consolas", 8)
+        fn_tiny  = QFont("Segoe UI", 7)
 
-        # ── Mode badge (top-left) ─────────────────────────────────────────────
+        # ── Mode badge (top-left) ────────────────────────────────────────────────
         if self._play_mode:
-            badge_col = QColor(50, 200, 80)
-            badge_txt = "▶  PLAY MODE"
+            badge_bg     = QColor(20, 110, 40, 220)
+            badge_border = QColor(50, 200, 80)
+            badge_txt    = "▶  PLAY"
         elif self._placement_mode:
-            badge_col = QColor(230, 140, 20)
-            badge_txt = f"✚  PLACE  [{self._place_asset_type.upper()}]"
+            badge_bg     = QColor(110, 60, 10, 220)
+            badge_border = QColor(240, 150, 30)
+            badge_txt    = f"⊕  PLACE  {self._place_asset_type.upper()}"
         elif self._app_mode == "module_editor":
-            badge_col = QColor(100, 160, 240)
-            badge_txt = "✏  MODULE EDITOR"
+            badge_bg     = QColor(15, 40, 90, 200)
+            badge_border = QColor(56, 139, 253)
+            badge_txt    = "✏  MODULE EDITOR"
         else:
-            badge_col = QColor(80, 200, 180)
-            badge_txt = "⬛  LEVEL BUILDER"
+            badge_bg     = QColor(10, 50, 40, 200)
+            badge_border = QColor(50, 200, 160)
+            badge_txt    = "□  LEVEL BUILDER"
 
         p.setFont(fn_badge)
         fm = p.fontMetrics()
-        bw = fm.horizontalAdvance(badge_txt) + 18
-        bh = 22
-        p.fillRect(8, 8, bw, bh, QColor(0, 0, 0, 160))
-        p.setPen(QPen(badge_col, 2))
-        p.drawRect(8, 8, bw, bh)
-        p.setPen(badge_col)
-        p.drawText(17, 8 + bh - 6, badge_txt)
+        bw = fm.horizontalAdvance(badge_txt) + 20
+        bh = 24
+        bx, by = 8, 8
+        p.fillRect(bx + 2, by + 2, bw, bh, QColor(0, 0, 0, 80))
+        p.fillRect(bx, by, bw, bh, badge_bg)
+        p.fillRect(bx, by, 3, bh, badge_border)
+        p.setPen(badge_border)
+        p.drawText(bx + 10, by + bh - 6, badge_txt)
 
-        # ── GL backend / error badge ──────────────────────────────────────────
+        # ── GL backend / error (────────────────────────────────────────────────
         if not _HAS_MODERNGL:
-            msg = "⚠ moderngl not installed — pip install moderngl"
-            p.setFont(fn_small)
+            msg = "⚠  Install moderngl:  pip install moderngl PyOpenGL"
+            p.setFont(fn_badge)
+            p.fillRect(6, 38, W - 12, 22, QColor(0, 0, 0, 200))
+            p.fillRect(6, 38, 3, 22, QColor(230, 80, 50))
             p.setPen(QColor(240, 100, 60))
-            p.fillRect(8, 36, W-16, 20, QColor(0, 0, 0, 180))
-            p.drawText(12, 51, msg)
+            p.drawText(14, 54, msg)
         elif _GL_INIT_ERROR:
             p.setFont(fn_tiny)
+            p.fillRect(6, 38, W - 12, 18, QColor(0, 0, 0, 190))
+            p.fillRect(6, 38, 3, 18, QColor(230, 80, 50))
             p.setPen(QColor(240, 120, 60))
-            p.fillRect(8, 36, W-16, 16, QColor(0, 0, 0, 180))
-            p.drawText(12, 49, f"⚠ GL: {_GL_INIT_ERROR[:90]}")
+            p.drawText(14, 51, f"⚠ {_GL_INIT_ERROR[:80]}")
         else:
-            # Show GL backend in corner
             p.setFont(fn_tiny)
-            p.setPen(QColor(80, 80, 100))
-            p.drawText(bw + 16, 24, f"[{_GL_BACKEND}]")
+            p.setPen(QColor(60, 70, 90))
+            p.drawText(bx + bw + 8, by + 16, f"[{_GL_BACKEND}]")
 
-        # ── Camera info (bottom-right) ────────────────────────────────────────
+        # ── Walkmesh / Navmesh badge (top-right) ─────────────────────────────────
+        if self._walkmesh_loaded:
+            wm_on  = self._show_walkmesh
+            wm_txt = "◼ NAVMESH  ON" if wm_on else "◻ NAVMESH OFF"
+            wm_bg  = QColor(10, 50, 20, 200) if wm_on else QColor(50, 20, 20, 180)
+            wm_col = QColor(80, 220, 100) if wm_on else QColor(180, 80, 80)
+            p.setFont(fn_badge)
+            fw2 = p.fontMetrics().horizontalAdvance(wm_txt) + 20
+            wm_x = W - fw2 - 8
+            p.fillRect(wm_x, 8, fw2, 24, wm_bg)
+            p.fillRect(wm_x, 8, 3, 24, wm_col)
+            p.setPen(wm_col)
+            p.drawText(wm_x + 10, 8 + 16, wm_txt)
+
+        # ── Selected object info (centre stripe) ───────────────────────────────
+        if self._selected_obj and not self._play_mode:
+            obj    = self._selected_obj
+            otype  = type(obj).__name__.replace("GIT", "")
+            resref = getattr(obj, "resref", getattr(obj, "template_resref", "?"))
+            pos    = getattr(obj, "position", None)
+            tag    = getattr(obj, "tag", "") or ""
+            if pos:
+                info = (f"{otype}  ›  {tag!r}  [{resref}]"
+                        f"  @  ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})")
+            else:
+                info = f"{otype}  ›  {tag!r}  [{resref}]"
+            p.setFont(fn_badge)
+            fw = p.fontMetrics().horizontalAdvance(info) + 24
+            ix = max(8, (W - fw) // 2)
+            p.fillRect(ix - 4, 40, fw + 8, 24, QColor(0, 0, 0, 180))
+            p.fillRect(ix - 4, 40, 3, 24, QColor(255, 200, 50))
+            p.setPen(QColor(255, 220, 80))
+            p.drawText(ix + 4, 40 + 16, info)
+
+        # ── Camera info (bottom-right) ────────────────────────────────────────────────
         t = self.camera.target
         cam_lines = [
             f"Az {self.camera.azimuth:.0f}°  El {self.camera.elevation:.0f}°  "
-            f"Dist {self.camera.distance:.1f}",
-            f"Target  X{t[0]:.2f}  Y{t[1]:.2f}  Z{t[2]:.2f}",
+            f"D {self.camera.distance:.1f}",
+            f"X {t[0]:.2f}  Y {t[1]:.2f}  Z {t[2]:.2f}",
         ]
-        p.setFont(fn_small)
-        fm2 = p.fontMetrics()
-        line_h = fm2.height() + 2
-        total_h = len(cam_lines) * line_h + 6
-        max_w = max(fm2.horizontalAdvance(l) for l in cam_lines) + 12
-        rx = W - max_w - 6
-        ry = H - total_h - 6
-        p.fillRect(rx, ry, max_w, total_h, QColor(0, 0, 0, 150))
-        p.setPen(QColor(160, 180, 200))
+        p.setFont(fn_mono)
+        fm2  = p.fontMetrics()
+        lh   = fm2.height() + 2
+        th   = len(cam_lines) * lh + 10
+        mw   = max(fm2.horizontalAdvance(l) for l in cam_lines) + 16
+        rx   = W - mw - 8
+        ry   = H - th - 22
+        p.fillRect(rx - 4, ry, mw + 4, th, QColor(0, 0, 0, 160))
+        p.fillRect(rx - 4, ry, 3, th, QColor(56, 139, 253, 180))
+        p.setPen(QColor(140, 170, 200))
         for i, line in enumerate(cam_lines):
-            p.drawText(rx + 6, ry + 6 + (i+1) * line_h - 2, line)
+            p.drawText(rx + 4, ry + 6 + (i + 1) * lh - 1, line)
 
-        # ── Selected object info ──────────────────────────────────────────────
-        if self._selected_obj and not self._play_mode:
-            obj = self._selected_obj
-            otype = type(obj).__name__.replace("GIT", "")
-            resref = getattr(obj, "resref", getattr(obj, "template_resref", "?"))
-            pos = getattr(obj, "position", None)
-            if pos:
-                info = (f"{otype}  [{resref}]  "
-                        f"@  {pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}")
-            else:
-                info = f"{otype}  [{resref}]"
-            p.setFont(fn_small)
-            fw = p.fontMetrics().horizontalAdvance(info) + 16
-            bx = (W - fw) // 2
-            p.fillRect(bx, H-32, fw, 20, QColor(0, 0, 0, 180))
-            p.setPen(QColor(255, 220, 60))
-            p.drawText(bx + 8, H - 16, info)
-
-        # ── Controls hint (bottom-left) ───────────────────────────────────────
+        # ── Controls hint bar (bottom) ───────────────────────────────────────────────
         if self._play_mode:
-            hint = "WASD=move  Mouse=look  Esc=exit"
+            hint     = "WASD = move  │  Mouse = look  │  Shift = run  │  Esc = exit"
+            hint_col = QColor(80, 220, 100)
         elif self._placement_mode:
-            hint = "LMB=place  Esc=cancel"
+            hint     = f"LMB = place {self._place_template or ''!r}  │  Esc = cancel"
+            hint_col = QColor(240, 180, 60)
         else:
-            hint = ("RMB=orbit  MMB=pan  Scroll=zoom  "
-                    "WASD=fly  F=frame  W=walkmesh  Del=delete")
+            hint     = ("RMB = orbit  │  MMB = pan  │  Scroll = zoom  │  "
+                        "WASD = fly  │  F = frame  │  W = navmesh  │  Del = delete")
+            hint_col = QColor(70, 80, 100)
 
         p.setFont(fn_tiny)
-        p.setPen(QColor(100, 110, 130))
-        p.fillRect(0, H-16, W, 16, QColor(0, 0, 0, 100))
-        p.drawText(8, H - 4, hint)
+        p.fillRect(0, H - 18, W, 18, QColor(0, 0, 0, 130))
+        p.setPen(hint_col)
+        p.drawText(8, H - 5, hint)
 
-        # ── Walkmesh indicator ────────────────────────────────────────────────
-        if self._walkmesh_loaded:
-            wm_txt = ("WALKMESH ON" if self._show_walkmesh else "WALKMESH OFF")
-            wm_col = QColor(80, 220, 120) if self._show_walkmesh else QColor(160, 80, 80)
-            p.setFont(fn_tiny)
-            p.setPen(wm_col)
-            fw2 = p.fontMetrics().horizontalAdvance(wm_txt)
-            p.drawText(W - fw2 - 8, H - 20, wm_txt)
+        # ── Snap indicator ────────────────────────────────────────────────────────────
+        if getattr(self, "_snap_enabled", False) and not self._play_mode:
+            snap_txt = f"⊞ SNAP  {self._snap_size:.2f}u"
+            p.setFont(fn_badge)
+            sw = p.fontMetrics().horizontalAdvance(snap_txt)
+            p.fillRect(W - sw - 20, H - 42, sw + 16, 20, QColor(0, 0, 0, 160))
+            p.setPen(QColor(255, 220, 50))
+            p.drawText(W - sw - 12, H - 27, snap_txt)
 
     # ── Gizmo overlay ─────────────────────────────────────────────────────────
 

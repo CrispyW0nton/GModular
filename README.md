@@ -1,8 +1,10 @@
-# GModular — Modular KotOR 1 & 2 Toolkit
+# GModular — KotOR 1 & 2 Module Editor
 
-> **A professional, modular editor for Star Wars: Knights of the Old Republic 1 & 2 modules.**
+> **A community-built, open-source module editor for Star Wars: Knights of the Old Republic 1 & 2.**
 
-GModular is a standalone Python/Qt desktop application that provides a full authoring environment for KotOR module files (`.git`, `.are`, `.ifo`). It is designed to work alongside [GhostScripter](https://github.com/CrispyW0nton/GhostScripter) (NWScript IDE) and [GhostRigger](https://github.com/CrispyW0nton/GhostRigger) (model rigging tool) via a lightweight IPC bridge.
+GModular is a standalone Python/Qt desktop application — think a lightweight Unreal Editor — for creating and editing KotOR modules. It handles the full pipeline: reading/writing every KotOR binary format, 3D model rendering, walkmesh editing, and exporting a complete `.mod` file ready to drop into your game's `Modules/` folder.
+
+It is designed to work alongside [GhostScripter](https://github.com/CrispyW0nton/GhostScripter) (NWScript IDE) and [GhostRigger](https://github.com/CrispyW0nton/GhostRigger) (model rigging tool) via a lightweight IPC bridge — together they form the **Ghostworks Pipeline**, a replacement for the fragmented toolchain the KotOR modding community currently uses.
 
 ---
 
@@ -14,48 +16,63 @@ GModular is a standalone Python/Qt desktop application that provides a full auth
 4. [Project Structure](#project-structure)
 5. [Installation](#installation)
 6. [Usage](#usage)
-7. [GFF Format Support](#gff-format-support)
+7. [Format Support](#format-support)
 8. [IPC Integration](#ipc-integration)
-9. [Phase Roadmap](#phase-roadmap)
-10. [Running Tests](#running-tests)
-11. [Contributing](#contributing)
-12. [License](#license)
+9. [Running Tests](#running-tests)
+10. [Contributing](#contributing)
+11. [License](#license)
 
 ---
 
 ## Features
 
-### ✅ Implemented (MVP)
+### ✅ Implemented
 
 | Feature | Status |
 |---|---|
-| GFF V3.2 binary reader (GIT/ARE/IFO) | ✅ Complete |
-| GFF V3.2 binary writer — BFS two-phase encoding | ✅ Complete |
-| All GFF field types (BYTE → ORIENTATION) | ✅ Complete |
-| GIT round-trip (Placeables, Creatures, Doors, Waypoints, Triggers) | ✅ Complete |
-| Module state (undo/redo, dirty flag, autosave) | ✅ Complete |
+| GFF V3.2 binary reader/writer (GIT/ARE/IFO/DLG) | ✅ Complete |
+| All 18 GFF field types — full round-trip | ✅ Complete |
+| MDL/MDX binary parser — KotOR 1 & 2 | ✅ Complete |
+| 3D model rendering (ModernGL VAO pipeline, Phong lighting) | ✅ Complete |
+| Walkmesh parser (.wok) with ray-cast height queries | ✅ Complete |
+| TPC texture reader (DXT1/DXT5/RGBA, mip maps, cubemaps) | ✅ Complete |
+| 2DA table loader (`surfacemat.2da` walkability) | ✅ Complete |
+| ERF/RIM/MOD archive reader & writer | ✅ Complete |
+| LYT/VIS room layout parser | ✅ Complete |
+| Module state — undo/redo, dirty flag, autosave | ✅ Complete |
 | Undoable commands (Place, Delete, Move, Rotate, ModifyProperty) | ✅ Complete |
-| Asset Palette panel (search, tabs, custom ResRef) | ✅ Complete |
+| Asset Palette (search, tabs, custom ResRef) | ✅ Complete |
 | Scene Outline / Hierarchy panel | ✅ Complete |
 | Inspector Panel (editable object properties) | ✅ Complete |
-| 3D Viewport (ModernGL orbit camera, picking, placement) | ✅ Complete |
+| 3D Viewport (orbit camera, object picking, walkmesh overlay) | ✅ Complete |
 | Walkmesh Editor panel | ✅ Complete |
-| IPC Bridges — GhostScripter (port 5002) | ✅ Complete |
-| IPC Bridges — GhostRigger (port 5001) | ✅ Complete |
+| .MOD/.ERF/.RIM module import dialog | ✅ Complete |
+| Resource Manager (Override + Modules directory scan, BIF/KEY) | ✅ Complete |
+| IPC Bridges — GhostScripter (port 5002) & GhostRigger (port 5001) | ✅ Complete |
 | IPC Callback Server on port 5003 | ✅ Complete |
-| File watcher (watchdog) for .ncs / .mdl changes | ✅ Complete |
-| Resource Manager (Override + Modules directory scan) | ✅ Complete |
-| Dark theme (VS Code-inspired) | ✅ Complete |
+| File watcher (watchdog) for .ncs / .mdl hot-reload | ✅ Complete |
 | Settings persistence (`~/.gmodular/settings.json`) | ✅ Complete |
-| Full test suite (44 tests, 100% pass) | ✅ Complete |
+| Dark theme (VS Code-inspired) | ✅ Complete |
+| Full test suite — 641 tests, 100% pass rate | ✅ Complete |
 
-### 🔜 Planned (see Roadmap)
+### 🔜 Planned
 
-- BIF/KEY archive parsing (Phase 3)
-- Full PyKotor integration (Phase 3)
-- 3D model rendering via MDL parser (Phase 4)
-- NWScript compiler integration via GhostScripter (Phase 4)
-- Full walkmesh bake & export (Phase 4)
+- NWScript compiler integration via GhostScripter
+- Full walkmesh bake & export
+- Animation playback (controller parsing is in progress)
+- DLG dialogue tree editor
+
+---
+
+## Screenshots
+
+| GFF BFS Writer | Command Pattern | 3D Viewport Shaders |
+|:---:|:---:|:---:|
+| ![GFF Writer](assets/screenshots/01_gff_bfs_writer.png) | ![Commands](assets/screenshots/02_command_pattern.png) | ![Shaders](assets/screenshots/03_viewport_shaders.png) |
+
+| Test Suite | Pipeline Architecture |
+|:---:|:---:|
+| ![Tests](assets/screenshots/04_test_suite.png) | ![Pipeline](assets/screenshots/05_pipeline_architecture.png) |
 
 ---
 
@@ -66,8 +83,8 @@ GModular is a standalone Python/Qt desktop application that provides a full auth
 │                         GModular GUI                            │
 │  ┌──────────────┐  ┌──────────────────────────┐  ┌───────────┐ │
 │  │ Asset Palette│  │     3D Viewport           │  │ Inspector │ │
-│  │  (search +   │  │  (ModernGL orbit camera,  │  │  Panel    │ │
-│  │   tabs)      │  │   object picking, grid)   │  │           │ │
+│  │  (search +   │  │  (ModernGL — MDL models,  │  │  Panel    │ │
+│  │   tabs)      │  │   walkmesh overlay, pick) │  │           │ │
 │  └──────────────┘  └──────────────────────────┘  └───────────┘ │
 │  ┌──────────────┐  ┌──────────────────────────┐                 │
 │  │ Scene        │  │ Bottom tabs:             │                 │
@@ -85,22 +102,22 @@ GModular is a standalone Python/Qt desktop application that provides a full auth
 └─────────────────┘
           │
           ▼
-┌─────────────────┐
-│  GFF Formats    │
-│  gff_reader.py  │
-│  gff_writer.py  │
-│  gff_types.py   │
-└─────────────────┘
+┌──────────────────────────────────────────────────┐
+│  Format Libraries (gmodular/formats/)            │
+│  gff_reader/writer  mdl_parser  tpc_reader       │
+│  wok_parser  twoda_loader  archives  lyt_vis     │
+└──────────────────────────────────────────────────┘
 ```
 
-### GFF BFS Two-Phase Writer
+### MDL Rendering Pipeline
 
-KotOR's GFF format requires all struct indices to be stable before any field data can reference them. GModular's writer uses a **breadth-first two-phase algorithm**:
+```
+MDLParser  →  MeshData  →  MDLRenderer.upload()  →  VAO list
+                                                          │
+ViewportWidget.paintGL()  →  MDLRenderer.render_all()  ←─┘
+```
 
-1. **Phase 1 — BFS Collection**: Walk the tree breadth-first, assign a stable integer index to every `GFFStruct`.
-2. **Phase 2 — Field Encoding**: Encode all fields in BFS order; LIST and STRUCT fields can now safely embed the pre-assigned indices.
-
-This ensures the binary layout is always correct and identical to what KotOR's engine expects.
+The renderer supports interleaved vertex/normal/UV buffers, per-mesh frustum culling, LRU model cache (max 64 models), wireframe/normal debug overlays, and a flat-colour fallback when ModernGL is unavailable.
 
 ---
 
@@ -109,40 +126,46 @@ This ensures the binary layout is always correct and identical to what KotOR's e
 ```
 GModular/
 ├── gmodular/
-│   ├── __init__.py           # Package root (version 1.0.0-MVP)
 │   ├── core/
-│   │   ├── __init__.py
-│   │   └── module_state.py   # ModuleProject, ModuleState, undo commands
+│   │   └── module_state.py   # ModuleProject, undo/redo commands
 │   ├── formats/
-│   │   ├── __init__.py
-│   │   ├── gff_types.py      # GFF data model + KotOR GIT/ARE/IFO types
 │   │   ├── gff_reader.py     # GFF V3.2 binary reader
 │   │   ├── gff_writer.py     # GFF V3.2 binary writer (BFS two-phase)
-│   │   └── archives.py       # BIF/ERF/RIM archive reader (stub/Phase 3)
+│   │   ├── gff_types.py      # GFF data model + KotOR GIT/ARE/IFO types
+│   │   ├── mdl_parser.py     # KotOR MDL/MDX binary parser (K1 + K2)
+│   │   ├── tpc_reader.py     # TPC texture reader (DXT1/5, mips, cubemap)
+│   │   ├── wok_parser.py     # Walkmesh parser + ray-cast height queries
+│   │   ├── twoda_loader.py   # 2DA table reader (surfacemat, appearance…)
+│   │   ├── archives.py       # BIF/ERF/RIM/KEY archive reader
+│   │   ├── lyt_vis.py        # LYT/VIS room layout parser
+│   │   └── mod_packager.py   # .MOD/.ERF export
+│   ├── engine/
+│   │   ├── mdl_renderer.py   # ModernGL VAO upload + render
+│   │   ├── npc_instance.py   # NPC runtime state
+│   │   └── player_controller.py
 │   ├── gui/
-│   │   ├── __init__.py
-│   │   ├── main_window.py    # MainWindow — full application shell
-│   │   ├── viewport.py       # ViewportWidget (ModernGL 3D viewport)
-│   │   ├── inspector.py      # InspectorPanel — property editor
-│   │   ├── asset_palette.py  # AssetPalette — browse & place assets
-│   │   ├── scene_outline.py  # SceneOutlinePanel — object hierarchy tree
-│   │   └── walkmesh_editor.py# WalkmeshPanel — walkmesh editing tools
+│   │   ├── main_window.py    # Application shell
+│   │   ├── viewport.py       # ViewportWidget — 3D view
+│   │   ├── inspector.py      # Property editor
+│   │   ├── asset_palette.py  # Asset browser
+│   │   ├── scene_outline.py  # Scene hierarchy
+│   │   ├── walkmesh_editor.py
+│   │   ├── content_browser.py
+│   │   └── …
 │   ├── ipc/
-│   │   ├── __init__.py
 │   │   ├── bridges.py        # GhostScripterBridge, GhostRiggerBridge
-│   │   └── callback_server.py# Flask callback server on port 5003
+│   │   └── callback_server.py
 │   └── utils/
-│       ├── __init__.py
-│       └── resource_manager.py # KotOR resource discovery & access
-├── tests/
-│   ├── __init__.py
-│   └── test_gff.py           # 44 pytest tests (all passing)
-├── assets/                   # Icons and static assets
-├── resources/                # Qt resource files
+│       └── resource_manager.py
+├── tests/                    # 641 pytest tests (100% passing)
+├── assets/                   # Icons and portfolio screenshots
+├── hooks/                    # PyInstaller PyQt5 hooks
+├── runtime_hooks/            # PyInstaller runtime boot hooks
 ├── main.py                   # Application entry point
-├── requirements.txt          # Python dependencies
-├── setup.py                  # Package configuration
-└── README.md                 # This file
+├── requirements.txt
+├── setup.py
+├── GModular.spec             # PyInstaller spec (produces dist/GModular.exe)
+└── build.bat                 # One-click Windows build script
 ```
 
 ---
@@ -151,7 +174,7 @@ GModular/
 
 ### Prerequisites
 
-- Python 3.10+
+- **Python 3.10–3.12** (PyQt5 has no wheel for 3.13+)
 - A KotOR 1 or KotOR 2 installation (for live game data)
 
 ### Steps
@@ -173,15 +196,20 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### Build a standalone EXE (Windows)
+
+Double-click `build.bat`. Requires Python 3.12 on the PATH. Produces `dist/GModular.exe` (~80 MB, no installer needed).
+
 ### Dependencies
 
 | Package | Purpose |
 |---|---|
-| `PyQt5` | Desktop GUI framework |
-| `moderngl` | OpenGL 3.3+ context for 3D viewport |
-| `PyGLM` | Math library (vectors, matrices, quaternions) |
-| `watchdog` | File system watcher for script / model hot-reload |
-| `flask` | Lightweight IPC callback server (port 5003) |
+| `PyQt5 >= 5.15` | Desktop GUI |
+| `moderngl >= 5.8` | OpenGL 3.3+ 3D viewport |
+| `numpy >= 1.21` | Vertex math |
+| `watchdog >= 2.0` | Hot-reload file watcher |
+| `flask` | IPC callback server |
+| `requests` | IPC HTTP calls |
 | `pytest` | Test runner |
 
 ---
@@ -190,24 +218,21 @@ python main.py
 
 ### First Launch
 
-1. **Set Game Directory** → `Tools → Set Game Directory` (or toolbar button)  
-   Select the folder containing `chitin.key`.
-2. **Load Assets** → `Tools → Load Game Assets`  
-   Populates the Asset Palette from the game's Override directory.
-3. **New Module** → `File → New Module`  
-   Enter a ResRef, name and description.
+1. **Set Game Directory** → `Tools → Set Game Directory`
+   Point to your KotOR installation folder (the one containing `chitin.key`).
+2. **Load Assets** → `Tools → Load Game Assets`
+   Populates the Asset Palette from the Override directory and archives.
+3. **New Module** → `File → New Module`
+   Enter a ResRef, display name and description.
 
 ### Editing a Module
 
-- **Place Objects**: Click an asset in the palette → click `Place Selected`, or double-click.  
-  Then click in the 3D viewport to choose a location.
-- **Select Objects**: Left-click an object in the viewport.  
-  Properties appear in the Inspector panel on the right.
-- **Scene Hierarchy**: The Scene Outline panel (top-left) lists all objects.  
-  Right-click for context menu (select / delete).
-- **Undo / Redo**: `Ctrl+Z` / `Ctrl+Shift+Z` (or Edit menu).
-- **Save**: `Ctrl+S` saves the `.git` file.  
-  `Ctrl+Shift+S` saves to a new path.
+- **Place Objects**: Click an asset in the palette → `Place Selected`, or double-click it, then click in the viewport to position it.
+- **Select Objects**: Left-click in the viewport. Properties appear in the Inspector.
+- **Scene Hierarchy**: The Scene Outline lists all placed objects. Right-click for context menu (select / delete / rename).
+- **Undo / Redo**: `Ctrl+Z` / `Ctrl+Shift+Z` (or the Edit menu).
+- **Save**: `Ctrl+S` saves the `.git` file. `Ctrl+Shift+S` prompts for a new path.
+- **Export Module**: `File → Export Module (.mod)` packages everything into a `.mod` archive.
 
 ### Viewport Controls
 
@@ -216,49 +241,56 @@ python main.py
 | Orbit | Right-mouse drag |
 | Pan | Middle-mouse drag |
 | Zoom | Scroll wheel |
-| Fly | `W` / `A` / `S` / `D` |
-| Frame All | `F` key or toolbar button |
-| Select | Left-click on object |
-| Delete selected | `Delete` key |
+| Fly | `W` `A` `S` `D` |
+| Frame All | `F` or toolbar |
+| Select object | Left-click |
+| Delete selected | `Delete` |
 
 ---
 
-## GFF Format Support
+## Format Support
 
-GModular implements the **GFF V3.2** binary format used by KotOR 1 & 2 (and other Aurora-engine games).
+### GFF (Generic File Format)
 
-### Supported Field Types
+Full read/write support for GFF V3.2 — the binary format used by `.git`, `.are`, `.ifo`, `.dlg`, `.utc`, `.utp`, `.utd`, and others.
 
-| Type | Encoding | Notes |
-|---|---|---|
-| `BYTE` | inline uint8 | |
-| `CHAR` | inline int8 | |
-| `WORD` | inline uint16 | |
-| `SHORT` | inline int16 | |
-| `DWORD` | inline uint32 | |
-| `INT` | inline int32 | |
-| `DWORD64` | field data uint64 | |
-| `INT64` | field data int64 | |
-| `FLOAT` | inline float32 (as uint bits) | |
-| `DOUBLE` | field data float64 | |
-| `CEXOSTRING` | field data length-prefixed UTF-8 | |
-| `RESREF` | field data length-prefixed ASCII ≤16 | |
-| `CEXOLOCSTRING` | field data multi-language | English extracted |
-| `VOID` | field data length-prefixed blob | |
-| `STRUCT` | inline struct index | BFS-ordered |
-| `LIST` | list-indices byte offset | BFS-ordered |
-| `ORIENTATION` | field data 4×float32 (quaternion) | |
-| `VECTOR` | field data 3×float32 | |
-| `STRREF` | inline uint32 | TLK reference |
+All 18 field types are supported: `BYTE`, `CHAR`, `WORD`, `SHORT`, `DWORD`, `INT`, `DWORD64`, `INT64`, `FLOAT`, `DOUBLE`, `CExoString`, `ResRef`, `CExoLocString`, `VOID`, `STRUCT`, `LIST`, `ORIENTATION`, `VECTOR`, `StrRef`.
 
-### Supported File Types
+### MDL/MDX (3D Models)
 
-| File | Type tag | Description |
-|---|---|---|
-| `.git` | `GIT ` | Game Instance Table — object placements |
-| `.are` | `ARE ` | Area metadata (fog, music, tileset, …) |
-| `.ifo` | `IFO ` | Module metadata & entry point |
-| `.dlg` | `DLG ` | Dialog tree (read-only for now) |
+Binary KotOR MDL parser supporting:
+- KotOR 1 and KotOR 2 (auto-detected via function pointers)
+- Node types: trimesh, skin, AABB walkmesh, emitter, light, reference, dangly, saber
+- Controller data (position, orientation, scale, alpha, UV, emitter parameters)
+- K1/K2 per-mesh detection using trimesh function pointer constants
+
+### TPC (Textures)
+
+- Encoding: DXT1, DXT5, grayscale, RGB, RGBA
+- Mipmap level access
+- Cubemap detection
+- TXI metadata extraction
+
+### WOK (Walkmeshes)
+
+- Face material walkability via `surfacemat.2da`
+- Ray-cast height queries (`height_at(x, y)`)
+- Pathfinding helpers (walkable region center, clamp to walkmesh)
+
+### Archives
+
+| Format | Read | Write |
+|---|:---:|:---:|
+| ERF / MOD / RIM | ✅ | ✅ |
+| BIF / KEY | ✅ | — |
+
+### Other Formats
+
+| Format | Support |
+|---|---|
+| `.2da` | Read (full table) |
+| `.lyt` / `.vis` | Read/Write |
+| `.tga` | Read |
 
 ---
 
@@ -268,59 +300,44 @@ GModular connects to its sibling tools via HTTP:
 
 | Service | Port | Direction | Purpose |
 |---|---|---|---|
-| GhostScripter | 5002 | GModular → GS | Open / compile NWScript files |
-| GhostRigger   | 5001 | GModular → GR | Request model rigs |
+| GhostScripter | 5002 | GM → GS | Open / compile NWScript files |
+| GhostRigger   | 5001 | GM → GR | Request model rigs |
 | GModular CB   | 5003 | GS / GR → GM | Receive compile results & model updates |
 
-Both bridges poll their targets every 8 seconds and emit Qt signals (`connected`, `disconnected`, `scripts_updated`, etc.) that drive UI state.
-
-The callback server (`ipc/callback_server.py`) runs a minimal Flask app on port 5003 and posts events back to the GUI via a thread-safe Qt signal queue.
-
----
-
-## Phase Roadmap
-
-| Phase | Focus | Status |
-|---|---|---|
-| **1 — Foundation** | Project scaffolding, GFF types, reader/writer, module state, GUI shell | ✅ ~100% |
-| **2 — Editor MVP** | Viewport, Inspector, Asset Palette, Scene Outline, Walkmesh Editor, IPC | ✅ ~85% |
-| **3 — Game Integration** | BIF/KEY archive parsing, full resource manager, live 2DA/template loading | 🔜 ~10% |
-| **4 — Advanced Tools** | MDL 3D rendering, walkmesh bake, NWScript compilation pipeline, DLG editor | 🔜 0% |
-| **5 — Polish & Release** | Packaging (PyInstaller), documentation, KotOR 2 TSL-specific features | 🔜 0% |
-
-### Overall Completion: ~63%
+Bridges poll every 8 seconds and emit Qt signals (`connected`, `disconnected`, `scripts_updated`, etc.).
 
 ---
 
 ## Running Tests
 
 ```bash
-# From the project root
 python -m pytest tests/ -v
-
-# Expected output:
-# 44 passed in 0.14s
+# Expected: 641 passed
 ```
 
-The test suite covers:
-
-- GFF header layout and binary correctness
-- All 18 scalar / string / composite field types (round-trip)
-- Nested STRUCTs and multi-item LIST fields
-- Full GIT round-trips for Placeables, Creatures, Doors, Waypoints, Triggers
-- Ambient audio fields
-- GFFWriter API (idempotency, file write)
-- GFFReader API (from_bytes, from_file, caching)
+The test suite covers all format parsers, the GFF round-trip for every field type, MDL node/mesh parsing with real binary data, WOK ray-casting, TPC mipmap selection, archive read/write, and the engine's renderer upload path.
 
 ---
 
 ## Contributing
 
+This project is open to the KotOR modding community! Contributions welcome:
+
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/my-feature`
-3. Make your changes, add tests for any new format behaviour
+3. Make your changes and add tests for any new behaviour
 4. Run `python -m pytest tests/` — all tests must pass
 5. Open a pull request against `main`
+
+See [GHOSTWORKS_BLUEPRINT.md](GHOSTWORKS_BLUEPRINT.md) for the full technical contract covering IPC ports, format handling, and the three-tool pipeline design.
+
+**Useful references for KotOR format work:**
+- [PyKotor](https://github.com/OldRepublicDevs/PyKotor) — most complete Python KotOR library
+- [KotorBlender](https://github.com/seedhartha/kotorblender) — MDL/WOK/LYT in Python/Blender
+- [reone](https://github.com/seedhartha/reone) — complete C++ Aurora engine reimplementation
+- [xoreos](https://github.com/xoreos/xoreos) — multi-game Aurora engine (GFF C++ reference)
+- [Kotor.NET](https://github.com/NickHugi/Kotor.NET) — C# KotOR toolkit (rework branch)
+- [DeadlyStream](https://deadlystream.com) — KotOR modding community & documentation
 
 ---
 

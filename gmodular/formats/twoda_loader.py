@@ -472,6 +472,33 @@ LABEL           HITDIE  ATTACKBONUSTABLE  FEATSTABLE  SAVINGSTROWTHTYPE
 """
 
 
+SURFACEMAT_FALLBACK = """\
+2DA V2.0
+
+LABEL               Walk   WalkCam  Grapple  Sound  Dirt  Grass  Puddles  Overlay  Color
+0   Dirt            1      1        1        0      1     0      0        ****     ****
+1   Obscuring       1      1        1        0      0     0      0        ****     ****
+2   Grass           1      1        1        0      0     1      0        ****     ****
+3   Stone           1      1        1        0      0     0      0        ****     ****
+4   Wood            1      1        1        0      0     0      0        ****     ****
+5   Water           1      1        0        0      0     0      0        ****     ****
+6   NonWalk         0      0        0        0      0     0      0        ****     ****
+7   Transparent     0      0        0        0      0     0      0        ****     ****
+8   Carpet          1      1        1        0      0     0      0        ****     ****
+9   Metal           1      1        1        0      0     0      0        ****     ****
+10  Puddles         1      1        1        0      0     0      1        ****     ****
+11  Swamp           1      1        1        0      0     0      0        ****     ****
+12  Mud             1      1        1        0      0     0      0        ****     ****
+13  Leaves          1      1        1        0      0     0      0        ****     ****
+14  Lava            0      0        0        0      0     0      0        ****     ****
+15  BottomlessPit   0      0        0        0      0     0      0        ****     ****
+16  DeepWater       0      0        0        0      0     0      0        ****     ****
+17  Door            1      1        0        0      0     0      0        ****     ****
+18  Snow            1      1        1        0      0     0      0        ****     ****
+19  Sand            1      1        1        0      0     0      0        ****     ****
+"""
+
+
 def load_fallback_tables():
     """Load minimal fallback 2DA tables when no game directory is available."""
     loader = get_2da_loader()
@@ -481,3 +508,52 @@ def load_fallback_tables():
         loader.load_from_text("gender", GENDER_FALLBACK)
     if not loader.is_loaded("classes"):
         loader.load_from_text("classes", CLASS_FALLBACK)
+    if not loader.is_loaded("surfacemat"):
+        loader.load_from_text("surfacemat", SURFACEMAT_FALLBACK)
+
+
+def get_surfacemat_name(material_id: int) -> str:
+    """
+    Return the label for a surface material ID from surfacemat.2da.
+
+    Falls back to a hardcoded list if the 2DA table is not loaded.
+    Used by WOK parser and MDL AABB mesh inspector.
+    """
+    loader = get_2da_loader()
+    if not loader.is_loaded("surfacemat"):
+        load_fallback_tables()
+    table = loader.get_table("surfacemat")
+    if table:
+        return table.get_label(material_id)
+    # Hardcoded fallback
+    _NAMES = [
+        "Dirt", "Obscuring", "Grass", "Stone", "Wood", "Water",
+        "NonWalk", "Transparent", "Carpet", "Metal", "Puddles",
+        "Swamp", "Mud", "Leaves", "Lava", "BottomlessPit",
+        "DeepWater", "Door", "Snow", "Sand",
+    ]
+    if 0 <= material_id < len(_NAMES):
+        return _NAMES[material_id]
+    return f"Material_{material_id}"
+
+
+def is_walkable_from_2da(material_id: int) -> bool:
+    """
+    Return True if the surface material is walkable, using surfacemat.2da.
+    Falls back to the hardcoded table if 2DA is unavailable.
+    """
+    loader = get_2da_loader()
+    if not loader.is_loaded("surfacemat"):
+        load_fallback_tables()
+    table = loader.get_table("surfacemat")
+    if table:
+        return table.get_int(material_id, "Walk", default=0) != 0
+    # Hardcoded fallback (same as wok_parser._SURF_WALKABLE)
+    _WALKABLE = [
+        True, True, True, True, True, True, False, False,
+        True, True, True, True, True, True, False, False,
+        False, True, True, True,
+    ]
+    if 0 <= material_id < len(_WALKABLE):
+        return _WALKABLE[material_id]
+    return False

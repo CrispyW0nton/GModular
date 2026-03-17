@@ -323,7 +323,11 @@ class ERFReader:
         for i in range(entry_count):
             # Key entry: ResRef(16) + ResID(4) + ResType(2) + unused(2)
             koff = key_off + i * 24
-            raw_resref = data[koff:koff + 16].rstrip(b"\x00").decode("ascii", errors="replace")
+            # Strip both null bytes AND spaces — some KotOR tools pad with spaces
+            raw_resref = (data[koff:koff + 16]
+                          .rstrip(b"\x00")
+                          .decode("ascii", errors="replace")
+                          .strip())
             res_id     = struct.unpack_from("<I", data, koff + 16)[0]
             res_type   = struct.unpack_from("<H", data, koff + 20)[0]
 
@@ -353,7 +357,11 @@ class ERFReader:
         count = 0
         for i in range(entry_count):
             pos = res_off + i * 32
-            raw_resref = data[pos:pos + 16].rstrip(b"\x00").decode("ascii", errors="replace")
+            # Strip both null bytes AND spaces
+            raw_resref = (data[pos:pos + 16]
+                          .rstrip(b"\x00")
+                          .decode("ascii", errors="replace")
+                          .strip())
             res_type   = struct.unpack_from("<I", data, pos + 16)[0]
             res_id     = struct.unpack_from("<I", data, pos + 20)[0]
             r_offset   = struct.unpack_from("<I", data, pos + 24)[0]
