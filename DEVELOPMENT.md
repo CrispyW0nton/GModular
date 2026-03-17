@@ -1,12 +1,10 @@
 # GModular — Development Log
 
-This file tracks major development iterations. For the full technical spec and IPC contract see [GHOSTWORKS_BLUEPRINT.md](GHOSTWORKS_BLUEPRINT.md).
+This file tracks major development iterations. For the full technical spec and IPC contract see [PIPELINE_SPEC.md](PIPELINE_SPEC.md).
 
 ---
 
 ## Iteration 20+ (2026-03-17) — MDL Deep-Dive + Kotor.NET Analysis
-
-**Branch**: `genspark_ai_developer`
 
 ### Research
 - Reviewed NickHugi/Kotor.NET rework branch C# source for MDL/GFF/TPC/2DA/ERF/RIM/LYT parsers

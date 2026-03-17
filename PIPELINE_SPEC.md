@@ -1,10 +1,9 @@
-# GHOSTWORKS PIPELINE — AGENT BLUEPRINT
-## Shared Technical Contract for GhostRigger, GhostScripter, and GModular
+# GHOSTWORKS PIPELINE — TECHNICAL SPECIFICATION
+## Shared Design Contract for GhostRigger, GhostScripter, and GModular
 
 **Version:** 1.0  
 **Date:** 2026-03-07  
-**Author:** GModular AI Developer  
-**Status:** ACTIVE — send this document to all three agents before any work begins
+**Status:** ACTIVE
 
 ---
 
@@ -684,7 +683,7 @@ GModular is the level assembly and ship tool. It is the furthest along
 of the three programs. Here is its current implementation state and the
 features still needed to complete the pipeline.
 
-### 7.1 Already Implemented (as of v1.9 / commit 1a26da6)
+### 7.1 Already Implemented (as of v1.9)
 
 ```
 gmodular/
@@ -803,17 +802,16 @@ Standalone panel (Module > Validate):
 
 This is the recommended build order for maximum pipeline value fastest.
 
-### Phase 1 — Core Programs Running (All Three Agents, Parallel)
+### Phase 1 — Core Programs Running
 
-Each agent builds their program to the point it starts, shows its layout,
-and has a working IPC server. Test: launch all three, ping each from the
-others.
+Each program should start, show its layout, and have a working IPC server.
+Test: launch all three, ping each from the others.
 
-- **GModular agent:** Already at this stage. Next: implement P7 (script IPC)
+- **GModular:** Already at this stage. Next: implement P7 (script IPC)
   and P9 (blueprint IPC) so the buttons exist and call the other programs.
-- **GRigger agent:** Build main window, blueprint editors (UTC/UTP/UTD),
+- **GhostRigger:** Build main window, blueprint editors (UTC/UTP/UTD),
   and IPC server on port 7001. Start with UTC editor (most used).
-- **GScripter agent:** Build main window, script code editor with syntax
+- **GhostScripter:** Build main window, script code editor with syntax
   highlighting and function browser, IPC server on port 7002. Start with
   the compile pipeline.
 
@@ -929,9 +927,9 @@ Every program must have a pytest test suite. Minimum coverage:
 - DLG round-trip: create DLG GFF with 2 entries and 1 reply, write, read back
 - 2DA parser: read a sample 2DA, assert row/column values
 
-### GModular Specific (existing + additions)
+### GModular Specific
 
-- All existing 327 tests continue to pass
+- All existing tests continue to pass
 - New tests for each new feature as it is added
 
 ### Test Run Requirement
@@ -943,7 +941,7 @@ All tests must pass with exit code 0 before any commit.
 
 ## 11. REPOSITORY STRUCTURE
 
-Each program lives in its own repository. The recommended GitHub organization:
+Each program lives in its own repository:
 
 ```
 github.com/CrispyW0nton/GhostRigger      -- GhostRigger repo
@@ -956,11 +954,10 @@ Optional shared library (future):
 github.com/CrispyW0nton/ghostworks-formats  -- shared format code
 ```
 
-### Branch Strategy (same for all three)
+### Branch Strategy
 
 - `main` — always stable, always builds, always passes all tests
-- `genspark_ai_developer` — active development branch
-- Pull requests from `genspark_ai_developer` → `main` after each iteration
+- Feature branches → pull requests → `main` after each iteration
 
 ### Commit Convention
 
@@ -1017,7 +1014,6 @@ test(compiler): add round-trip .nss to .ncs test
 ## 13. CONTACT AND COORDINATION
 
 - **Repository (GModular):** https://github.com/CrispyW0nton/GModular
-- **Active branch:** `genspark_ai_developer`
 - **IPC bus:** localhost ports 7001 (GRigger), 7002 (GScripter), 7003 (GModular)
 - **Format reference:** gmodular/formats/ in the GModular repository
 - **Test command:** `python -m pytest tests/ --tb=short -q`
@@ -1032,7 +1028,7 @@ first, then cross-reference with:
 
 ---
 
-*End of GHOSTWORKS_BLUEPRINT.md*
+*End of PIPELINE_SPEC.md*
 *This document is the single source of truth for all three programs.*
 *Any change to the IPC contract, file format handling, or port assignments*
 *must be reflected here before implementation begins.*

@@ -329,7 +329,7 @@ This project is open to the KotOR modding community! Contributions welcome:
 4. Run `python -m pytest tests/` — all tests must pass
 5. Open a pull request against `main`
 
-See [GHOSTWORKS_BLUEPRINT.md](GHOSTWORKS_BLUEPRINT.md) for the full technical contract covering IPC ports, format handling, and the three-tool pipeline design.
+See [PIPELINE_SPEC.md](PIPELINE_SPEC.md) for the full technical contract covering IPC ports, format handling, and the three-tool pipeline design.
 
 **Useful references for KotOR format work:**
 - [PyKotor](https://github.com/OldRepublicDevs/PyKotor) — most complete Python KotOR library
