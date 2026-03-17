@@ -173,10 +173,27 @@ class LYTData:
 
     @classmethod
     def from_file(cls, path: str) -> 'LYTData':
-        """Read a .lyt file from disk."""
-        from pathlib import Path
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-        return cls.from_text(text)
+        """Read a .lyt file from disk, using LYTParser for robust parsing."""
+        try:
+            # Try the new LYTParser first (more robust)
+            from ..formats.lyt_vis import LYTParser as _LYTParser
+            layout = _LYTParser.from_file(path)
+            lyt = cls()
+            for rp in layout.rooms:
+                room = RoomInstance(
+                    mdl_name=rp.resref,
+                    grid_x=0, grid_y=0,
+                    world_x=rp.x,
+                    world_y=rp.y,
+                    world_z=rp.z,
+                )
+                lyt.rooms.append(room)
+            return lyt
+        except Exception:
+            # Fallback to original text parser
+            from pathlib import Path
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            return cls.from_text(text)
 
 
 def _parse_vis(text: str) -> Dict[str, List[str]]:

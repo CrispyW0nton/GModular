@@ -34,6 +34,7 @@ from PyQt5.QtGui import QIcon, QFont, QKeySequence
 from .viewport        import ViewportWidget
 from .inspector       import InspectorPanel
 from .asset_palette   import AssetPalette, AssetItem
+from .content_browser import ContentBrowser, AssetItem as CBAssetItem
 from .scene_outline   import SceneOutlinePanel
 from .walkmesh_editor import WalkmeshPanel
 from ..core.module_state import (
@@ -293,52 +294,70 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Outer splitter: left palette | center | right inspector
+        # ── Outer horizontal splitter: left | center | right ─────────────────
         self._outer_splitter = QSplitter(Qt.Horizontal)
-        self._outer_splitter.setHandleWidth(3)
-
-        # ── LEFT: Tabbed panel (Asset Palette + Scene Outline) ─────────────
-        left_tabs = QTabWidget()
-        left_tabs.setTabPosition(QTabWidget.West)
-        left_tabs.setMinimumWidth(210)
-        left_tabs.setMaximumWidth(290)
-        left_tabs.setFont(QFont("Segoe UI", 8))
-        left_tabs.setStyleSheet(
-            "QTabWidget::pane { border:none; background:#1e1e1e; }"
-            "QTabBar::tab { background:#2d2d30; color:#969696; padding:6px 4px;"
-            " border:1px solid #3c3c3c; margin:1px; font-size:8pt; }"
-            "QTabBar::tab:selected { background:#1e1e1e; color:#4ec9b0; }"
+        self._outer_splitter.setHandleWidth(2)
+        self._outer_splitter.setStyleSheet(
+            "QSplitter::handle { background:#21262d; }"
+            "QSplitter::handle:hover { background:#388bfd; }"
         )
 
-        self._palette = AssetPalette()
-        self._palette.place_asset.connect(self._on_place_asset)
-        left_tabs.addTab(self._palette, "Assets")
+        # ═══════════════════════════════════════════════════════════════════
+        # LEFT PANEL — vertically split:
+        #   Top:    World Outliner (scene tree)
+        #   Bottom: Content Browser (UE-style asset browser)
+        # ═══════════════════════════════════════════════════════════════════
+        left_vsplitter = QSplitter(Qt.Vertical)
+        left_vsplitter.setHandleWidth(2)
+        left_vsplitter.setStyleSheet(
+            "QSplitter::handle { background:#21262d; }"
+        )
+        left_vsplitter.setMinimumWidth(240)
+        left_vsplitter.setMaximumWidth(340)
 
+        # World Outliner (Scene Outline)
         self._scene_outline = SceneOutlinePanel()
         self._scene_outline.object_selected.connect(self._on_object_selected_from_outline)
         self._scene_outline.request_delete.connect(self._on_outline_delete)
-        left_tabs.addTab(self._scene_outline, "Scene")
+        self._scene_outline.setMinimumHeight(160)
+        left_vsplitter.addWidget(self._scene_outline)
 
-        self._outer_splitter.addWidget(left_tabs)
+        # Content Browser
+        self._content_browser = ContentBrowser()
+        self._content_browser.place_asset.connect(self._on_place_cb_asset)
+        self._content_browser.setMinimumHeight(200)
+        left_vsplitter.addWidget(self._content_browser)
 
-        # ── CENTER: Stacked widget (Welcome ↔ Viewport) + log ────────────────
+        left_vsplitter.setSizes([350, 400])
+        left_vsplitter.setStretchFactor(0, 1)
+        left_vsplitter.setStretchFactor(1, 1)
+        self._outer_splitter.addWidget(left_vsplitter)
+
+        # Legacy palette (kept for compatibility, hidden)
+        self._palette = AssetPalette()
+        self._palette.place_asset.connect(self._on_place_asset)
+        self._palette.hide()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # CENTER — viewport header + stacked (Welcome / 3D Viewport) + bottom tabs
+        # ═══════════════════════════════════════════════════════════════════
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(0)
 
-        # 3D Viewport — create FIRST (before viewport header uses it)
+        # 3D Viewport — create FIRST (viewport header references it)
         self._viewport = ViewportWidget()
         self._viewport.object_selected.connect(self._on_object_selected)
         self._viewport.object_placed.connect(self._on_object_placed)
         self._viewport.camera_moved.connect(self._on_camera_moved)
         self._viewport.play_mode_changed.connect(self._on_play_mode_changed)
 
-        # Viewport header bar (mode indicator + quick buttons)
+        # Viewport header toolbar
         self._viewport_header = self._build_viewport_header()
         center_layout.addWidget(self._viewport_header)
 
-        # Stacked: page 0 = Welcome, page 1 = Viewport
+        # Stacked: 0=Welcome, 1=Viewport
         self._center_stack = QStackedWidget()
         self._welcome_panel = WelcomePanel()
         self._welcome_panel.connect_actions(
@@ -346,43 +365,46 @@ class MainWindow(QMainWindow):
             open_mod_cb=self.open_mod)
         self._center_stack.addWidget(self._welcome_panel)   # index 0
         self._center_stack.addWidget(self._viewport)         # index 1
-        self._center_stack.setCurrentIndex(0)               # show welcome first
+        self._center_stack.setCurrentIndex(0)
 
-        # Bottom panel: tabbed (log + walkmesh + area props)
+        # Bottom tabs (Room Grid / Output / Walkmesh / Area / IFO)
         self._bottom_tabs = self._build_bottom_tabs()
 
-        # Vertical splitter between viewport area and bottom tabs —
-        # lets the user drag the divider to resize the Room Grid panel.
         self._center_vsplitter = QSplitter(Qt.Vertical)
-        self._center_vsplitter.setHandleWidth(4)
+        self._center_vsplitter.setHandleWidth(3)
         self._center_vsplitter.setChildrenCollapsible(False)
-        self._center_vsplitter.addWidget(self._center_stack)   # top: 3D view
-        self._center_vsplitter.addWidget(self._bottom_tabs)    # bottom: tabs
-        self._center_vsplitter.setSizes([600, 200])            # sensible default
-        self._center_vsplitter.setStretchFactor(0, 3)          # viewport gets more space
+        self._center_vsplitter.setStyleSheet(
+            "QSplitter::handle { background:#21262d; }"
+            "QSplitter::handle:hover { background:#388bfd; }"
+        )
+        self._center_vsplitter.addWidget(self._center_stack)
+        self._center_vsplitter.addWidget(self._bottom_tabs)
+        self._center_vsplitter.setSizes([620, 180])
+        self._center_vsplitter.setStretchFactor(0, 4)
         self._center_vsplitter.setStretchFactor(1, 1)
         center_layout.addWidget(self._center_vsplitter, stretch=1)
 
         self._outer_splitter.addWidget(center_widget)
 
-        # ── RIGHT: Inspector ──────────────────────────────────────────────────
+        # ═══════════════════════════════════════════════════════════════════
+        # RIGHT PANEL — Details / Inspector
+        # ═══════════════════════════════════════════════════════════════════
         self._inspector = InspectorPanel()
-        self._inspector.setMinimumWidth(220)
-        self._inspector.setMaximumWidth(340)
+        self._inspector.setMinimumWidth(230)
+        self._inspector.setMaximumWidth(360)
         self._inspector.property_changed.connect(self._on_property_changed)
-        # P4: patrol path signals
         self._inspector.request_patrol_click.connect(self._on_patrol_click_requested)
         self._inspector.patrol_path_changed.connect(self._on_patrol_path_changed)
-        # P9: blueprint IPC signal
         self._inspector.open_in_rigger.connect(self._on_open_in_rigger)
-        # Give inspector access to state for patrol editor
         self._inspector.set_state(self._state)
         self._outer_splitter.addWidget(self._inspector)
-        # Track patrol placement mode
+
         self._patrol_placement_creature = None
 
-        self._outer_splitter.setSizes([240, 900, 280])
+        self._outer_splitter.setSizes([280, 900, 280])
+        self._outer_splitter.setStretchFactor(0, 0)
         self._outer_splitter.setStretchFactor(1, 1)
+        self._outer_splitter.setStretchFactor(2, 0)
 
         root.addWidget(self._outer_splitter)
 
@@ -390,115 +412,143 @@ class MainWindow(QMainWindow):
         self._state.on_change(self._on_module_changed)
 
     def _build_viewport_header(self) -> QWidget:
+        """Build the UE-style viewport toolbar / header bar."""
         bar = QFrame()
-        bar.setFixedHeight(30)
-        bar.setStyleSheet("background:#2d2d30; border-bottom:1px solid #3c3c3c;")
+        bar.setFixedHeight(34)
+        bar.setStyleSheet(
+            "QFrame { background:#1c1f27; border-bottom:1px solid #21262d; }"
+        )
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(8, 2, 8, 2)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(4)
 
-        self._mode_label = QLabel("EDIT MODE")
-        self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
+        # ── Mode badge ──────────────────────────────────────────────────────
+        self._mode_label = QLabel("EDIT")
+        self._mode_label.setFixedHeight(22)
+        self._mode_label.setStyleSheet(
+            "QLabel { color:#4ec9b0; font-weight:bold; font-size:8pt;"
+            " background:#1a3a2a; border:1px solid #2a5a3a;"
+            " border-radius:3px; padding:0 8px; }"
+        )
         layout.addWidget(self._mode_label)
 
-        layout.addSpacing(8)
-
-        # ── App Mode Switcher ────────────────────────────────────────────────
+        # ── Mode switcher ────────────────────────────────────────────────────
         self._mode_combo = QComboBox()
-        self._mode_combo.addItem("⬛  Level Builder", "level_builder")
+        self._mode_combo.addItem("⬜  Level Builder", "level_builder")
         self._mode_combo.addItem("✏  Module Editor", "module_editor")
-        self._mode_combo.setFixedHeight(22)
-        self._mode_combo.setFixedWidth(160)
+        self._mode_combo.setFixedHeight(26)
+        self._mode_combo.setFixedWidth(170)
         self._mode_combo.setToolTip(
-            "Level Builder: assemble rooms and build new maps\n"
-            "Module Editor: full KotOR-style editing with Maya-like tools")
+            "Level Builder — assemble rooms + build new areas\n"
+            "Module Editor — place & edit GIT objects, scripts, WOK"
+        )
         self._mode_combo.setStyleSheet(
-            "QComboBox{background:#1e3a5f;color:#4ec9b0;border:1px solid #2a5a8f;"
-            "border-radius:3px;padding:0 6px;font-size:8pt;font-weight:bold;}"
-            "QComboBox:hover{background:#1a4a7a;border-color:#4ec9b0;}"
-            "QComboBox::drop-down{border:none;}"
+            "QComboBox { background:#0d1117; color:#c9d1d9;"
+            " border:1px solid #30363d; border-radius:4px;"
+            " padding:0 8px; font-size:8pt; font-weight:bold; }"
+            "QComboBox:hover { background:#161b22; border-color:#58a6ff; }"
+            "QComboBox::drop-down { border:none; width:16px; }"
+            "QComboBox QAbstractItemView { background:#161b22; color:#c9d1d9;"
+            " border:1px solid #30363d; selection-background-color:#1f6feb; }"
         )
         self._mode_combo.currentIndexChanged.connect(self._on_app_mode_changed)
         layout.addWidget(self._mode_combo)
 
-        layout.addSpacing(8)
+        layout.addSpacing(4)
 
+        # ── Module name ──────────────────────────────────────────────────────
         self._module_label = QLabel("No module loaded")
-        self._module_label.setStyleSheet("color:#969696; font-size:8pt;")
+        self._module_label.setStyleSheet(
+            "color:#484f58; font-size:8pt; font-family:Segoe UI;"
+        )
         layout.addWidget(self._module_label)
 
         layout.addStretch()
 
-        # Quick mode buttons
-        def quick_btn(text, tooltip="", accent=False):
+        # ── Viewport quick-action buttons ────────────────────────────────────
+        def _vp_btn(text: str, tip: str = "", checkable: bool = False,
+                    checked: bool = False, color: str = "") -> QPushButton:
             b = QPushButton(text)
-            b.setFixedHeight(22)
-            b.setToolTip(tooltip)
-            if accent:
+            b.setFixedHeight(26)
+            b.setToolTip(tip)
+            b.setCheckable(checkable)
+            if checkable:
+                b.setChecked(checked)
+            if color:
                 b.setStyleSheet(
-                    "QPushButton{background:#0078d4;color:white;border:1px solid #1a8fe0;"
-                    "border-radius:3px;padding:0 8px;font-size:8pt;font-weight:bold;}"
-                    "QPushButton:hover{background:#1a8fe0;}"
+                    f"QPushButton {{ background:{color}; color:white;"
+                    f" border:none; border-radius:4px; padding:0 10px;"
+                    f" font-size:8pt; font-weight:bold; }}"
+                    f"QPushButton:hover {{ filter:brightness(1.2); }}"
                 )
             else:
                 b.setStyleSheet(
-                    "QPushButton{background:#3c3c3c;color:#cccccc;border:1px solid #555;"
-                    "border-radius:3px;padding:0 6px;font-size:8pt;}"
-                    "QPushButton:hover{background:#4a4a4a;color:white;}"
+                    "QPushButton { background:#21262d; color:#8b949e;"
+                    " border:1px solid #30363d; border-radius:4px;"
+                    " padding:0 8px; font-size:8pt; }"
+                    "QPushButton:hover { background:#30363d; color:#c9d1d9;"
+                    " border-color:#8b949e; }"
+                    "QPushButton:checked { background:#1f3a5f; color:#58a6ff;"
+                    " border-color:#388bfd; }"
                 )
             return b
 
-        frame_btn = quick_btn("⊡ Frame All", "Fit camera to all objects (F)")
+        # Frame all
+        frame_btn = _vp_btn("⊡ Frame All", "Fit camera to all objects (F)")
         frame_btn.clicked.connect(self._viewport.frame_all)
         layout.addWidget(frame_btn)
 
-        wm_btn = quick_btn("⊞ Walkmesh", "Toggle walkmesh overlay (W)")
-        wm_btn.setCheckable(True)
-        wm_btn.setChecked(True)
-        wm_btn.clicked.connect(lambda checked: self._viewport.toggle_walkmesh(checked))
+        # Walkmesh toggle
+        wm_btn = _vp_btn("◼ Navmesh", "Toggle walkmesh overlay (W)",
+                          checkable=True, checked=True)
+        wm_btn.clicked.connect(lambda c: self._viewport.toggle_walkmesh(c))
         self._walkmesh_btn = wm_btn
         layout.addWidget(wm_btn)
 
-        validate_btn = quick_btn("✓ Validate", "Check for errors")
-        validate_btn.clicked.connect(self._validate_module)
-        layout.addWidget(validate_btn)
+        # Validate
+        val_btn = _vp_btn("✓ Validate", "Run module validation")
+        val_btn.clicked.connect(self._validate_module)
+        layout.addWidget(val_btn)
 
-        save_btn = quick_btn("💾 Save GIT", "Save .GIT to disk (Ctrl+S)", accent=True)
+        layout.addSpacing(4)
+
+        # Save button (accent blue)
+        save_btn = _vp_btn("💾 Save", "Save .GIT (Ctrl+S)", color="#1f6feb")
         save_btn.clicked.connect(self._save_module)
         layout.addWidget(save_btn)
 
-        layout.addStretch()
+        layout.addSpacing(8)
 
-        # ── Play / Stop button ────────────────────────────────────────────────
-        self._play_btn = quick_btn("▶  Play", "Start walk preview mode", accent=True)
-        self._play_btn.setStyleSheet(
-            "QPushButton{background:#1a8a3a;color:white;border:1px solid #2aaa4a;"
-            "border-radius:3px;padding:0 10px;font-size:8pt;font-weight:bold;}"
-            "QPushButton:hover{background:#2aaa4a;}"
-            "QPushButton:pressed{background:#0f6028;}"
-        )
+        # ── Play/Stop button (green/red) ─────────────────────────────────────
+        self._play_btn = _vp_btn("▶  Play", "Start walk preview (P)",
+                                  color="#238636")
         self._play_btn.clicked.connect(self._toggle_play_mode)
         layout.addWidget(self._play_btn)
 
-        # Tutorial help button
-        tutorial_btn = quick_btn("?  Help", "Open Interactive Tutorial (F1)")
-        tutorial_btn.setStyleSheet(
-            "QPushButton{background:#2a2a4a;color:#88aaee;border:1px solid #3a3a6a;"
-            "border-radius:3px;padding:0 8px;font-size:8pt;font-weight:bold;}"
-            "QPushButton:hover{background:#3a3a6a;color:#aaccff;border-color:#4ec9b0;}"
-        )
-        tutorial_btn.clicked.connect(self._open_tutorial)
-        layout.addWidget(tutorial_btn)
+        layout.addSpacing(4)
 
-        # IPC status dots
+        # Help button
+        help_btn = _vp_btn("?", "Open Tutorial (F1)")
+        help_btn.setFixedWidth(28)
+        help_btn.setStyleSheet(
+            "QPushButton { background:#21262d; color:#8b949e;"
+            " border:1px solid #30363d; border-radius:4px; font-size:9pt; }"
+            "QPushButton:hover { background:#30363d; color:#58a6ff; }"
+        )
+        help_btn.clicked.connect(self._open_tutorial)
+        layout.addWidget(help_btn)
+
+        layout.addSpacing(8)
+
+        # ── IPC status dots ──────────────────────────────────────────────────
         self._gs_dot = QLabel("●")
-        self._gs_dot.setToolTip("GhostScripter IPC")
-        self._gs_dot.setStyleSheet("color:#555555; font-size:8pt; margin-left:8px;")
+        self._gs_dot.setToolTip("GhostScripter IPC (port 7002)")
+        self._gs_dot.setStyleSheet("color:#333a45; font-size:8pt; margin-left:4px;")
         layout.addWidget(self._gs_dot)
 
         self._gr_dot = QLabel("●")
-        self._gr_dot.setToolTip("GhostRigger IPC")
-        self._gr_dot.setStyleSheet("color:#555555; font-size:8pt;")
+        self._gr_dot.setToolTip("GhostRigger IPC (port 7001)")
+        self._gr_dot.setStyleSheet("color:#333a45; font-size:8pt; margin-right:4px;")
         layout.addWidget(self._gr_dot)
 
         return bar
@@ -509,11 +559,37 @@ class MainWindow(QMainWindow):
         tabs.setMinimumHeight(120)
         tabs.setFont(QFont("Segoe UI", 8))
         tabs.setStyleSheet(
-            "QTabWidget::pane { border-top:1px solid #3c3c3c; background:#1e1e1e; }"
-            "QTabBar::tab { background:#252526; color:#969696; padding:3px 10px;"
-            " border:1px solid #3c3c3c; font-size:8pt; }"
-            "QTabBar::tab:selected { background:#1e1e1e; color:#d4d4d4; border-bottom:none; }"
-            "QTabBar::tab:first { color:#4ec9b0; font-weight:bold; }"  # highlight Room Grid
+            "QTabWidget::pane {"
+            "  border-top: 2px solid #1f6feb;"
+            "  background: #0d1117;"
+            "}"
+            "QTabWidget::tab-bar { left: 0px; }"
+            "QTabBar::tab {"
+            "  background: #161b22;"
+            "  color: #8b949e;"
+            "  padding: 5px 14px;"
+            "  border: 1px solid #21262d;"
+            "  border-bottom: none;"
+            "  font-size: 8pt;"
+            "  margin-right: 1px;"
+            "  min-width: 80px;"
+            "}"
+            "QTabBar::tab:selected {"
+            "  background: #0d1117;"
+            "  color: #e6edf3;"
+            "  border-top: 2px solid #1f6feb;"
+            "  border-left: 1px solid #30363d;"
+            "  border-right: 1px solid #30363d;"
+            "  font-weight: bold;"
+            "}"
+            "QTabBar::tab:hover:!selected {"
+            "  background: #21262d;"
+            "  color: #c9d1d9;"
+            "}"
+            "QTabBar::tab:first {"
+            "  color: #4ec9b0;"
+            "  font-weight: bold;"
+            "}"
         )
 
         # ── Room Assembly Grid tab ─────────────────────────────────────────
@@ -571,10 +647,27 @@ class MainWindow(QMainWindow):
 
         self._output_log = QPlainTextEdit()
         self._output_log.setReadOnly(True)
-        self._output_log.setMaximumBlockCount(500)
+        self._output_log.setMaximumBlockCount(800)
         self._output_log.setFont(QFont("Consolas", 8))
         self._output_log.setStyleSheet(
-            "QPlainTextEdit { background:#1e1e1e; color:#d4d4d4; border:none; }"
+            "QPlainTextEdit {"
+            "  background: #0d1117;"
+            "  color: #e6edf3;"
+            "  border: none;"
+            "  selection-background-color: #1f3a5f;"
+            "}"
+            "QScrollBar:vertical {"
+            "  background: #161b22;"
+            "  width: 10px;"
+            "  border: none;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background: #30363d;"
+            "  border-radius: 4px;"
+            "  min-height: 20px;"
+            "}"
+            "QScrollBar::handle:vertical:hover { background: #484f58; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
         )
         log_layout.addWidget(self._output_log)
         tabs.addTab(log_widget, "Output Log")
@@ -824,149 +917,259 @@ class MainWindow(QMainWindow):
     # ── Toolbar ───────────────────────────────────────────────────────────────
 
     def _setup_toolbar(self):
+        """UE5-style main toolbar with grouped actions."""
         tb = QToolBar("Main Toolbar")
         tb.setMovable(False)
-        tb.setIconSize(QSize(16, 16))
         tb.setObjectName("mainToolbar")
-        tb.setStyleSheet("QToolBar { background:#2d2d30; border-bottom:1px solid #3c3c3c; "
-                         "spacing:3px; padding:2px; }")
+        tb.setFixedHeight(38)
+        tb.setStyleSheet(
+            "QToolBar { background:#161b22; border-bottom:1px solid #21262d;"
+            " spacing:2px; padding:3px 8px; }"
+            "QToolBar::separator { background:#30363d; width:1px; margin:4px 4px; }"
+        )
         self.addToolBar(tb)
 
-        def btn(label, slot, tooltip="", accent=False):
+        _btn_base = (
+            "QPushButton { background:#21262d; color:#c9d1d9;"
+            " border:1px solid #30363d; border-radius:4px;"
+            " padding:0 10px; font-size:8pt; height:26px; }"
+            "QPushButton:hover { background:#30363d; border-color:#484f58; }"
+            "QPushButton:pressed { background:#1f3a5f; }"
+        )
+        _btn_accent = (
+            "QPushButton { background:#1f6feb; color:white;"
+            " border:none; border-radius:4px;"
+            " padding:0 12px; font-size:8pt; font-weight:bold; height:26px; }"
+            "QPushButton:hover { background:#388bfd; }"
+            "QPushButton:pressed { background:#0d419d; }"
+        )
+        _btn_green = (
+            "QPushButton { background:#238636; color:white;"
+            " border:none; border-radius:4px;"
+            " padding:0 10px; font-size:8pt; font-weight:bold; height:26px; }"
+            "QPushButton:hover { background:#2ea043; }"
+        )
+
+        def _btn(label, slot, tip="", style=_btn_base):
             b = QPushButton(label)
+            b.setFixedHeight(28)
             b.clicked.connect(slot)
-            b.setToolTip(tooltip)
-            b.setFixedHeight(26)
-            if accent:
-                b.setStyleSheet(
-                    "QPushButton{background:#0078d4;color:white;border:1px solid #1a8fe0;"
-                    "border-radius:3px;padding:0 10px;font-weight:bold;}"
-                    "QPushButton:hover{background:#1a8fe0;}"
-                )
-            else:
-                b.setStyleSheet(
-                    "QPushButton{background:#3c3c3c;color:#cccccc;border:1px solid #555;"
-                    "border-radius:3px;padding:0 8px;}"
-                    "QPushButton:hover{background:#4a4a4a;color:white;}"
-                )
+            b.setToolTip(tip)
+            b.setStyleSheet(style)
             return b
 
-        tb.addWidget(btn("New Module",  self.new_module,     "Create new module"))
-        tb.addWidget(btn("Open .MOD",   self.open_mod,       "Open .mod/.erf module archive (Ctrl+O)", accent=True))
-        tb.addWidget(btn("Open GIT",    self.open_git,       "Open loose .GIT file (Ctrl+Shift+O)"))
-        tb.addWidget(btn("Save",        self._save_module,   "Save .GIT"))
+        # File group
+        tb.addWidget(_btn("New Module", self.new_module, "Create a new module (Ctrl+Shift+N)"))
+        tb.addWidget(_btn("⬇ Open .MOD", self.open_mod, "Import .mod/.erf/.rim archive (Ctrl+O)", _btn_accent))
+        tb.addWidget(_btn("Open GIT", self.open_git, "Open .git file (Ctrl+Shift+O)"))
+        tb.addWidget(_btn("💾 Save", self._save_module, "Save .GIT (Ctrl+S)", _btn_green))
         tb.addSeparator()
-        tb.addWidget(btn("Undo",        self._undo,          "Undo last action (Ctrl+Z)"))
-        tb.addWidget(btn("Redo",        self._redo,          "Redo (Ctrl+Y)"))
+
+        # Edit group
+        tb.addWidget(_btn("↩ Undo", self._undo, "Undo (Ctrl+Z)"))
+        tb.addWidget(_btn("↪ Redo", self._redo, "Redo (Ctrl+Y)"))
         tb.addSeparator()
-        tb.addWidget(btn("⊡ Frame All",  self._viewport.frame_all, "Fit camera to scene (F)"))
-        tb.addWidget(btn("✓ Validate",  self._validate_module, "Check for errors"))
+
+        # View group
+        tb.addWidget(_btn("⊡ Frame", self._viewport.frame_all, "Frame all (F)"))
+        tb.addWidget(_btn("✓ Validate", self._validate_module, "Validate module"))
         tb.addSeparator()
-        tb.addWidget(btn("Set Game Dir", self._set_game_dir, "Set KotOR game directory"))
-        tb.addWidget(btn("Load Assets",  self._load_game_assets, "Load assets from game"))
+
+        # Tools group
+        tb.addWidget(_btn("🎮 Game Dir", self._set_game_dir, "Set KotOR install directory"))
+        tb.addWidget(_btn("Load Assets", self._load_game_assets, "Load assets from game directory"))
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
     def _setup_statusbar(self):
         sb = self.statusBar()
-        sb.setStyleSheet("QStatusBar { background:#007acc; color:white; font-size:8pt; }")
+        sb.setStyleSheet(
+            "QStatusBar { background:#238636; color:white; font-size:8pt; }"
+            "QStatusBar QLabel { color:white; padding:0 6px; }"
+        )
 
         self._status_main = QLabel(
-            "No module open  —  File › New Module…  or  open the Room Grid tab below")
-        self._status_main.setStyleSheet("color:white; padding: 0 8px;")
+            "No module open  —  File › New Module  or  Open .MOD  to start")
+        self._status_main.setStyleSheet("color:white; padding:0 8px;")
         sb.addWidget(self._status_main)
 
         self._status_objects = QLabel("0 objects")
         self._status_objects.setStyleSheet(
-            "color:white; padding: 0 8px; border-left:1px solid rgba(255,255,255,0.3);")
+            "color:white; padding:0 8px; border-left:1px solid rgba(255,255,255,0.3);")
         sb.addPermanentWidget(self._status_objects)
 
         self._status_cam = QLabel("Camera: 0,0,0")
         self._status_cam.setStyleSheet(
-            "color:white; padding: 0 8px; border-left:1px solid rgba(255,255,255,0.3);")
+            "color:rgba(255,255,255,0.7); padding:0 8px;"
+            " border-left:1px solid rgba(255,255,255,0.3);")
         sb.addPermanentWidget(self._status_cam)
 
         ver_lbl = QLabel(f"GModular {APP_VERSION}")
         ver_lbl.setStyleSheet(
-            "color:white; padding: 0 8px; border-left:1px solid rgba(255,255,255,0.3);")
+            "color:rgba(255,255,255,0.8); padding:0 8px;"
+            " border-left:1px solid rgba(255,255,255,0.3);")
         sb.addPermanentWidget(ver_lbl)
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 
     def _apply_theme(self):
-        """Apply VS Code-inspired dark theme."""
+        """Apply GitHub Dark / UE5-inspired dark theme throughout the window."""
         self.setStyleSheet("""
             QMainWindow, QWidget {
-                background: #1e1e1e;
-                color: #d4d4d4;
+                background: #0d1117;
+                color: #c9d1d9;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
             QMenuBar {
-                background: #3c3c3c;
-                color: #cccccc;
-                border-bottom: 1px solid #555;
+                background: #161b22;
+                color: #c9d1d9;
+                border-bottom: 1px solid #21262d;
+                font-size: 8pt;
             }
-            QMenuBar::item:selected { background: #094771; }
+            QMenuBar::item { padding: 4px 10px; }
+            QMenuBar::item:selected { background: #1f6feb22; color: #58a6ff; }
+            QMenuBar::item:pressed { background: #1f3a5f; }
             QMenu {
-                background: #252526;
-                color: #cccccc;
-                border: 1px solid #3c3c3c;
+                background: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 4px;
             }
-            QMenu::item:selected { background: #094771; }
+            QMenu::item { padding: 5px 20px 5px 10px; border-radius: 4px; }
+            QMenu::item:selected { background: #1f6feb; color: white; }
+            QMenu::separator { height: 1px; background: #21262d; margin: 3px 6px; }
             QToolBar {
-                background: #2d2d30;
-                border-bottom: 1px solid #3c3c3c;
-                spacing: 3px;
+                background: #161b22;
+                border-bottom: 1px solid #21262d;
+                spacing: 4px;
+                padding: 2px 6px;
             }
-            QSplitter::handle { background: #3c3c3c; }
+            QToolBar::separator { background: #21262d; width: 1px; margin: 2px; }
+            QSplitter::handle { background: #21262d; }
+            QSplitter::handle:hover { background: #388bfd; }
             QScrollBar:vertical {
-                background: #1e1e1e;
+                background: #0d1117;
                 width: 10px;
-            }
-            QScrollBar::handle:vertical {
-                background: #555;
                 border-radius: 4px;
             }
+            QScrollBar::handle:vertical {
+                background: #30363d;
+                border-radius: 4px;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover { background: #484f58; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: #0d1117;
+                height: 10px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #30363d;
+                border-radius: 4px;
+                min-width: 24px;
+            }
             QGroupBox {
-                color: #dcdcaa;
-                border: 1px solid #3c3c3c;
-                border-radius: 3px;
-                margin-top: 8px;
-                padding-top: 6px;
+                color: #8b949e;
+                border: 1px solid #21262d;
+                border-radius: 4px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-size: 8pt;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 8px;
+                left: 10px;
+                color: #58a6ff;
             }
-            QTabWidget::pane { border: 1px solid #3c3c3c; background: #1e1e1e; }
+            QTabWidget::pane {
+                border: 1px solid #21262d;
+                background: #0d1117;
+                border-radius: 0;
+            }
             QTabBar::tab {
-                background: #2d2d30;
-                color: #969696;
-                padding: 4px 10px;
-                border: 1px solid #3c3c3c;
+                background: #161b22;
+                color: #8b949e;
+                padding: 5px 14px;
+                border: 1px solid #21262d;
+                border-bottom: none;
+                font-size: 8pt;
             }
             QTabBar::tab:selected {
-                background: #1e1e1e;
-                color: #d4d4d4;
-                border-bottom: none;
+                background: #0d1117;
+                color: #c9d1d9;
+                border-bottom: 2px solid #388bfd;
             }
-            QLineEdit, QDoubleSpinBox, QComboBox {
-                background: #3c3c3c;
-                color: #d4d4d4;
-                border: 1px solid #555;
-                border-radius: 2px;
-                padding: 2px 4px;
+            QTabBar::tab:hover:!selected {
+                background: #1c2128;
+                color: #c9d1d9;
             }
-            QLineEdit:focus, QDoubleSpinBox:focus { border: 1px solid #007acc; }
-            QComboBox::drop-down { border: none; }
+            QLineEdit, QDoubleSpinBox {
+                background: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 8pt;
+            }
+            QLineEdit:focus, QDoubleSpinBox:focus {
+                border-color: #388bfd;
+                background: #1c2128;
+            }
+            QComboBox {
+                background: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                padding: 3px 6px;
+            }
+            QComboBox:hover { border-color: #484f58; }
+            QComboBox::drop-down { border: none; width: 16px; }
+            QComboBox QAbstractItemView {
+                background: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                selection-background-color: #1f6feb;
+            }
             QPushButton {
-                background: #3c3c3c;
-                color: #cccccc;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 3px 8px;
+                background: #21262d;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 8pt;
             }
-            QPushButton:hover { background: #4a4a4a; color: white; }
-            QPushButton:pressed { background: #0078d4; color: white; }
+            QPushButton:hover { background: #30363d; border-color: #484f58; }
+            QPushButton:pressed { background: #1f6feb; color: white; border-color: #388bfd; }
+            QPlainTextEdit, QTextEdit {
+                background: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #21262d;
+                font-family: 'Consolas', 'Courier New', monospace;
+            }
+            QStatusBar {
+                background: #238636;
+                color: white;
+                font-size: 8pt;
+            }
+            QStatusBar QLabel { color: white; }
+            QHeaderView::section {
+                background: #161b22;
+                color: #8b949e;
+                border: none;
+                border-bottom: 1px solid #21262d;
+                padding: 3px 6px;
+                font-size: 8pt;
+            }
+            QToolTip {
+                background: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 8pt;
+            }
         """)
 
     # ── Module Operations ─────────────────────────────────────────────────────
@@ -1050,11 +1253,10 @@ class MainWindow(QMainWindow):
 
     def _on_mod_loaded(self, summary: dict):
         """Called by ModImportDialog after a successful import."""
-        mod_path = summary.get("mod_path", "")
-        resref   = summary.get("resref", "")
-        lyt_text = summary.get("lyt_text")
-        vis_text = summary.get("vis_text")
-        errors   = summary.get("errors", [])
+        mod_path    = summary.get("mod_path", "")
+        resref      = summary.get("resref", "")
+        lyt_text    = summary.get("lyt_text")
+        errors      = summary.get("errors", [])
         extract_dir = summary.get("extract_dir", "")
 
         # ── Update UI ────────────────────────────────────────────────────
@@ -1073,27 +1275,39 @@ class MainWindow(QMainWindow):
         for err in errors:
             self.log(f"  ⚠ {err}")
 
-        # ── Load LYT into Room Assembly panel ────────────────────────────
+        # ── Parse LYT and build room list with MDL paths ─────────────────
+        lyt_rooms = []
         if lyt_text:
             try:
-                from .room_assembly import LYTData, RoomInstance
+                from .room_assembly import LYTData
                 lyt = LYTData.from_text(lyt_text)
                 if lyt.rooms:
-                    self.log(f"  LYT: {len(lyt.rooms)} rooms loaded")
+                    lyt_rooms = lyt.rooms
+                    self.log(f"  LYT: {len(lyt_rooms)} rooms")
                     # Push into room panel if available
                     try:
                         self._room_panel.load_lyt(lyt)
                     except AttributeError:
                         pass
-                    # Push into viewport room instances
-                    self._load_lyt_into_viewport(lyt.rooms)
+                    # Push into viewport (handles MDL path resolution internally)
+                    self._load_lyt_into_viewport(lyt_rooms, extract_dir)
             except Exception as e:
                 self.log(f"  ⚠ LYT parse error: {e}")
-                log.warning(f"LYT parse from MOD: {e}")
+                log.warning(f"LYT parse from MOD: {e}", exc_info=True)
 
-        # ── Switch to viewport ───────────────────────────────────────────
+        # ── Auto-load WOK walkmesh overlays ───────────────────────────────
+        if extract_dir and os.path.isdir(extract_dir):
+            self._auto_load_walkmesh_from_dir(extract_dir, lyt_rooms)
+
+        # ── Switch to viewport / Module Editor mode ──────────────────────
         self._center_stack.setCurrentIndex(1)
-        # Force a full rebuild of object VAOs and viewport
+        # Switch mode combo to Module Editor if not already there
+        for i in range(self._mode_combo.count()):
+            if self._mode_combo.itemData(i) == "module_editor":
+                if self._mode_combo.currentIndex() != i:
+                    self._mode_combo.setCurrentIndex(i)
+                break
+        # Force a full rebuild of object VAOs
         self._viewport._on_module_changed()
         self._viewport.update()
 
@@ -1101,23 +1315,147 @@ class MainWindow(QMainWindow):
         if self._ipc_server and self._state.git:
             self._ipc_server.update_module_info(mod_path, n_obj)
 
-    def _load_lyt_into_viewport(self, rooms):
+    def _auto_load_walkmesh_from_dir(self, extract_dir: str, rooms: list):
+        """
+        Scan extract_dir for .wok files matching the loaded rooms (or any
+        .wok files), parse them, and push the combined walkmesh triangles
+        into the viewport overlay.
+        """
+        try:
+            from .walkmesh_editor import WOKParser
+        except ImportError:
+            self.log("  ⚠ WOK: walkmesh_editor not available")
+            return
+
+        # walk_tris / nowalk_tris: each element is a 3-tuple of (x,y,z) vertices
+        # i.e. [ ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)), ... ]
+        walk_tris:   list = []
+        nowalk_tris: list = []
+
+        # Build ordered list of WOK filenames to try (rooms first, then any others)
+        wok_names = []
+        seen = set()
+        for room in rooms:
+            n = room.mdl_name.lower() + ".wok"
+            if n not in seen:
+                wok_names.append(n)
+                seen.add(n)
+        # Also pick up any WOK files not already listed
+        try:
+            all_files = os.listdir(extract_dir)
+        except OSError:
+            all_files = []
+        for fname in all_files:
+            fl = fname.lower()
+            if fl.endswith(".wok") and fl not in seen:
+                wok_names.append(fl)
+                seen.add(fl)
+
+        loaded_count = 0
+        for fname in wok_names:
+            # Resolve actual filename (case-insensitive on Windows/Linux)
+            wok_path = os.path.join(extract_dir, fname)
+            if not os.path.exists(wok_path):
+                # Try case-insensitive match
+                for actual in all_files:
+                    if actual.lower() == fname:
+                        wok_path = os.path.join(extract_dir, actual)
+                        break
+            if not os.path.exists(wok_path):
+                continue
+            try:
+                parser = WOKParser.from_file(wok_path)
+                wok    = parser.parse()
+                verts  = wok.vertices
+
+                if not verts or not wok.faces:
+                    log.debug(f"WOK {fname}: no geometry (verts={len(verts)}, faces={len(wok.faces)})")
+                    continue
+
+                # Find matching room for translation offset
+                stem = fname[:-4]  # strip .wok extension
+                tx, ty, tz = 0.0, 0.0, 0.0
+                for room in rooms:
+                    if room.mdl_name.lower() == stem:
+                        tx = float(getattr(room, 'world_x', 0.0) or 0.0)
+                        ty = float(getattr(room, 'world_y', 0.0) or 0.0)
+                        tz = float(getattr(room, 'world_z', 0.0) or 0.0)
+                        break
+
+                for face in wok.faces:
+                    # WOKFace.v0/v1/v2 are already vertex coordinate tuples (x,y,z),
+                    # not integer indices — build the triangle directly.
+                    try:
+                        v0, v1, v2 = face.v0, face.v1, face.v2
+                        # Skip degenerate faces (all-zero, etc.)
+                        if (len(v0) < 3 or len(v1) < 3 or len(v2) < 3):
+                            continue
+                        tri = (
+                            (float(v0[0]) + tx, float(v0[1]) + ty, float(v0[2]) + tz),
+                            (float(v1[0]) + tx, float(v1[1]) + ty, float(v1[2]) + tz),
+                            (float(v2[0]) + tx, float(v2[1]) + ty, float(v2[2]) + tz),
+                        )
+                    except (TypeError, IndexError):
+                        continue
+                    if face.is_walkable:
+                        walk_tris.append(tri)
+                    else:
+                        nowalk_tris.append(tri)
+                loaded_count += 1
+                log.debug(f"WOK {fname}: {len(wok.faces)} faces, "
+                          f"offset=({tx:.1f},{ty:.1f},{tz:.1f})")
+            except Exception as e:
+                log.debug(f"WOK load {fname}: {e}", exc_info=True)
+
+        if walk_tris or nowalk_tris:
+            self._viewport.load_walkmesh(walk_tris, nowalk_tris)
+            self._viewport.toggle_walkmesh(True)
+            self.log(f"  WOK: {loaded_count} file(s) → "
+                     f"{len(walk_tris)} walkable, "
+                     f"{len(nowalk_tris)} non-walkable faces")
+        else:
+            self.log(f"  WOK: no walkable geometry found in {extract_dir}")
+
+    def _load_lyt_into_viewport(self, rooms, extract_dir: str = ""):
         """Push a list of RoomInstance objects into the viewport for 3D display."""
         try:
-            from .room_assembly import RoomInstance
-            # Convert to viewport-compatible room instances
-            vp_rooms = []
-            for r in rooms:
-                vp_rooms.append(r)
-            if hasattr(self._viewport, 'room_instances'):
-                self._viewport.room_instances = vp_rooms
-                if hasattr(self._viewport, '_renderer') and self._viewport._renderer:
-                    game_dir = getattr(self, '_game_dir', "") or ""
-                    self._viewport._renderer.rebuild_room_vaos(vp_rooms, game_dir)
+            # Resolve MDL paths if extract_dir given and mdl_path not already set
+            if extract_dir and os.path.isdir(extract_dir):
+                # Build case-insensitive filename lookup for the extract dir
+                try:
+                    dir_files = {f.lower(): f for f in os.listdir(extract_dir)}
+                except OSError:
+                    dir_files = {}
+                for r in rooms:
+                    if not getattr(r, 'mdl_path', ''):
+                        mdl_lower = r.mdl_name.lower() + ".mdl"
+                        actual = dir_files.get(mdl_lower)
+                        if actual:
+                            r.mdl_path = os.path.join(extract_dir, actual)
+                    # Log what we found for debug
+                    mdl_resolved = getattr(r, 'mdl_path', '') or ''
+                    if mdl_resolved:
+                        log.debug(f"  Room '{r.mdl_name}': MDL -> {os.path.basename(mdl_resolved)}")
+                    else:
+                        log.debug(f"  Room '{r.mdl_name}': no MDL found in {extract_dir}")
+
+            # Also set game_dir on viewport to allow rebuild_room_vaos to search
+            if extract_dir:
+                self._viewport.set_game_dir(extract_dir)
+
+            # Use the public load_rooms() API which properly triggers VAO rebuild
+            self._viewport.load_rooms(rooms)
+
+            # Frame the camera on the loaded rooms (use room-specific framing,
+            # falling back to frame_all if no rooms)
+            if rooms:
+                self._viewport._frame_rooms()
+            else:
                 self._viewport.frame_all()
-                self._viewport.update()
+            self._viewport.update()
+            log.debug(f"_load_lyt_into_viewport: {len(rooms)} rooms loaded into viewport")
         except Exception as e:
-            log.warning(f"_load_lyt_into_viewport: {e}")
+            log.warning(f"_load_lyt_into_viewport: {e}", exc_info=True)
 
     def open_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Open GModular Project")
@@ -1221,12 +1559,15 @@ class MainWindow(QMainWindow):
 
             if placeables:
                 self._palette.populate_from_game(placeables, "placeable")
+                self._content_browser.populate_from_game(placeables, "placeable")
                 self.log(f"  Loaded {len(placeables)} placeables")
             if creatures:
                 self._palette.populate_from_game(creatures, "creature")
+                self._content_browser.populate_from_game(creatures, "creature")
                 self.log(f"  Loaded {len(creatures)} creatures")
             if doors:
                 self._palette.populate_from_game(doors, "door")
+                self._content_browser.populate_from_game(doors, "door")
                 self.log(f"  Loaded {len(doors)} doors")
         except Exception as e:
             self.log(f"✗ Asset load error: {e}")
@@ -1265,7 +1606,7 @@ class MainWindow(QMainWindow):
     # ── Slot Handlers ─────────────────────────────────────────────────────────
 
     def _on_place_asset(self, asset: AssetItem):
-        """Called when user clicks 'Place' in the palette."""
+        """Called when user clicks 'Place' in the legacy palette."""
         self._viewport.set_placement_mode(True, asset.resref,
                                           getattr(asset, "asset_type", "placeable"))
         self._placement_active = True
@@ -1273,6 +1614,21 @@ class MainWindow(QMainWindow):
         self._mode_label.setText(f"PLACE MODE  [ {asset.resref} ({kind}) ]")
         self._mode_label.setStyleSheet("color:#ff8c00; font-weight:bold; font-size:8pt;")
         self.log(f"Placement mode: {asset.resref} ({kind}) — click in viewport to place")
+
+    def _on_place_cb_asset(self, asset):
+        """Called when user places an asset from the Content Browser."""
+        resref     = getattr(asset, "resref",     "")
+        asset_type = getattr(asset, "asset_type", "placeable")
+        self._viewport.set_placement_mode(True, resref, asset_type)
+        self._placement_active = True
+        kind = asset_type.capitalize()
+        self._mode_label.setText(f"PLACE MODE  [ {resref} ({kind}) ]")
+        self._mode_label.setStyleSheet(
+            "color:#ff8c00; font-weight:bold; font-size:8pt;"
+        )
+        # Bring viewport to focus
+        self._center_stack.setCurrentIndex(1)
+        self.log(f"Placement mode: {resref} ({kind}) — click in viewport to place")
 
     def _toggle_play_mode(self):
         """Start or stop walk preview mode."""
@@ -1317,17 +1673,43 @@ class MainWindow(QMainWindow):
             return
         self._viewport.set_app_mode(mode)
         if mode == "level_builder":
+            # ── Level Builder mode ──────────────────────────────────────────
             self._mode_label.setText("LEVEL BUILDER")
-            self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
-            self.log("⬛ Mode: Level Builder — assemble rooms, place objects, build your map")
-            # Show Room Grid tab
+            self._mode_label.setStyleSheet(
+                "QLabel { color:#4ec9b0; font-weight:bold; font-size:8pt;"
+                " background:#0a2a1a; border:1px solid #1a5a2a;"
+                " border-radius:3px; padding:0 8px; }"
+            )
+            # Show Room Grid first in the bottom tabs
             if self._bottom_tabs:
-                self._bottom_tabs.setCurrentIndex(0)
+                for i in range(self._bottom_tabs.count()):
+                    if "Room" in self._bottom_tabs.tabText(i):
+                        self._bottom_tabs.setCurrentIndex(i)
+                        break
+            # Content Browser shows room-focused assets in level builder
+            self._content_browser._select_category("All", "")
+            self.log(
+                "⬜  Mode: Level Builder — assemble room geometry, "
+                "build new areas, place walkmesh"
+            )
         else:
+            # ── Module Editor mode ──────────────────────────────────────────
             self._mode_label.setText("MODULE EDITOR")
-            self._mode_label.setStyleSheet("color:#9cdcfe; font-weight:bold; font-size:8pt;")
-            self.log("✏  Mode: Module Editor — full KotOR module editing, "
-                     "walkmesh tools, MDL import/export")
+            self._mode_label.setStyleSheet(
+                "QLabel { color:#79c0ff; font-weight:bold; font-size:8pt;"
+                " background:#0d2040; border:1px solid #1a4070;"
+                " border-radius:3px; padding:0 8px; }"
+            )
+            # Show Output Log in module editor
+            if self._bottom_tabs:
+                for i in range(self._bottom_tabs.count()):
+                    if "Output" in self._bottom_tabs.tabText(i):
+                        self._bottom_tabs.setCurrentIndex(i)
+                        break
+            self.log(
+                "✏  Mode: Module Editor — place/edit GIT objects, "
+                "scripts, walkmesh, MDL import/export"
+            )
 
     def _on_object_selected(self, obj):
         """Called when user selects an object in the viewport."""
@@ -1355,8 +1737,12 @@ class MainWindow(QMainWindow):
                 return
         self._placement_active = False
         self._viewport.set_placement_mode(False)
-        self._mode_label.setText("EDIT MODE")
-        self._mode_label.setStyleSheet("color:#4ec9b0; font-weight:bold; font-size:8pt;")
+        self._mode_label.setText("EDIT")
+        self._mode_label.setStyleSheet(
+            "QLabel { color:#4ec9b0; font-weight:bold; font-size:8pt;"
+            " background:#1a3a2a; border:1px solid #2a5a3a;"
+            " border-radius:3px; padding:0 8px; }"
+        )
         self._inspector.inspect(obj)
         self._update_object_count()
         self._scene_outline._refresh()

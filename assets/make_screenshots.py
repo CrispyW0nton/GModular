@@ -5,7 +5,8 @@ Creates 5 high-quality dark-theme code/architecture screenshots.
 from PIL import Image, ImageDraw, ImageFont
 import os
 
-OUT_DIR = "/home/user/webapp/assets/screenshots"
+# Output directory is relative to this script's location
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────

@@ -25,8 +25,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# App data
+# App data / user config (do not commit personal game paths)
 ~/.gmodular/
+.gmodular/
 
 # Test artifacts
 .pytest_cache/
@@ -37,3 +38,26 @@ htmlcov/
 *.tmp
 *.bak
 /tmp/
+
+# Core dumps (crash dumps from OS)
+core
+core.*
+*.core
+vgcore.*
+
+# PyInstaller build output
+dist/
+*.spec.bak
+
+# Logs
+*.log
+supervisord.log
+supervisord.pid
+supervisor.sock
+
+# Environment / secrets (never commit these)
+.env
+.env.*
+*.secret
+secrets.json
+credentials.json

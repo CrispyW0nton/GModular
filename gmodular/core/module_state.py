@@ -389,8 +389,15 @@ class ModuleState:
         summary["extract_dir"] = extract_dir
 
         def _extract(resref: str, ext: str) -> Optional[bytes]:
-            key = f"{resref.lower()}.{ext}"
+            # Try exact key (resref already lowercased + stripped by ERFReader)
+            key = f"{resref.lower().strip()}.{ext}"
             entry = erf.resources.get(key)
+            if entry is None:
+                # Fallback: search case-insensitively for any matching key
+                for k, e in erf.resources.items():
+                    if k.lower() == key.lower():
+                        entry = e
+                        break
             if entry is None:
                 return None
             return erf.read_resource(entry)
@@ -405,13 +412,22 @@ class ModuleState:
         # Prefer IFO entry_area; fall back to first .are resref; fall back to filename stem.
         resref = Path(mod_path).stem.lower()
 
-        # Find the first .are resource to get the real resref
+        # ── Helper: find first entry by extension (type-ID agnostic fallback) ──
+        def _find_by_ext(ext: str):
+            """Return (key, entry) for first resource matching ext, or (None, None)."""
+            for k, e in erf.resources.items():
+                if k.lower().endswith(f".{ext}"):
+                    return k, e
+            return None, None
+
+        # Find the real module resref from the first .are file
         are_resref = None
-        for key in erf.resources:
-            if key.endswith(".are"):
-                are_resref = key[:-4]
-                resref = are_resref
-                break
+        _are_key, _are_entry = _find_by_ext("are")
+        if _are_key:
+            # Strip the .are suffix to get the resref
+            are_resref = _are_key[:-4].strip()
+            resref = are_resref
+            log.debug(f"MOD: area resref detected as '{resref}'")
 
         summary["resref"] = resref
 
@@ -419,14 +435,13 @@ class ModuleState:
         self.project = None
         git_data = _extract(resref, "git")
         if git_data is None:
-            # Try any .git in the archive
-            for key in erf.resources:
-                if key.endswith(".git"):
-                    entry = erf.resources[key]
-                    git_data = erf.read_resource(entry)
-                    resref = key[:-4]
-                    summary["resref"] = resref
-                    break
+            # Try any .git in the archive (type-ID agnostic)
+            _git_key, _git_entry = _find_by_ext("git")
+            if _git_entry:
+                git_data = erf.read_resource(_git_entry)
+                resref = _git_key[:-4].strip()
+                summary["resref"] = resref
+                log.debug(f"MOD: GIT found via fallback scan, resref='{resref}'")
 
         if git_data:
             git_path = _write(f"{resref}.git", git_data)
@@ -439,10 +454,13 @@ class ModuleState:
                 self.git = GITData()
         else:
             errors.append("No .git resource found in archive")
+            log.warning(f"MOD: No .git found; archive keys: {sorted(erf.resources.keys())[:10]}")
             self.git = GITData()
 
         # ── 5. Load ARE ───────────────────────────────────────────────────
         are_data = _extract(resref, "are")
+        if are_data is None and _are_entry:
+            are_data = erf.read_resource(_are_entry)
         if are_data:
             are_path = _write(f"{resref}.are", are_data)
             try:
@@ -458,12 +476,9 @@ class ModuleState:
         if ifo_data is None:
             ifo_data = _extract(resref, "ifo")
         if ifo_data is None:
-            # Any .ifo in the archive
-            for key in erf.resources:
-                if key.endswith(".ifo"):
-                    entry = erf.resources[key]
-                    ifo_data = erf.read_resource(entry)
-                    break
+            _, _ifo_entry = _find_by_ext("ifo")
+            if _ifo_entry:
+                ifo_data = erf.read_resource(_ifo_entry)
 
         if ifo_data:
             ifo_path = _write("module.ifo", ifo_data)
@@ -471,7 +486,7 @@ class ModuleState:
                 self.ifo = load_ifo(ifo_path)
                 # Prefer IFO's entry_area as the resref
                 if self.ifo and self.ifo.entry_area:
-                    summary["resref"] = self.ifo.entry_area.lower()
+                    summary["resref"] = self.ifo.entry_area.lower().strip()
             except Exception as e:
                 errors.append(f"IFO parse error: {e}")
                 self.ifo = IFOData()
