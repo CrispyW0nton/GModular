@@ -365,8 +365,38 @@ class LYTParser:
 
     @staticmethod
     def _parse_room_line(row: str) -> Optional[RoomPlacement]:
-        """Parse a line like: <resref> <x> <y> <z>"""
+        """
+        Parse a room line in any of these formats:
+
+          Standard KotOR:    ``<resref> <x> <y> <z>``
+          GModular indexed:  ``room <index> <resref> <x> <y> <z>``
+          GModular keyed:    ``room <resref> <x> <y> <z>``
+        """
         parts = row.split()
+        # Detect "room <index> <resref> <x> <y> <z>" (6 tokens, parts[1] is int)
+        if len(parts) >= 6 and parts[0].lower() == 'room':
+            try:
+                int(parts[1])          # confirm parts[1] is the index
+                return RoomPlacement(
+                    resref=parts[2].lower(),
+                    x=float(parts[3]),
+                    y=float(parts[4]),
+                    z=float(parts[5]),
+                )
+            except (ValueError, IndexError):
+                pass
+        # Detect "room <resref> <x> <y> <z>" (5 tokens, no index)
+        if len(parts) >= 5 and parts[0].lower() == 'room':
+            try:
+                return RoomPlacement(
+                    resref=parts[1].lower(),
+                    x=float(parts[2]),
+                    y=float(parts[3]),
+                    z=float(parts[4]),
+                )
+            except (ValueError, IndexError):
+                pass
+        # Standard KotOR: <resref> <x> <y> <z>
         if len(parts) < 4:
             log.debug(f"LYT: malformed room line: {row!r}")
             return None
