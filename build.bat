@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v2.0.8
+echo  GModular Build Script  v2.0.10
 echo  KotOR Module Editor  ^|  Produces: dist\GModular.exe
 echo ============================================================
 echo(
@@ -130,12 +130,16 @@ echo [OK] pip ready.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 5 -- PyQt5
+REM  STEP 5 -- PyQt5 + qtpy compatibility shim
+REM  qtpy is REQUIRED: all GModular GUI code imports from qtpy,
+REM  not directly from PyQt5.  Without qtpy the program crashes
+REM  immediately on launch with ModuleNotFoundError: No module
+REM  named 'qtpy'.
 REM ---------------------------------------------------------------
-echo [....] Installing PyQt5...
-%PY% -m pip install "PyQt5>=5.15.0,<6.0" --quiet --disable-pip-version-check
+echo [....] Installing PyQt5 + qtpy...
+%PY% -m pip install "PyQt5>=5.15.0,<6.0" "qtpy>=2.4.0" --quiet --disable-pip-version-check
 if errorlevel 1 (
-    echo [ERROR] PyQt5 install failed.
+    echo [ERROR] PyQt5/qtpy install failed.
     echo(
     echo  PyQt5 wheels only exist for Python 3.8-3.12.
     echo  You are on Python %PY_MAJOR%.%PY_MINOR%.
@@ -144,20 +148,20 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo [OK] PyQt5 installed.
+echo [OK] PyQt5 + qtpy installed.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 6 -- numpy, watchdog, requests
+REM  STEP 6 -- numpy, watchdog, requests, typing-extensions
 REM ---------------------------------------------------------------
-echo [....] Installing numpy, watchdog, requests...
-%PY% -m pip install "numpy>=1.21.0" "watchdog>=2.0.0" "requests>=2.28.0" --quiet --disable-pip-version-check
+echo [....] Installing numpy, watchdog, requests, typing-extensions...
+%PY% -m pip install "numpy>=1.21.0" "watchdog>=2.0.0" "requests>=2.28.0" "typing_extensions>=4.0" --quiet --disable-pip-version-check
 if errorlevel 1 (
-    echo [ERROR] Failed to install numpy/watchdog/requests.
+    echo [ERROR] Failed to install numpy/watchdog/requests/typing_extensions.
     pause
     exit /b 1
 )
-echo [OK] numpy, watchdog, requests installed.
+echo [OK] numpy, watchdog, requests, typing_extensions installed.
 echo(
 
 REM ---------------------------------------------------------------
