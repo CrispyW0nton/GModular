@@ -475,6 +475,9 @@ class ERFWriter:
         clean = resref[:16].lower()
         self._entries.append((clean, res_type, data))
 
+    # Convenience alias
+    add = add_resource
+
     def to_bytes(self) -> bytes:
         """Serialise the archive to a bytes object."""
         n = len(self._entries)

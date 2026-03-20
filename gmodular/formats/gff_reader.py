@@ -449,9 +449,19 @@ def _git_store(s: GFFStruct) -> GITStoreObject:
     return st
 
 
-def load_git(path: str) -> GITData:
-    """Load a .GIT file and return a GITData object."""
-    reader = GFFReader.from_file(path)
+def _gff_reader_for(path_or_bytes) -> "GFFReader":
+    """Accept either a file path (str/Path) or raw bytes and return a GFFReader."""
+    if isinstance(path_or_bytes, (bytes, bytearray)):
+        return GFFReader(bytes(path_or_bytes))
+    return GFFReader.from_file(path_or_bytes)
+
+
+def load_git(path_or_bytes) -> GITData:
+    """Load a .GIT resource and return a GITData object.
+    
+    *path_or_bytes* can be a file path string/Path **or** raw GFF bytes.
+    """
+    reader = _gff_reader_for(path_or_bytes)
     root   = reader.parse()
     git    = GITData()
 
@@ -519,9 +529,12 @@ def load_git(path: str) -> GITData:
     return git
 
 
-def load_are(path: str) -> AREData:
-    """Load a .ARE file and return an AREData object."""
-    reader = GFFReader.from_file(path)
+def load_are(path_or_bytes) -> AREData:
+    """Load a .ARE resource and return an AREData object.
+    
+    *path_or_bytes* can be a file path string/Path **or** raw GFF bytes.
+    """
+    reader = _gff_reader_for(path_or_bytes)
     root   = reader.parse()
     are    = AREData()
     are.tag  = root.get("Tag", "")
@@ -548,9 +561,12 @@ def load_are(path: str) -> AREData:
     return are
 
 
-def load_ifo(path: str) -> IFOData:
-    """Load a .IFO file and return an IFOData object."""
-    reader = GFFReader.from_file(path)
+def load_ifo(path_or_bytes) -> IFOData:
+    """Load a .IFO resource and return an IFOData object.
+    
+    *path_or_bytes* can be a file path string/Path **or** raw GFF bytes.
+    """
+    reader = _gff_reader_for(path_or_bytes)
     root   = reader.parse()
     ifo    = IFOData()
     ifo.mod_name        = _get_locstr(root, "Mod_Name", "New Module")

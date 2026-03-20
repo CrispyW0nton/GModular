@@ -215,12 +215,52 @@ if exist "assets\icons\gmodular.ico" (
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 11 -- Quick self-test
+REM  STEP 11 -- Quick self-test  (with detailed diagnostics)
 REM ---------------------------------------------------------------
 echo [....] GModular import self-test...
-%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; print('GModular OK')"
+
+REM ---- Diagnostic pre-check: stale/corrupt local files ----
+%PY% -c "import pathlib; txt=pathlib.Path('gmodular/core/module_state.py').read_text(encoding='utf-8'); bad=any(x in txt for x in ['dmodular', 'from gmodular.core.events import']); good='from .events import' in txt; print('file_ok='+str(good and not bad))"
+for /f "tokens=2 delims==" %%A in ('%PY% -c "import pathlib; txt=pathlib.Path(\"gmodular/core/module_state.py\").read_text(encoding=\"utf-8\"); print(\"file_ok=\"+str(\"from .events import\" in txt and \"dmodular\" not in txt))"') do set MSOK=%%A
+if /i not "%MSOK%"=="True" (
+    echo(
+    echo [ERROR] gmodular\core\module_state.py contains a bad import (e.g. "dmodular").
+    echo(
+    echo  This means your local copy is out of date or was manually edited.
+    echo  Fix: re-download or git pull the latest code from:
+    echo    https://github.com/CrispyW0nton/GModular
+    echo(
+    echo  Quick fix with git:
+    echo    git fetch origin main
+    echo    git checkout origin/main -- gmodular/core/module_state.py
+    echo(
+    pause
+    exit /b 1
+)
+
+REM ---- Main import test ----
+%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; import gmodular; print('GModular', gmodular.__version__, 'OK')"
 if errorlevel 1 (
-    echo [ERROR] GModular import failed -- fix the error shown above, then re-run.
+    echo(
+    echo [ERROR] GModular import failed -- see the traceback above.
+    echo(
+    echo  Common causes and fixes:
+    echo(
+    echo  1. "No module named 'dmodular'" or similar typo:
+    echo       Your local gmodular\core\module_state.py is corrupted or out of date.
+    echo       Fix: git checkout origin/main -- gmodular/core/module_state.py
+    echo(
+    echo  2. "No module named 'qtpy'" or 'PyQt5':
+    echo       Step 5 pip install failed silently.
+    echo       Fix: %PY% -m pip install "PyQt5>=5.15" "qtpy>=2.4"
+    echo(
+    echo  3. "No module named 'moderngl'" or 'numpy':
+    echo       Fix: %PY% -m pip install moderngl numpy
+    echo(
+    echo  4. Any other import error:
+    echo       Run:  %PY% -c "import gmodular"
+    echo       to see the full traceback, then fix that specific module.
+    echo(
     pause
     exit /b 1
 )

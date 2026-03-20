@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="gmodular",
-    version="2.0.0",
+    version="2.0.10",
     description="KotOR Module Editor — Unreal Engine-style editor for KotOR 1 & 2",
     long_description=open("README.md").read() if __import__("os").path.exists("README.md") else "",
     author="GModular Contributors",

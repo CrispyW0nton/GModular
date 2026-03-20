@@ -145,6 +145,38 @@ _NON_WALKABLE_MATS: frozenset = frozenset([
     SURF_OBSCURING,     # 2  — obscuring tile (camera-only, not walkable)
 ])
 
+
+class SurfaceMaterial:
+    """Namespace class for surface material constants (mirrors SURF_* module constants).
+    
+    Provides OOP access to the same values as the module-level SURF_* constants::
+    
+        from gmodular.formats.wok_parser import SurfaceMaterial
+        face.material = SurfaceMaterial.GRASS   # same as SURF_GRASS = 3
+    """
+    UNDEFINED     = SURF_UNDEFINED
+    DIRT          = SURF_DIRT
+    OBSCURING     = SURF_OBSCURING
+    GRASS         = SURF_GRASS
+    STONE         = SURF_STONE
+    WOOD          = SURF_WOOD
+    WATER         = SURF_WATER
+    NONWALK       = SURF_NONWALK
+    TRANSPARENT   = SURF_TRANSPARENT
+    CARPET        = SURF_CARPET
+    METAL         = SURF_METAL
+    PUDDLES       = SURF_PUDDLES
+    SWAMP         = SURF_SWAMP
+    MUD           = SURF_MUD
+    LEAVES        = SURF_LEAVES
+    LAVA          = SURF_LAVA
+    BOTTOMLESSPIT = SURF_BOTTOMLESSPIT
+    DEEPWATER     = SURF_DEEPWATER
+    DOOR          = SURF_DOOR
+    NONWALKGRASS  = SURF_NONWALKGRASS
+    TRIGGER       = SURF_TRIGGER
+
+
 # ── Walkability material map ──────────────────────────────────────────────────
 # surfacemat.2da row → walkable flag
 # NOTE: Row indices here are 0-based raw BWM material IDs (NOT the SURF_* enum above).

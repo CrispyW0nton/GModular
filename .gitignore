@@ -74,3 +74,6 @@ renders/*.png
 *.mdx
 *.tpc
 *.tga
+# Generated/extracted test artifacts
+tests/test_data/_*/
+=*
