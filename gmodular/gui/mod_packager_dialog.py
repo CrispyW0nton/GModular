@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTreeWidget, QTreeWidgetItem, QProgressBar, QFileDialog,
     QLineEdit, QGroupBox, QFormLayout, QSplitter, QTextEdit,
-    QMessageBox, QFrame, QCheckBox,
+    QMessageBox, QFrame, QCheckBox, QWidget,
 )
 from qtpy.QtCore import Qt, QThread, Signal
 from qtpy.QtGui import QFont, QColor, QIcon
