@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 GModular — KotOR Module Editor
-PyInstaller spec file  (Windows + Linux)  v2.0.8
+PyInstaller spec file  (Windows + Linux)  v2.0.10
 
 Produces: dist/GModular.exe  (Windows)  or  dist/GModular  (Linux)
 Size: ~60-100 MB (single-file, no console window)

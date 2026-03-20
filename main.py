@@ -81,7 +81,7 @@ def main():
         logging.getLogger().handlers[0].setLevel(logging.DEBUG)
 
     log.info("=" * 60)
-    log.info("GModular — KotOR Module Editor  v2.0.0")
+    log.info("GModular — KotOR Module Editor  v2.0.10")
     log.info("=" * 60)
 
     # Import Qt via qtpy compatibility layer.

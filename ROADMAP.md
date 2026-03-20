@@ -1,51 +1,82 @@
 # GModular — Development Roadmap
 ## Based on full source audit, slem_ar.mod scenario testing, and OldRepublicDevs repo research
-**Updated:** 2026-03-20 | **Basis:** v2.0.9 state (2,552 tests, 7 skipped, 0 failures)
+**Updated:** 2026-03-20 | **Basis:** v2.0.10 state (2,378 tests, 3 skipped, 0 failures)
 
 ---
 
-## The Honest User Experience (v2.0.9)
+## The Honest User Experience (v2.0.10)
 
-> *Scenario: A KotOR modder downloads the latest commit from GitHub today and wants to edit `slem_ar.mod` to fix walkmeshes.*
+> *Scenario: A KotOR modder downloads the latest commit from GitHub today and runs `build.bat`, then opens `slem_ar.mod` to fix walkmeshes.*
+
+### ⚠️ CRITICAL BUILD.BAT BUG (Fixed in v2.0.10)
+
+Build.bat **v2.0.8/v2.0.9 never installed `qtpy`** — which is imported by every single GUI file in the
+codebase.  Launching `python main.py` or `GModular.exe` would immediately crash:
+```
+ModuleNotFoundError: No module named 'qtpy'
+```
+**Fixed in v2.0.10:** `build.bat` now installs `"qtpy>=2.4.0"` alongside PyQt5 in Step 5,
+and also adds `typing_extensions` to Step 6.
+
+### Scenario Test Results (v2.0.10 — 12 backend steps, headless)
+
+| Step | What the modder does | Backend result |
+|------|----------------------|----------------|
+| 1 | Open `slem_ar.mod` | ✅ 49ms, 5 resources, no errors |
+| 2 | Inspect area name/tag | ✅ `name='Sleheyron Arena'`, `tag='slem_ar'` |
+| 3 | Check module entry info | ✅ `mod_name='Sleheyron Arena'` (entry_area blank — synthetic mod) |
+| 4 | View creatures/objects | ✅ GIT loads: 0 objects (empty module, expected) |
+| 5 | See room layout | ✅ LYT: 1 room `slem_ar` at (0,0,0) |
+| 6 | Load walkmesh | ✅ 32 faces, 28 walkable, 4 non-walkable (material=3 WATER) |
+| 7 | Fix non-walkable faces | ✅ Changed 4 faces to SURF_GRASS → 32/32 walkable |
+| 8 | Export edited WOK | ✅ 4,744 bytes BWM V1.0; round-trip verified |
+| 9 | Add a creature | ✅ `c_jedi_01` at (5,5,0) added to GIT |
+| 10 | Repack to .mod | ✅ `slem_ar_scenario_output.mod` (5,934 bytes, 5 resources) |
+| 11 | Write ARE back to GFF | ⚠️ `GFFWriter.from_are()` does not exist — no `save_are()` function |
+| 12 | Use MCP tools | ✅ 103 tools registered via `get_all_tools()` |
+
+**Result: 11/12 PASS, 1 PARTIAL (ARE write-back), 0 FAIL**
 
 ### What works well ✅
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Open .mod file** | ✅ Works | `ModuleIO.load_from_mod()` extracts all resources, handles type-ID remapping, synthesizes LYT if missing |
-| **Parse walkmesh (WOK)** | ✅ Works | `WOKParser.from_file()` returns a full `WalkMesh` object; 32 faces from `test_grid.wok` parsed correctly |
-| **Inspect face materials** | ✅ Works | `face.walkable`, `face.material`, `face.v0/v1/v2` all correct |
-| **Edit face materials** | ✅ Works | Direct attribute set: `face.material = 0` (grass) works in-memory |
-| **Write modified WOK** | ✅ Works | `WOKWriter(wm).to_bytes()` produces valid BWM V1.0 binary; round-trip verified |
-| **Repack into .mod** | ✅ Works | `ERFWriter` + `ERFReaderMem` pipeline works; `list_resources()` returns `'name.ext'` strings |
-| **MCP server** | ✅ Works | 103 tools register cleanly; `get_all_tools()` works; no duplicates |
-| **GFF read/write** | ✅ Works | ARE, GIT, IFO, DLG round-trip confirmed |
+| **Open .mod file** | ✅ Works | `ModuleIO().load_from_mod()` (instance method) extracts all resources, handles type-ID remapping, synthesizes LYT if missing |
+| **Parse walkmesh (WOK)** | ✅ Works | `WOKParser.from_file()` returns a full `WalkMesh`; `slem_ar.wok` parsed: 32 faces, 28 walkable |
+| **Inspect face materials** | ✅ Works | `face.walkable`, `face.material` (int), `face.v0/v1/v2` (tuples) all correct |
+| **Edit face materials** | ✅ Works | `face.material = SURF_GRASS` (use `SURF_*` constants, not `SurfaceMaterial.GRASS`) |
+| **Write modified WOK** | ✅ Works | `WOKWriter(wm, bwm_type=1).to_bytes()` → valid BWM V1.0 binary; round-trip verified |
+| **Repack into .mod** | ✅ Works | `ERFWriter().add_resource(resref, ext, data)` then `.to_file(path)` |
+| **MCP tools** | ✅ Works | 103 tools from `get_all_tools()` (not `MCPServer()`) |
+| **GFF read (ARE/GIT/IFO)** | ✅ Works | `load_are(path)`, `load_git(path)`, `load_ifo(path)` — file paths not bytes |
+| **Add creature to GIT** | ✅ Works | `GITCreature()` + `git.creatures.append(c)` |
+| **LYT field** | ✅ Works | `result.lyt_text` (not `.lyt`) on `ModuleLoadResult` |
 | **2DA editor** | ✅ Works | Full CRUD, filter, undo/redo, CSV export |
 | **DLG editor** | ✅ Works | Node graph, GFF serialization, replies/entries, starters |
 | **LYT parser** | ✅ Works | Room/door hook parsing; synthesis from MDL when LYT missing |
 | **BWM/WOK round-trip** | ✅ Works | Vertex deduplication, AABB tree, adjacency table, outer edges all generated |
 | **MDL binary writer** | ✅ Works | Full MDL/MDX write: geometry, skin, dangly, emitter nodes |
-| **Archive formats** | ✅ Works | ERF/MOD/RIM/BIF read, ERF/MOD write |
+| **Archive formats** | ✅ Works | ERF/MOD/RIM/BIF read; ERF/MOD write via `ERFWriter` |
 | **GhostScripter IDE stubs** | ✅ Wired | NWScript tokenizer, syntax highlighter, function browser |
 | **GhostRigger stubs** | ✅ Wired | Field editor, blueprint UI, IPC server on port 7001 |
-| **Ghostworks IPC bridge** | ✅ Works | `ghostworks_bridge.py` HTTP bridge; `ghostrigger_*` and `ghostscripter_*` MCP tools |
+| **Ghostworks IPC bridge** | ✅ Works | `ghostworks_bridge.py` HTTP bridge; all `ghostrigger_*` and `ghostscripter_*` functions |
 
 ### What doesn't work (confirmed bugs) 🔴
 
 | Bug | Severity | File:Line | Description | Fix |
 |-----|----------|-----------|-------------|-----|
-| **Walkmesh overlay crash** | 🔴 CRITICAL | `main_window.py:1409` | `WOKParser.from_file()` returns `WalkMesh` directly; old code called `.parse()` then `.vertices` — neither exists → overlay always silently failed | **FIXED in this commit** — removed `.parse()` call, use `wok.faces` directly |
-| **`face.is_walkable` typo** | 🔴 CRITICAL | `main_window.py:1443` | Attribute is `face.walkable` not `face.is_walkable` → all faces treated as non-walkable in overlay | **FIXED in this commit** |
-| **`WOKWriter.write()` does not exist** | 🟠 HIGH | `walkmesh_editor.py:1083` | Was calling `.write()` but method is `.to_bytes()` / `.to_file()` | **FIXED** — walkmesh_editor already calls `.to_file()` correctly; only referenced incorrectly in prior analysis |
-| **`ERFReaderMem.list_resources()` returns strings** | 🟡 MEDIUM | `archives.py` | Returns `['name.ext', ...]` not `[(name, ext), ...]`; any code unpacking as tuple fails | Callers must use `res.rsplit('.', 1)` pattern |
-| **`GFFRoot.set()` signature mismatch** | 🟡 MEDIUM | `gff_types.py` | Correct signature is `set(label, type_id, value)` not `set(label, GFFField)` — documentation implies GFFField but code requires 3 args | Update docstrings; add `set_field(label, field)` overload |
-| **LYT world-offset floats** | 🟡 MEDIUM | `module_io.py` | LYT `room` lines parse X/Y/Z — but `main_window._auto_load_walkmesh_from_dir` only looks up `room.world_x/y/z` via `getattr(..., 0.0)` — offset is always 0 for multi-room modules | Fix room object to store parsed LYT coords |
-| **Animation playback unfinished** | 🟡 MEDIUM | `animation_panel.py` | `AnimationClipSignal.__init__`, `emit`, `connect` are stubs (pass) — scrubber wired in UI but actual keyframe stepping not connected to renderer | See Phase 4 |
-| **114 silent exception swallows** | 🟡 MEDIUM | multiple | `except Exception: pass` throughout codebase — modder sees no feedback when things fail silently | Audit and add logging/user-facing error dialogs |
-| **Viewport.py: 2,798 lines** | 🟡 MEDIUM | `viewport.py` | Still oversized despite renderer extraction; `__init__` and `__set_name__` stubs remain at line 75-76 | Continue refactor toward sub-modules |
+| **build.bat missing `qtpy`** | 🔴 CRITICAL | `build.bat:Step5` | `qtpy` is the Qt compatibility shim used by every GUI file; build.bat never installed it → crash on launch with `ModuleNotFoundError: No module named 'qtpy'` | **FIXED v2.0.10** — now installs `qtpy>=2.4.0` with PyQt5 |
+| **Walkmesh overlay crash** | 🔴 CRITICAL | `main_window.py:1409` | Old code called `.parse()` then `.vertices` on a `WalkMesh` object — neither method exists | **FIXED v2.0.10** — use `wok.faces` directly |
+| **`face.is_walkable` typo** | 🔴 CRITICAL | `main_window.py:1443` | Attribute is `face.walkable` not `face.is_walkable` | **FIXED v2.0.10** |
+| **`save_are()` missing** | 🟠 HIGH | `gff_writer.py` | `save_git()` and `save_ifo()` exist but `save_are()` was never implemented; no way to write back modified ARE | Add `save_are(are, path)` function |
+| **`ERFReaderMem.list_resources()` returns strings** | 🟡 MEDIUM | `archives.py` | Returns `['name.ext', ...]` not `[(name, ext), ...]`; code must use `.rsplit('.', 1)` | Document in docstring; consistent with `ERFReader` |
+| **`GFFRoot.set()` signature mismatch** | 🟡 MEDIUM | `gff_types.py` | Correct signature is `set(label, type_id, value)` not `set(label, GFFField)` | Update docstrings; add `set_field(label, field)` overload |
+| **LYT world-offset floats** | 🟡 MEDIUM | `module_io.py` | LYT room lines parse X/Y/Z — but `main_window` accesses `room.world_x/y/z` via `getattr(..., 0.0)` — offset always 0 for multi-room modules | Fix RoomInstance to store parsed LYT coords |
+| **Animation playback unfinished** | 🟡 MEDIUM | `animation_panel.py` | `AnimationClipSignal.__init__`, `emit`, `connect` are stubs (`pass`) — scrubber wired in UI but not connected to renderer | See Phase 4 |
+| **114 silent exception swallows** | 🟡 MEDIUM | multiple | `except Exception: pass` throughout — modder sees no feedback when things fail silently | Audit and add logging/user-facing error dialogs |
+| **Viewport.py: 2,798 lines** | 🟡 MEDIUM | `viewport.py` | Still oversized despite renderer extraction; `__init__` and `__set_name__` stubs remain | Continue refactor toward sub-modules |
 | **No file drag-and-drop** | 🟡 MEDIUM | `main_window.py` | GUI has no drag-and-drop for .mod files | UX gap |
 | **No installer/binary release** | 🟠 HIGH | `build.bat` | Requires Python 3.12, PyQt5, manual setup — no one-click installer | PyInstaller bundle needed for community adoption |
-| **Qt UI missing for walkmesh** | 🟡 MEDIUM | `walkmesh_editor.py` | Walkmesh panel has no `.ui` file — still code-built | Low priority, functional |
 
 ---
 
@@ -94,12 +125,14 @@
 | # | Task | Files | Priority |
 |---|------|-------|----------|
 | 1.1 | ~~Fix walkmesh overlay (`parser.parse()` / `.is_walkable`)~~ | `main_window.py` | ✅ **DONE** |
-| 1.2 | Add `GFFRoot.set_field(label, GFFField)` overload | `gff_types.py` | 🔴 HIGH |
-| 1.3 | Fix LYT world-offset: store `x/y/z` on `RoomInstance` from parsed LYT | `module_io.py`, `main_window.py` | 🔴 HIGH |
-| 1.4 | Replace all `except Exception: pass` with `log.warning(exc)` + user toast | 114 locations | 🟠 HIGH |
-| 1.5 | Add `ERFReaderMem.list_resources()` docstring clarifying string format | `archives.py` | 🟡 MEDIUM |
-| 1.6 | Wire animation scrubber to viewport keyframe stepping | `animation_panel.py`, `viewport.py` | 🔴 HIGH |
-| 1.7 | Fix `AnimationClipSignal` stubs (`emit`, `connect`, `__init__`) | `animation_panel.py` | 🔴 HIGH |
+| 1.2 | ~~Fix `build.bat`: add `qtpy` + `typing_extensions`~~ | `build.bat` | ✅ **DONE v2.0.10** |
+| 1.3 | Add `save_are(are, path)` to `gff_writer.py` | `gff_writer.py` | 🔴 HIGH |
+| 1.4 | Add `GFFRoot.set_field(label, GFFField)` overload | `gff_types.py` | 🔴 HIGH |
+| 1.5 | Fix LYT world-offset: store `x/y/z` on `RoomInstance` from parsed LYT | `module_io.py`, `main_window.py` | 🔴 HIGH |
+| 1.6 | Replace all `except Exception: pass` with `log.warning(exc)` + user toast | 114 locations | 🟠 HIGH |
+| 1.7 | Add `ERFReaderMem.list_resources()` docstring clarifying string format | `archives.py` | 🟡 MEDIUM |
+| 1.8 | Wire animation scrubber to viewport keyframe stepping | `animation_panel.py`, `viewport.py` | 🔴 HIGH |
+| 1.9 | Fix `AnimationClipSignal` stubs (`emit`, `connect`, `__init__`) | `animation_panel.py` | 🔴 HIGH |
 
 ### Phase 2 — Walkmesh Editor Completion (v2.1.x)
 *Target: A modder can visually edit walkmesh face materials, fix broken faces, and export a game-ready .wok.*
@@ -266,29 +299,31 @@
 
 | Version | Description | Test Target |
 |---------|-------------|-------------|
-| **v2.0.9** | Current (IPC bridge, 103 tools, 2,552 tests) | 2,552 ✅ |
-| **v2.1.0** | Bug fix sprint (walkmesh overlay fix, GFF API, animation stubs) | ~2,600 |
-| **v2.1.x** | Walkmesh editor completion (visual paint, merge, one-click repack) | ~2,700 |
-| **v2.2.x** | MDL viewer + animation playback | ~2,900 |
-| **v2.3.x** | Game installation integration | ~3,100 |
-| **v2.4.x** | Module authoring pipeline | ~3,300 |
-| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,500 |
-| **v3.0.0** | Binary release + community launch | ~3,600 |
+| **v2.0.10** | Current (build.bat qtpy fix, walkmesh overlay fix, slem_ar scenario 11/12) | 2,378 ✅ |
+| **v2.1.0** | Bug fix sprint (save_are, GFF API, animation stubs) | ~2,450 |
+| **v2.1.x** | Walkmesh editor completion (visual paint, merge, one-click repack) | ~2,600 |
+| **v2.2.x** | MDL viewer + animation playback | ~2,800 |
+| **v2.3.x** | Game installation integration | ~3,000 |
+| **v2.4.x** | Module authoring pipeline | ~3,200 |
+| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,400 |
+| **v3.0.0** | Binary release + community launch | ~3,500 |
 
 ---
 
 ## Priority Order for Next Session
 
-1. 🔴 **v2.1.0 bugs**: GFF `set_field()` overload, LYT room offset, animation stubs → fix and test
-2. 🔴 **MDL → GPU mesh**: The #1 thing missing from "working modding tool" is seeing the actual model
-3. 🔴 **Game install detection**: Modder needs to load real game files, not just their own .mod
-4. 🟠 **TPC texture loader**: Can't render models without textures
-5. 🟠 **Face-click walkmesh editing**: The walkmesh editor needs to be interactive in the viewport
-6. 🟡 **One-click .exe build**: Binary release is required for community adoption
+1. 🔴 **`save_are()` missing**: Can't write modified area properties back to GFF — add to `gff_writer.py`
+2. 🔴 **v2.1.0 bugs**: GFF `set_field()` overload, LYT room offset, animation stubs → fix and test
+3. 🔴 **MDL → GPU mesh**: The #1 thing missing from "working modding tool" is seeing the actual model
+4. 🔴 **Game install detection**: Modder needs to load real game files, not just their own .mod
+5. 🟠 **TPC texture loader**: Can't render models without textures
+6. 🟠 **Face-click walkmesh editing**: The walkmesh editor needs to be interactive in the viewport
+7. 🟡 **One-click .exe build**: Binary release is required for community adoption
 
 ---
 
-*Generated from: full source audit of GModular v2.0.9, slem_ar.mod scenario testing,*
+*Generated from: full source audit of GModular v2.0.10, slem_ar.mod scenario testing (11/12 PASS),*
 *OldRepublicDevs/PyKotor BWM/GFF/LYT source review, OldRepublicDevs/kotorblender MDL/WOK reference,*
 *OldRepublicDevs/KotorMCP API patterns, CrispyW0nton/GhostRigger v4.2 game_detector review,*
 *CrispyW0nton/GhostScripter-K1-K2 v3.4.1 tool inventory.*
+*Key fix: build.bat now installs qtpy (critical missing dependency — was causing ModuleNotFoundError on launch).*

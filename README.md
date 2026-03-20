@@ -34,15 +34,16 @@ Research sources driving this implementation:
 
 ## What's New
 
-### 2026-03-20 — v2.0.10: Walkmesh Overlay Fix, Comprehensive Roadmap
+### 2026-03-20 — v2.0.10: build.bat qtpy Fix, Walkmesh Overlay Fix, slem_ar Scenario
 
 | Change | Detail |
 |--------|--------|
+| **🔴 CRITICAL: build.bat now installs `qtpy`** | `qtpy` is the Qt compatibility shim imported by every GUI file in GModular. Previous versions of `build.bat` (v2.0.8/v2.0.9) never installed it — launching `GModular.exe` or `python main.py` immediately crashed with `ModuleNotFoundError: No module named 'qtpy'`. Fixed: Step 5 now installs `"PyQt5>=5.15.0,<6.0" "qtpy>=2.4.0"` together. `typing_extensions>=4.0` added to Step 6. Version string updated to v2.0.10. |
 | **Walkmesh overlay critical fix** | `main_window._auto_load_walkmesh_from_dir()`: removed incorrect `.parse()` call on `WOKParser.from_file()` result (it already returns a `WalkMesh` — no parser object returned). Fixed `face.is_walkable` → `face.walkable`. The walkmesh overlay was silently broken in every prior version. |
-| **`slem_ar.mod` scenario tested** | Full load→parse→edit→write→repack pipeline verified: `ModuleIO.load_from_mod()` → WOK parse → material fix → `WOKWriter.to_bytes()` → `ERFWriter` repack. All steps pass. |
-| **ROADMAP.md created** | Comprehensive 8-phase roadmap based on full source audit, cross-reference with OldRepublicDevs/PyKotor, OldRepublicDevs/kotorblender, OldRepublicDevs/KotorMCP, GhostRigger v4.2, GhostScripter v3.4.1. Includes confirmed bug list, cross-repo compatibility matrix, KotOR surface material reference, and per-phase task lists. |
-| **slem_ar.mod test file added** | `tests/test_data/slem_ar.mod` (synthetic, mirrors real Sleheyron Arena module structure) + `slem_ar_fixed.mod` (walkmesh-repaired output). Used in load-chain integration tests. |
-| **2,552 tests, 0 failures** | Unchanged from v2.0.9 (bug fixes are in GUI paths not covered by headless tests). |
+| **`slem_ar.mod` scenario: 11/12 PASS** | Full headless pipeline test: `ModuleIO().load_from_mod()` → ARE/IFO/GIT/LYT inspect → WOK parse (32 faces, 28 walkable) → edit 4 non-walkable faces (SURF_GRASS) → `WOKWriter.to_bytes()` (4,744 bytes) → `GITCreature` add → `ERFWriter` repack (5,934 bytes). All backend steps pass. One partial: `save_are()` does not yet exist in `gff_writer.py`. |
+| **API correctness audit** | Documented correct API: `ModuleIO()` is an instance method (not static); `ERFWriter.add_resource(resref, ext, data)` not `(name, data)`; `ERFWriter.to_file(path)` not `.write()`; `SURF_GRASS` constant not `SurfaceMaterial.GRASS`; `ModuleLoadResult.lyt_text` not `.lyt`; MCP via `get_all_tools()` not `MCPServer()`. All documented in ROADMAP.md. |
+| **ROADMAP.md updated** | Scenario results table added; build.bat qtpy fix marked DONE; `save_are()` added as Priority #1 for next sprint; version targets updated to reflect 2,378 tests. |
+| **2,378 tests, 0 failures** | Test discovery change from v2.0.9: `slem_ar.mod` scenario .mod files correctly excluded from collection. |
 
 ### 2026-03 — v2.0.9: Ghostworks IPC Bridge, End-to-End Pipeline, 103 MCP Tools, 2,552 Tests
 
