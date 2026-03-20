@@ -39,7 +39,7 @@ try:
     )
     from qtpy.QtGui import (
         QFont, QColor, QBrush, QIcon, QPainter, QPixmap, QImage,
-        QPen, QLinearGradient, QDrag, QCursor, QPoint,
+        QPen, QLinearGradient, QDrag, QCursor,
     )
     _HAS_QT = True
 except ImportError:
