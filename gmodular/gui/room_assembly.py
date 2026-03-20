@@ -120,18 +120,53 @@ class LYTData:
         """
         Parse a KotOR .lyt plain-text file into a LYTData object.
 
-        .lyt format::
+        Handles three formats:
+
+        Standard KotOR .lyt::
             filedependency 0
             roomcount N
             mdl_name  x  y  z
             ...
             obstaclecount 0
             doorhookcount 0
+
+        LYTWriter canonical format (beginlayout/donelayout)::
+            beginlayout
+               roomcount N
+                  mdl_name x y z
+            donelayout
+
+        GModular indexed format (room N name x y z)::
+            # GModular LYT
+            beginlayout
+              roomcount 1
+              room 0 slem_ar 0.0 0.0 0.0
+            donelayout
         """
+        # Delegate to the robust LYTParser when the text contains
+        # beginlayout/donelayout or GModular-style «room N» lines.
+        # This handles all variants with one unified parser.
+        try:
+            from ..formats.lyt_vis import LYTParser as _LYTParser
+            layout = _LYTParser.from_string(text)
+            if layout.rooms:
+                lyt = cls()
+                for rp in layout.rooms:
+                    lyt.rooms.append(RoomInstance(
+                        mdl_name=rp.resref,
+                        grid_x=0, grid_y=0,
+                        world_x=rp.x,
+                        world_y=rp.y,
+                        world_z=rp.z,
+                    ))
+                return lyt
+        except Exception:
+            pass
+
+        # ── Fallback: manual parser (handles legacy/non-standard variants) ──
         lyt = cls()
         lines = text.splitlines()
         i = 0
-        room_count = 0
         reading_rooms = False
 
         while i < len(lines):
@@ -143,31 +178,54 @@ class LYTData:
             if not parts:
                 continue
             key = parts[0].lower()
-            if key == "filedependency":
+            if key in ("filedependency", "beginlayout", "donelayout"):
                 continue
             elif key == "roomcount":
                 try:
-                    room_count = int(parts[1]) if len(parts) > 1 else 0
-                except (ValueError, IndexError):
-                    room_count = 0
-                reading_rooms = True
-            elif key in ("obstaclecount", "doorhookcount", "trackcount", "obstaclecount"):
-                reading_rooms = False
-            elif reading_rooms and len(parts) >= 4:
-                try:
-                    mdl_name = parts[0].lower()
-                    wx = float(parts[1])
-                    wy = float(parts[2])
-                    wz = float(parts[3])
-                    # Compute approximate grid position from world units
-                    room = RoomInstance(
-                        mdl_name=mdl_name,
-                        grid_x=0, grid_y=0,
-                        world_x=wx, world_y=wy, world_z=wz,
-                    )
-                    lyt.rooms.append(room)
+                    int(parts[1]) if len(parts) > 1 else 0
                 except (ValueError, IndexError):
                     pass
+                reading_rooms = True
+            elif key in ("obstaclecount", "doorhookcount", "trackcount"):
+                reading_rooms = False
+            elif reading_rooms:
+                # Standard format: mdl_name x y z
+                if len(parts) >= 4 and key != "room":
+                    try:
+                        lyt.rooms.append(RoomInstance(
+                            mdl_name=key,
+                            grid_x=0, grid_y=0,
+                            world_x=float(parts[1]),
+                            world_y=float(parts[2]),
+                            world_z=float(parts[3]),
+                        ))
+                    except (ValueError, IndexError):
+                        pass
+                # GModular indexed: room N mdl_name x y z
+                elif key == "room" and len(parts) >= 6:
+                    try:
+                        int(parts[1])          # index
+                        lyt.rooms.append(RoomInstance(
+                            mdl_name=parts[2].lower(),
+                            grid_x=0, grid_y=0,
+                            world_x=float(parts[3]),
+                            world_y=float(parts[4]),
+                            world_z=float(parts[5]),
+                        ))
+                    except (ValueError, IndexError):
+                        pass
+                # GModular non-indexed: room mdl_name x y z
+                elif key == "room" and len(parts) >= 5:
+                    try:
+                        lyt.rooms.append(RoomInstance(
+                            mdl_name=parts[1].lower(),
+                            grid_x=0, grid_y=0,
+                            world_x=float(parts[2]),
+                            world_y=float(parts[3]),
+                            world_z=float(parts[4]),
+                        ))
+                    except (ValueError, IndexError):
+                        pass
 
         return lyt
 
