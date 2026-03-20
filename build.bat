@@ -2,76 +2,61 @@
 chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
+REM ============================================================
+REM  GModular Build Script  v2.0.11
+REM  KotOR Module Editor  |  Produces: dist\GModular.exe
+REM
+REM  IMPORTANT: This window will stay open on any error.
+REM  Read the [ERROR] message carefully before closing.
+REM ============================================================
 echo ============================================================
 echo  GModular Build Script  v2.0.11
 echo  KotOR Module Editor  ^|  Produces: dist\GModular.exe
 echo ============================================================
 echo(
 
+REM Change to the folder containing this .bat file
 cd /d "%~dp0"
 echo Working directory: %CD%
 echo(
 
 REM ---------------------------------------------------------------
 REM  STEP 1 -- Find Python  (py launcher  OR  python  OR  python3)
-REM  Same logic used by GhostRigger + GhostScripter
 REM ---------------------------------------------------------------
 set "PY="
 
-REM Try py launcher with 3.12 first (best)
 py -3.12 --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=py -3.12"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=py -3.12" & goto :found_python )
 
-REM Try py launcher with 3.11
 py -3.11 --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=py -3.11"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=py -3.11" & goto :found_python )
 
-REM Try py launcher with 3.10
 py -3.10 --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=py -3.10"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=py -3.10" & goto :found_python )
 
-REM Try bare py launcher (picks highest installed)
 py --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=py"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=py" & goto :found_python )
 
-REM Try python on PATH
 python --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=python"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=python" & goto :found_python )
 
-REM Try python3 on PATH
 python3 --version >nul 2>&1
-if not errorlevel 1 (
-    set "PY=python3"
-    goto :found_python
-)
+if not errorlevel 1 ( set "PY=python3" & goto :found_python )
 
-REM Nothing found
 echo [ERROR] Python not found.
 echo(
-echo  Install Python 3.12 from:
+echo  QUICK FIX: run  setup_python.bat  (in this folder) to auto-download
+echo  Python 3.12 from python.org/ftp/python — it handles everything for you.
+echo(
+echo  Or install manually from:
 echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
+echo(
+echo  NOTE: Do NOT install Python from the Microsoft Store — it lacks
+echo  proper venv support and will cause build errors.
 echo(
 echo  Tick "Add Python 3.12 to PATH" during install, then re-run build.bat.
 echo(
-echo  (Or run setup_python.bat to download and install automatically)
-echo(
-pause
-exit /b 1
+goto :die
 
 :found_python
 echo [OK] Python found:  %PY%
@@ -87,23 +72,21 @@ if %PY_MAJOR% EQU 3 if %PY_MINOR% GEQ 13 (
     echo [ERROR] Python %PY_MAJOR%.%PY_MINOR% is not supported.
     echo(
     echo  PyQt5 wheels only exist for Python 3.8 to 3.12.
-    echo  Fix: run  py -3.12  or install Python 3.12:
+    echo  Fix: install Python 3.12 and re-run.
     echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo(
-    pause
-    exit /b 1
+    goto :die
 )
 if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
-    echo [ERROR] Python 3.10+ required. You have %PY_MAJOR%.%PY_MINOR%.
+    echo [ERROR] Python 3.10 or higher required. You have %PY_MAJOR%.%PY_MINOR%.
     echo(
-    pause
-    exit /b 1
+    goto :die
 )
 echo [OK] Python %PY_MAJOR%.%PY_MINOR% is compatible.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 3 -- Virtual environment (use if present, else create)
+REM  STEP 3 -- Virtual environment
 REM ---------------------------------------------------------------
 if exist "venv\Scripts\activate.bat" (
     echo [INFO] Activating existing venv...
@@ -122,7 +105,7 @@ if exist "venv\Scripts\activate.bat" (
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 4 -- Upgrade pip  (silent)
+REM  STEP 4 -- Upgrade pip
 REM ---------------------------------------------------------------
 echo [....] Upgrading pip...
 %PY% -m pip install --upgrade pip --quiet --disable-pip-version-check
@@ -130,11 +113,7 @@ echo [OK] pip ready.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 5 -- PyQt5 + qtpy compatibility shim
-REM  qtpy is REQUIRED: all GModular GUI code imports from qtpy,
-REM  not directly from PyQt5.  Without qtpy the program crashes
-REM  immediately on launch with ModuleNotFoundError: No module
-REM  named 'qtpy'.
+REM  STEP 5 -- PyQt5 + qtpy
 REM ---------------------------------------------------------------
 echo [....] Installing PyQt5 + qtpy...
 %PY% -m pip install "PyQt5>=5.15.0,<6.0" "qtpy>=2.4.0" --quiet --disable-pip-version-check
@@ -145,8 +124,7 @@ if errorlevel 1 (
     echo  You are on Python %PY_MAJOR%.%PY_MINOR%.
     echo  Install Python 3.12: https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo(
-    pause
-    exit /b 1
+    goto :die
 )
 echo [OK] PyQt5 + qtpy installed.
 echo(
@@ -158,14 +136,13 @@ echo [....] Installing numpy, watchdog, requests, typing-extensions...
 %PY% -m pip install "numpy>=1.21.0" "watchdog>=2.0.0" "requests>=2.28.0" "typing_extensions>=4.0" --quiet --disable-pip-version-check
 if errorlevel 1 (
     echo [ERROR] Failed to install numpy/watchdog/requests/typing_extensions.
-    pause
-    exit /b 1
+    goto :die
 )
 echo [OK] numpy, watchdog, requests, typing_extensions installed.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 7 -- moderngl  (binary-only)  or  PyOpenGL  fallback
+REM  STEP 7 -- moderngl (binary-only) or PyOpenGL fallback
 REM ---------------------------------------------------------------
 echo [....] Trying moderngl...
 set MODERNGL_OK=0
@@ -187,14 +164,13 @@ echo [....] Installing PyInstaller...
 %PY% -m pip install "pyinstaller>=5.13.0" --quiet --disable-pip-version-check
 if errorlevel 1 (
     echo [ERROR] PyInstaller install failed.
-    pause
-    exit /b 1
+    goto :die
 )
 echo [OK] PyInstaller installed.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 9 -- flask/werkzeug  (optional IPC dependency)
+REM  STEP 9 -- flask/werkzeug (optional IPC dependency)
 REM ---------------------------------------------------------------
 %PY% -m pip install flask werkzeug jinja2 --quiet --disable-pip-version-check >nul 2>&1
 
@@ -215,122 +191,75 @@ if exist "assets\icons\gmodular.ico" (
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 11 -- Quick self-test  (with detailed diagnostics)
-REM  NOTE: We use a temp file to capture Python output instead of
-REM  "for /f" because nested double-quotes inside for/f break on
-REM  Windows and cause false failures / silent terminal close.
+REM  STEP 11 -- Self-test: verify gmodular imports cleanly
+REM
+REM  Uses a separate .py file written to the CURRENT directory
+REM  (not %TEMP%) to avoid path-with-spaces issues on Windows.
+REM  The file is deleted immediately after use.
 REM ---------------------------------------------------------------
 echo [....] GModular import self-test...
 
-REM ---- Write a tiny helper script to a temp file ----
-set "CHKPY=%TEMP%\gmodular_preflight.py"
-(
-    echo import pathlib, sys
-    echo p = pathlib.Path("gmodular/core/module_state.py"^)
-    echo if not p.exists(^):
-    echo     print("MISSING"^)
-    echo     sys.exit(0^)
-    echo txt = p.read_text(encoding="utf-8", errors="replace"^)
-    echo if "dmodular" in txt:
-    echo     print("DMODULAR_TYPO"^)
-    echo elif "from .events import" not in txt:
-    echo     print("BAD_IMPORT"^)
-    echo else:
-    echo     print("OK"^)
-) > "%CHKPY%"
+REM Write the preflight checker to the current directory (no spaces in path)
+echo import pathlib, sys > _gm_check.py
+echo p = pathlib.Path("gmodular/core/module_state.py") >> _gm_check.py
+echo if not p.exists(): >> _gm_check.py
+echo     print("ERROR: gmodular\\core\\module_state.py not found.") >> _gm_check.py
+echo     print("Make sure you run build.bat from the GModular root folder.") >> _gm_check.py
+echo     sys.exit(1) >> _gm_check.py
+echo txt = p.read_text(encoding="utf-8", errors="replace") >> _gm_check.py
+echo if "dmodular" in txt: >> _gm_check.py
+echo     print("ERROR: gmodular\\core\\module_state.py has a bad import (dmodular).") >> _gm_check.py
+echo     print("Your local file is out of date. Re-download from GitHub:") >> _gm_check.py
+echo     print("  https://github.com/CrispyW0nton/GModular/archive/refs/heads/main.zip") >> _gm_check.py
+echo     print("Or restore with git: git checkout origin/main -- gmodular/core/module_state.py") >> _gm_check.py
+echo     sys.exit(1) >> _gm_check.py
+echo elif "from .events import" not in txt: >> _gm_check.py
+echo     print("ERROR: Unexpected import in module_state.py. Re-download from GitHub.") >> _gm_check.py
+echo     sys.exit(1) >> _gm_check.py
+echo print("preflight OK") >> _gm_check.py
 
-REM ---- Run the helper and capture its output ----
-set "MSOK="
-for /f "delims=" %%R in ('%PY% "%CHKPY%" 2^>nul') do set "MSOK=%%R"
-del "%CHKPY%" >nul 2>&1
+%PY% _gm_check.py
+set PREFLIGHT_RC=%ERRORLEVEL%
+del _gm_check.py >nul 2>&1
 
-if /i "%MSOK%"=="DMODULAR_TYPO" (
-    echo(
-    echo [ERROR] gmodular\core\module_state.py has a bad import: "dmodular"
-    echo(
-    echo  Your local file is out of date or was manually edited.
-    echo  The correct import is:  from .events import ...
-    echo(
-    echo  Fix option 1 -- re-download the repo ZIP from GitHub:
-    echo    https://github.com/CrispyW0nton/GModular/archive/refs/heads/main.zip
-    echo(
-    echo  Fix option 2 -- restore just this one file with git:
-    echo    git fetch origin main
-    echo    git checkout origin/main -- gmodular/core/module_state.py
-    echo(
-    pause
-    exit /b 1
-)
-if /i "%MSOK%"=="BAD_IMPORT" (
-    echo(
-    echo [ERROR] gmodular\core\module_state.py has an unexpected import pattern.
-    echo  Expected:  from .events import get_event_bus, ...
-    echo  Re-download the repo to get the correct version.
-    echo(
-    pause
-    exit /b 1
-)
-if /i "%MSOK%"=="MISSING" (
-    echo(
-    echo [ERROR] gmodular\core\module_state.py not found.
-    echo  Make sure you are running build.bat from the GModular root folder
-    echo  (the folder that contains gmodular\ and build.bat).
-    echo(
-    pause
-    exit /b 1
-)
-REM If MSOK is empty the Python check itself failed -- skip pre-check silently
-REM and let the main import test below catch any real problem.
+if %PREFLIGHT_RC% NEQ 0 goto :die
 
-REM ---- Main import test ----
-%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; import gmodular; print('GModular', gmodular.__version__, 'OK')"
+REM Main import test
+%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; import gmodular; print('[OK] GModular', gmodular.__version__, 'imports clean')"
 if errorlevel 1 (
     echo(
-    echo [ERROR] GModular import failed -- see the traceback above.
+    echo [ERROR] GModular import failed -- see traceback above.
     echo(
-    echo  Common causes and fixes:
+    echo  Fixes:
+    echo   1. dmodular error: re-download from https://github.com/CrispyW0nton/GModular
+    echo   2. No module qtpy/PyQt5: run  %PY% -m pip install PyQt5 qtpy
+    echo   3. No module moderngl/numpy: run  %PY% -m pip install moderngl numpy
+    echo   4. Other error: open a command prompt, cd to this folder, run:
+    echo        %PY% -c "import gmodular"   to see the full traceback.
     echo(
-    echo  1. "No module named 'dmodular'" or similar typo:
-    echo       Your local gmodular\core\module_state.py is out of date.
-    echo       Download the latest ZIP: https://github.com/CrispyW0nton/GModular
-    echo(
-    echo  2. "No module named 'qtpy'" or 'PyQt5':
-    echo       Step 5 pip install failed silently.
-    echo       Fix: python -m pip install "PyQt5>=5.15" "qtpy>=2.4"
-    echo(
-    echo  3. "No module named 'moderngl'" or 'numpy':
-    echo       Fix: python -m pip install moderngl numpy
-    echo(
-    echo  4. Any other import error:
-    echo       Open a command prompt, cd to this folder, and run:
-    echo         python -c "import gmodular"
-    echo       to see the full traceback, then fix that specific module.
-    echo(
-    pause
-    exit /b 1
+    goto :die
 )
-echo [OK] GModular self-test passed.
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 11b -- GhostRigger self-test
+REM  STEP 11b -- GhostRigger self-test (non-fatal)
 REM ---------------------------------------------------------------
 echo [....] GhostRigger import self-test...
 %PY% -c "import sys, os; sys.path.insert(0, os.path.join(os.getcwd(),'ghostrigger')); from ghostrigger.core.blueprint_state import BlueprintRegistry, Blueprint; from ghostrigger.ipc.server import PORT; print('GhostRigger OK, port', PORT)"
 if errorlevel 1 (
-    echo [WARN] GhostRigger import failed (non-fatal).
+    echo [WARN] GhostRigger import failed (non-fatal, build continues).
 ) else (
     echo [OK] GhostRigger self-test passed.
 )
 echo(
 
 REM ---------------------------------------------------------------
-REM  STEP 11c -- GhostScripter self-test
+REM  STEP 11c -- GhostScripter self-test (non-fatal)
 REM ---------------------------------------------------------------
 echo [....] GhostScripter import self-test...
 %PY% -c "import sys, os; sys.path.insert(0, os.path.join(os.getcwd(),'ghostscripter')); from ghostscripter.core.script_state import ScriptRegistry, NWScriptCompiler; from ghostscripter.ipc.server import PORT; print('GhostScripter OK, port', PORT)"
 if errorlevel 1 (
-    echo [WARN] GhostScripter import failed (non-fatal).
+    echo [WARN] GhostScripter import failed (non-fatal, build continues).
 ) else (
     echo [OK] GhostScripter self-test passed.
 )
@@ -350,7 +279,7 @@ REM ---------------------------------------------------------------
 REM  STEP 13 -- BUILD
 REM ---------------------------------------------------------------
 echo ============================================================
-echo  Building GModular.exe ...  (1-3 minutes)
+echo  Building GModular.exe ...  (this takes 1-3 minutes)
 echo ============================================================
 echo(
 
@@ -367,24 +296,23 @@ if errorlevel 1 (
     echo  1. Wrong Python version -- use Python 3.12
     echo       https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo(
-    echo  2. Antivirus blocking the output -- temporarily exclude this folder.
+    echo  2. Antivirus blocked the output -- add this folder to exclusions.
     echo(
-    echo  3. Permission error -- run cmd as Administrator.
+    echo  3. Permission error -- right-click build.bat and "Run as Administrator".
     echo(
-    echo  4. Run with debug output:
-    echo       %PY% -m PyInstaller GModular.spec --debug all
+    echo  4. See full PyInstaller log above for the specific error.
+    echo     To re-run with verbose output:
+    echo       %PY% -m PyInstaller GModular.spec --clean --log-level DEBUG
     echo(
-    pause
-    exit /b 1
+    goto :die
 )
 
 REM ---------------------------------------------------------------
-REM  STEP 14 -- Validate exe exists + show size
+REM  STEP 14 -- Validate exe + report size
 REM ---------------------------------------------------------------
 if not exist "dist\GModular.exe" (
-    echo [ERROR] dist\GModular.exe not found after build!
-    pause
-    exit /b 1
+    echo [ERROR] dist\GModular.exe not found after build -- something went wrong.
+    goto :die
 )
 for %%F in ("dist\GModular.exe") do (
     set /a SIZE_MB=%%~zF / 1048576
@@ -406,14 +334,32 @@ echo    Double-click dist\GModular.exe   (no install needed)
 echo(
 echo  FIRST TIME:
 echo    Tools ^> Set Game Directory
-echo    Point to your KotOR folder  (contains chitin.key)
+echo    Point to your KotOR folder  (the folder with chitin.key)
 echo    Click "Load Assets"
 echo(
 if !MODERNGL_OK!==0 (
-    echo  NOTE: 3D viewport using PyOpenGL fallback.
+    echo  NOTE: 3D viewport is using PyOpenGL fallback.
     echo  For full moderngl acceleration, install Visual C++ Build Tools
     echo  and re-run build.bat.
     echo(
 )
 echo ============================================================
-pause
+echo(
+echo  Press any key to close this window.
+pause >nul
+goto :eof
+
+REM ---------------------------------------------------------------
+REM  :die  -- always show a pause before exiting with error
+REM  This label is used by every error path so the window NEVER
+REM  closes without giving you a chance to read the message.
+REM ---------------------------------------------------------------
+:die
+echo(
+echo ============================================================
+echo  BUILD STOPPED.  Read the [ERROR] message above.
+echo ============================================================
+echo(
+echo  Press any key to close this window.
+pause >nul
+exit /b 1

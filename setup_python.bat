@@ -1,135 +1,126 @@
 @echo off
-chcp 65001 >nul 2>&1
-setlocal EnableDelayedExpansion
+REM ============================================================
+REM  setup_python.bat  —  GModular Python 3.12 installer helper
+REM  Automatically downloads and installs Python 3.12 from the
+REM  official python.org/ftp mirror (NOT the Microsoft Store).
+REM  Works on Windows 10/11.  Run this ONCE, then run build.bat.
+REM ============================================================
+REM  WARNING: Do NOT install Python from the Microsoft Store.
+REM  The Microsoft Store version is sandboxed, does not support
+REM  virtual environments properly, and may cause pip/venv errors.
+REM  Always use the official installer from python.org/ftp/python.
+REM ============================================================
 
-echo ============================================================
-echo  GModular - Python 3.12 Setup Helper
-echo  Downloads and runs the official Python 3.12.9 installer
-echo  directly from python.org (NOT the Microsoft Store)
-echo ============================================================
+setlocal enabledelayedexpansion
+
+echo.
+echo  *** GModular — Python 3.12 Setup ***
+echo.
+echo  This script installs Python 3.12 from python.org/ftp/python.
+echo  IMPORTANT: Avoid the Microsoft Store Python — it lacks proper
+echo  venv support and will cause build errors.
 echo.
 
-cd /d "%~dp0"
-
-REM -- Check if Python 3.12 is already available --------------------------
+REM --- Check if Python 3.12 is already installed -----------------------
+echo  Checking for existing Python 3.12 installation...
 py -3.12 --version >nul 2>&1
 if not errorlevel 1 (
-    echo [OK] Python 3.12 is already installed:
+    echo.
+    echo  [OK] Python 3.12 is already installed:
     py -3.12 --version
     echo.
-    echo  You can now run:
-    echo    py -3.12 -m venv venv
-    echo    venv\Scripts\activate.bat
-    echo    build.bat
+    echo  You are ready to build.  Run:  build.bat
     echo.
     pause
     exit /b 0
 )
 
-echo [INFO] Python 3.12 not found. Downloading installer...
-echo.
-echo  Source: https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
-echo  (This is the OFFICIAL installer -- NOT the Microsoft Store version)
+echo  Python 3.12 not found — downloading installer from python.org...
 echo.
 
-REM -- Check curl is available (built into Windows 10 1803+ and Windows 11) ------
+REM --- Check for curl availability -------------------------------------
 curl --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] curl not found.
+    echo  [WARN] curl is not available on this machine.
     echo.
-    echo  Your Windows version may be too old for the built-in curl.
-    echo  Please download Python 3.12 manually:
-    echo.
+    echo  Please download Python 3.12 manually from:
     echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo.
-    echo  Run the downloaded file and tick "Add Python 3.12 to PATH".
-    echo  Then run build.bat.
+    echo  When running the installer:
+    echo    - Tick "Add Python 3.12 to PATH"  (important!)
+    echo    - Choose "Install Now"
     echo.
+    echo  After installation, run build.bat to build GModular.
+    echo.
+    start https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     pause
     exit /b 1
 )
 
-REM -- Download Python 3.12.9 installer --------------------------------------
-set INSTALLER=%TEMP%\python-3.12.9-amd64.exe
-set DOWNLOAD_URL=https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
+REM --- Download Python 3.12 installer via curl -------------------------
+set "INSTALLER=%TEMP%\python-3.12.9-amd64.exe"
+set "DL_URL=https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe"
 
-echo [....] Downloading python-3.12.9-amd64.exe ...
-echo        (approx 25 MB -- this may take a minute)
+echo  Downloading:  %DL_URL%
+echo  Saving to:    %INSTALLER%
 echo.
 
-curl -L --progress-bar -o "!INSTALLER!" "!DOWNLOAD_URL!"
-
+curl -L --progress-bar -o "%INSTALLER%" "%DL_URL%"
 if errorlevel 1 (
     echo.
-    echo [ERROR] Download failed.
-    echo.
-    echo  Possible causes:
-    echo    - No internet connection
-    echo    - Corporate firewall / proxy blocking python.org
-    echo.
-    echo  Manual download:
+    echo  [ERROR] Download failed.
+    echo  Check your internet connection, then try again, or download manually:
     echo    https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe
     echo.
     pause
     exit /b 1
 )
 
-if not exist "!INSTALLER!" (
-    echo [ERROR] Downloaded file not found at !INSTALLER!
-    pause
-    exit /b 1
-)
-
 echo.
-echo [OK] Download complete: !INSTALLER!
+echo  Download complete.  Launching installer...
 echo.
-
-REM -- Run the installer ----------------------------------------------------
-echo ============================================================
-echo  INSTALLER IS ABOUT TO OPEN
-echo ============================================================
-echo.
-echo  In the installer window:
-echo.
-echo    1. Tick BOTH checkboxes on the first screen:
-echo         [x] Install launcher for all users (recommended)
-echo         [x] Add Python 3.12 to PATH          ^<-- REQUIRED
-echo.
-echo    2. Click "Install Now"
-echo.
-echo    3. Wait for installation to finish, then close the window.
-echo.
-echo  !! DO NOT click "Get" or open the Microsoft Store !!
-echo  !! This is the direct .exe installer -- it will    !!
-echo  !! work even if the Store is blocked by policy.    !!
+echo  IMPORTANT: In the installer, tick "Add Python 3.12 to PATH" before
+echo  clicking Install Now.  This makes "py -3.12" available globally and
+echo  is required for build.bat to find Python automatically.
 echo.
 pause
 
-"!INSTALLER!" /passive PrependPath=1 InstallAllUsers=0
-
+REM --- Run the installer -----------------------------------------------
+"%INSTALLER%" /passive InstallAllUsers=0 PrependPath=1 Include_pip=1
 if errorlevel 1 (
     echo.
-    echo [WARN] Installer returned non-zero. It may have been cancelled,
-    echo        or UAC was denied. Check if Python 3.12 was installed by
-    echo        opening a new cmd window and typing:  py -3.12 --version
+    echo  [ERROR] Installer returned an error.  Try running as Administrator.
+    echo.
+    pause
+    exit /b 1
+)
+
+REM --- Clean up installer file -----------------------------------------
+del /q "%INSTALLER%" 2>nul
+
+REM --- Verify installation ---------------------------------------------
+echo.
+echo  Verifying installation...
+py -3.12 --version >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo  [WARN] py -3.12 not found after install.  You may need to:
+    echo   1. Close this window and reopen a new Command Prompt
+    echo   2. Then run:  build.bat
+    echo.
+    echo  If py -3.12 still fails, add Python to PATH manually via:
+    echo    Settings ^> System ^> About ^> Advanced system settings ^> Environment Variables
     echo.
 ) else (
     echo.
-    echo [OK] Python 3.12 installer finished.
+    echo  [OK] Python 3.12 installed successfully:
+    py -3.12 --version
 )
 
 echo.
-echo ============================================================
-echo  NEXT STEPS
-echo ============================================================
+echo  ============================================================
+echo   Next step:  run  build.bat  to compile GModular.exe
+echo  ============================================================
 echo.
-echo  1. Close this window.
-echo  2. Open a NEW Command Prompt (important -- PATH must reload).
-echo  3. Run:
-echo       cd /d "%~dp0"
-echo       py -3.12 -m venv venv
-echo       venv\Scripts\activate.bat
-echo       build.bat
-echo.
-echo ============================================================
 pause
+exit /b 0
