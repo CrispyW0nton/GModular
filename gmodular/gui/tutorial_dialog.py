@@ -19,14 +19,14 @@ from typing import List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
         QScrollArea, QWidget, QFrame, QSizePolicy, QProgressBar,
         QCheckBox, QSplitter, QTextBrowser, QListWidget, QListWidgetItem,
         QApplication, QShortcut,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
-    from PyQt5.QtGui import (
+    from qtpy.QtCore import Qt, Signal, QSize, QTimer
+    from qtpy.QtGui import (
         QColor, QPalette, QFont, QKeySequence, QPainter, QPen, QBrush,
         QPixmap, QIcon,
     )
@@ -46,7 +46,7 @@ except ImportError:
     QShortcut = QSizePolicy = QApplication = _Stub  # type: ignore
     Qt = _Stub(); QColor = QFont = QPalette = QPixmap = QIcon = _Stub  # type: ignore
     QKeySequence = QPainter = QPen = QBrush = QSize = QTimer = _Stub  # type: ignore
-    pyqtSignal = _Stub  # type: ignore
+    Signal = _Stub  # type: ignore
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -964,7 +964,7 @@ class TutorialDialog(QDialog):
     """
 
     #: Emitted when the user closes / hides the dialog
-    closed = pyqtSignal()
+    closed = Signal()
 
     def __init__(self, parent=None, start_step: int = 0):
         super().__init__(parent)

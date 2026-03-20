@@ -37,15 +37,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
         QListWidget, QListWidgetItem, QScrollArea,
         QSplitter, QFrame, QSizePolicy,
         QLineEdit, QMessageBox, QMenu,
         QApplication, QFileDialog, QInputDialog,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect, QSize, QMimeData
-    from PyQt5.QtGui import (
+    from qtpy.QtCore import Qt, Signal, QPoint, QRect, QSize, QMimeData
+    from qtpy.QtGui import (
         QPainter, QColor, QPen, QFont,
         QFontMetrics, QDrag,
     )
@@ -54,7 +54,7 @@ except ImportError:
     _HAS_QT = False
     QWidget = object  # type: ignore[misc,assignment]
     QListWidget = object  # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -359,9 +359,9 @@ class RoomGridWidget(QWidget):
     Supports drag-drop, single-click placement, move, delete, zoom.
     """
 
-    rooms_changed    = pyqtSignal()
-    room_selected    = pyqtSignal(object)    # RoomInstance or None
-    request_place_at = pyqtSignal(int, int)  # gx, gy  -  right-click place
+    rooms_changed    = Signal()
+    room_selected    = Signal(object)    # RoomInstance or None
+    request_place_at = Signal(int, int)  # gx, gy  -  right-click place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -812,7 +812,7 @@ class RoomPaletteWidget(QWidget):
     - Double-click in list emits place_requested signal
     """
 
-    place_requested = pyqtSignal(str)   # mdl_name  -  single-click place
+    place_requested = Signal(str)   # mdl_name  -  single-click place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -901,9 +901,9 @@ class RoomAssemblyPanel(QWidget):
     Left: palette  |  Center: scrollable grid  |  Right: details + actions
     """
 
-    lyt_changed   = pyqtSignal(str)
-    vis_changed   = pyqtSignal(str)
-    rooms_changed = pyqtSignal(list)
+    lyt_changed   = Signal(str)
+    vis_changed   = Signal(str)
+    rooms_changed = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)

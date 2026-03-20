@@ -16,19 +16,19 @@ import logging
 from typing import List, Tuple, Optional
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
         QListWidget, QListWidgetItem, QGroupBox, QFrame,
         QDoubleSpinBox, QFormLayout, QMessageBox,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal
-    from PyQt5.QtGui import QFont
+    from qtpy.QtCore import Qt, Signal
+    from qtpy.QtGui import QFont
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QWidget = object  # type: ignore[misc,assignment]
     QListWidget = object  # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         """Stub so class-level signal definitions don't crash without Qt."""
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
@@ -56,9 +56,9 @@ class PatrolPathEditor(QWidget):
     """
 
     # Emitted whenever the waypoint list changes
-    path_changed = pyqtSignal(object, list)   # (creature, List[GITWaypoint])
+    path_changed = Signal(object, list)   # (creature, List[GITWaypoint])
     # Emitted when user clicks "Add Waypoint Here" — requests a floor click
-    request_click_placement = pyqtSignal(object)   # creature
+    request_click_placement = Signal(object)   # creature
 
     def __init__(self, creature: GITCreature, state=None, parent=None):
         super().__init__(parent)

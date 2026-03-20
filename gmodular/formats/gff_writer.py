@@ -24,6 +24,7 @@ from .gff_types import (
     GITData, GITPlaceable, GITCreature, GITDoor,
     GITTrigger, GITSoundObject, GITWaypoint, GITStoreObject,
     AREData, IFOData, Vector3, Quaternion,
+    LocalizedString, Language, Gender, locstring_substring_id,
 )
 
 log = logging.getLogger(__name__)
@@ -104,8 +105,10 @@ class GFFWriter:
                     queue.append(field.value)
                 elif field.type_id == GFFFieldType.LIST and isinstance(field.value, list):
                     for sub in field.value:
-                        if isinstance(sub, GFFStruct):
-                            queue.append(sub)
+                        # sub can be a GFFStruct directly, or a GFFField wrapping one
+                        actual = sub.value if isinstance(sub, GFFField) and isinstance(sub.value, GFFStruct) else sub
+                        if isinstance(actual, GFFStruct):
+                            queue.append(actual)
         return ordered
 
     def _build_all(self, root: "GFFStruct"):
@@ -168,9 +171,28 @@ class GFFWriter:
                 off = write_fd(bytes([len(s_val)]) + s_val)
                 self._fields.append((ft, lidx, off))
             elif ft == GFFFieldType.CEXOLOCSTRING:
-                s_val = str(value or "").encode("utf-8")
-                inner = struct.pack("<II", 0xFFFFFFFF, 1)
-                inner += struct.pack("<II", 0, len(s_val)) + s_val
+                # Accept LocalizedString objects (preferred) or plain str (legacy).
+                # Each substring is encoded with its language-specific codepage
+                # (cp1252 for English/Western European, cp1250 for Polish, etc.)
+                # matching the KotOR binary GFF spec and xoreos gff3writer.cpp.
+                if isinstance(value, LocalizedString):
+                    ls = value
+                else:
+                    # Legacy: wrap a plain str as English male substring
+                    ls = LocalizedString.from_english(str(value or ""))
+
+                inner = struct.pack("<I", ls.stringref)
+                substrings = ls._substrings
+                inner += struct.pack("<I", len(substrings))
+                for sid, text in substrings.items():
+                    try:
+                        from .gff_types import locstring_pair, Language as _Lang
+                        lang, gender = locstring_pair(sid)
+                        enc = lang.get_encoding()
+                    except Exception:
+                        enc = "cp1252"
+                    s_val = text.encode(enc, errors="replace")
+                    inner += struct.pack("<II", sid, len(s_val)) + s_val
                 off = write_fd(struct.pack("<I", len(inner)) + inner)
                 self._fields.append((ft, lidx, off))
             elif ft == GFFFieldType.VOID:
@@ -186,7 +208,9 @@ class GFFWriter:
                 # Write count + struct indices (all already in struct_idx_map)
                 self._list_indices.extend(struct.pack("<I", len(items)))
                 for sub_s in items:
-                    sub_idx = struct_idx_map.get(id(sub_s), 0)
+                    # sub_s can be a GFFStruct directly, or a GFFField wrapping one
+                    actual = sub_s.value if isinstance(sub_s, GFFField) and isinstance(sub_s.value, GFFStruct) else sub_s
+                    sub_idx = struct_idx_map.get(id(actual), 0)
                     self._list_indices.extend(struct.pack("<I", sub_idx))
                 self._fields.append((ft, lidx, list_off))
             elif ft == GFFFieldType.ORIENTATION:
@@ -198,7 +222,9 @@ class GFFWriter:
                 off = write_fd(struct.pack("<3f", v.x, v.y, v.z))
                 self._fields.append((ft, lidx, off))
             elif ft == GFFFieldType.STRREF:
-                self._fields.append((ft, lidx, int(value or 0xFFFFFFFF)))
+                # Use 0xFFFFFFFF only when value is None, not when it's 0
+                strref_val = 0xFFFFFFFF if value is None else int(value) & 0xFFFFFFFF
+                self._fields.append((ft, lidx, strref_val))
             else:
                 log.warning(f"Unknown field type {ft!r} for {label!r}")
                 self._fields.append((GFFFieldType.DWORD, lidx, 0))
@@ -410,7 +436,8 @@ def _waypoint_struct(w: GITWaypoint) -> GFFStruct:
     s.fields["YPosition"] = _float_field("YPosition", w.position.y)
     s.fields["ZPosition"] = _float_field("ZPosition", w.position.z)
     s.fields["XOrientation"] = _float_field("XOrientation", getattr(w, "bearing", 0.0))
-    s.fields["MapNote"]   = GFFField("MapNote", GFFFieldType.CEXOLOCSTRING, w.map_note)
+    s.fields["MapNote"]   = GFFField("MapNote", GFFFieldType.CEXOLOCSTRING,
+                                       LocalizedString.from_english(str(w.map_note or "")))
     s.fields["MapNoteEnabled"] = _byte_field("MapNoteEnabled", w.map_note_enabled)
     return s
 
@@ -504,9 +531,16 @@ def save_git(git: GITData, path: str, game: str = "K1"):
     log.info(f"Saved GIT: {path} ({git.object_count} objects)")
 
 
-def _locstring_field(label: str, value: str) -> "GFFField":
-    """Build a CExoLocString field (used for Mod_Name, Mod_Description in IFO)."""
-    return GFFField(label, GFFFieldType.CEXOLOCSTRING, value)
+def _locstring_field(label: str, value) -> "GFFField":
+    """Build a CExoLocString field (used for Mod_Name, Mod_Description in IFO).
+
+    Accepts either a LocalizedString object or a plain str (which is wrapped
+    as English-male with the correct cp1252 encoding).
+    """
+    if isinstance(value, LocalizedString):
+        return GFFField(label, GFFFieldType.CEXOLOCSTRING, value)
+    return GFFField(label, GFFFieldType.CEXOLOCSTRING,
+                    LocalizedString.from_english(str(value or "")))
 
 
 def save_ifo(ifo: "IFOData", path: str):

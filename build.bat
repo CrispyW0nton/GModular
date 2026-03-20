@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v2.0
+echo  GModular Build Script  v2.0.8
 echo  KotOR Module Editor  ^|  Produces: dist\GModular.exe
 echo ============================================================
 echo(
@@ -213,14 +213,38 @@ echo(
 REM ---------------------------------------------------------------
 REM  STEP 11 -- Quick self-test
 REM ---------------------------------------------------------------
-echo [....] Import self-test...
-%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; print('OK')"
+echo [....] GModular import self-test...
+%PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; print('GModular OK')"
 if errorlevel 1 (
-    echo [ERROR] Import failed -- fix the error shown above, then re-run.
+    echo [ERROR] GModular import failed -- fix the error shown above, then re-run.
     pause
     exit /b 1
 )
-echo [OK] Self-test passed.
+echo [OK] GModular self-test passed.
+echo(
+
+REM ---------------------------------------------------------------
+REM  STEP 11b -- GhostRigger self-test
+REM ---------------------------------------------------------------
+echo [....] GhostRigger import self-test...
+%PY% -c "import sys, os; sys.path.insert(0, os.path.join(os.getcwd(),'ghostrigger')); from ghostrigger.core.blueprint_state import BlueprintRegistry, Blueprint; from ghostrigger.ipc.server import PORT; print('GhostRigger OK, port', PORT)"
+if errorlevel 1 (
+    echo [WARN] GhostRigger import failed (non-fatal).
+) else (
+    echo [OK] GhostRigger self-test passed.
+)
+echo(
+
+REM ---------------------------------------------------------------
+REM  STEP 11c -- GhostScripter self-test
+REM ---------------------------------------------------------------
+echo [....] GhostScripter import self-test...
+%PY% -c "import sys, os; sys.path.insert(0, os.path.join(os.getcwd(),'ghostscripter')); from ghostscripter.core.script_state import ScriptRegistry, NWScriptCompiler; from ghostscripter.ipc.server import PORT; print('GhostScripter OK, port', PORT)"
+if errorlevel 1 (
+    echo [WARN] GhostScripter import failed (non-fatal).
+) else (
+    echo [OK] GhostScripter self-test passed.
+)
 echo(
 
 REM ---------------------------------------------------------------

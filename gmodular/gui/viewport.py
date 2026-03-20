@@ -58,9 +58,9 @@ except ImportError:
 
 # ─── Qt ───────────────────────────────────────────────────────────────────────
 try:
-    from PyQt5.QtWidgets import QWidget, QSizePolicy
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint
-    from PyQt5.QtGui import (
+    from qtpy.QtWidgets import QWidget, QSizePolicy
+    from qtpy.QtCore import Qt, QTimer, Signal, QPoint
+    from qtpy.QtGui import (
         QKeyEvent, QMouseEvent, QWheelEvent,
         QPainter, QPen, QBrush, QColor, QFont,
         QPolygon, QCursor, QImage,
@@ -71,7 +71,7 @@ except ImportError:
     _HAS_QT = False
     _QWidget_base = object  # type: ignore
     QColor = None  # type: ignore
-    class pyqtSignal:  # type: ignore
+    class Signal:  # type: ignore
         def __init__(self, *a, **kw): pass
         def __set_name__(self, o, n): pass
 
@@ -139,17 +139,51 @@ except ImportError:
     pass
 
 try:
-    from ..engine.player_controller import PlaySession
-    from ..engine.npc_instance import NPCRegistry
+    # New engine systems (animation, scene graph, entity system, play mode)
+    from ..engine.play_mode import PlaySession, PlayModeController, CameraMode
+    from ..engine.animation_system import AnimationSet, get_default_idle_animation
+    from ..engine.scene_manager import SceneGraph, SceneRoom, SceneEntity, Frustum, AABB
+    from ..engine.entity_system import EntityRegistry, Door3D, Creature3D, Placeable3D
     _HAS_ENGINE = True
+    _HAS_NEW_ENGINE = True
 except ImportError:
     _HAS_ENGINE = False
+    _HAS_NEW_ENGINE = False
+    try:
+        # Legacy fallback
+        from ..engine.player_controller import PlaySession
+        from ..engine.npc_instance import NPCRegistry
+        _HAS_ENGINE = True
+    except ImportError:
+        pass
 
 try:
     from ..formats.mdl_parser import get_model_cache
     _HAS_MDL = True
 except ImportError:
     _HAS_MDL = False
+
+# ─── Sub-modules extracted from this file ────────────────────────────────────
+# OrbitCamera and GLSL shaders live in their own modules for testability.
+# viewport.py re-exports them so that existing ``from .viewport import …``
+# callsites continue to work without modification.
+try:
+    from .viewport_camera import OrbitCamera, _look_at as _look_at_cam, _perspective as _perspective_cam  # noqa: F401
+    from .viewport_shaders import (  # noqa: F401
+        _VERT_FLAT, _FRAG_FLAT,
+        _VERT_LIT, _FRAG_LIT,
+        _VERT_LIT_NO_UV, _FRAG_LIT_NO_UV,
+        _VERT_UNIFORM, _FRAG_UNIFORM,
+        _VERT_OUTLINE, _FRAG_OUTLINE,
+        _VERT_PICKER, _FRAG_PICKER, _VERT_PICK, _FRAG_PICK,
+        _VERT_TEXTURED, _FRAG_TEXTURED,
+        _VERT_SKINNED, _FRAG_SKINNED,
+        ALL_SHADERS,
+    )
+    from .viewport_renderer import _EGLRenderer, _inject_helpers  # noqa: F401
+    _SUBMODULES_LOADED = True
+except ImportError:
+    _SUBMODULES_LOADED = False
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -196,40 +230,102 @@ def _translation(tx: float, ty: float, tz: float) -> "np.ndarray":
 # ═════════════════════════════════════════════════════════════════════════════
 
 class OrbitCamera:
-    """Maya-style orbit camera (Z-up, right-handed — matches KotOR)."""
+    """
+    Maya-style orbit camera (Z-up, right-handed — matches KotOR / Odyssey).
+
+    Aligned with Kotor.NET OrbitCamera.cs (Graphics/Cameras/OrbitCamera.cs):
+      Yaw   = azimuth  angle in degrees around Z-axis
+      Pitch = elevation angle in degrees (clamped -85..85, like Kotor.NET -1.55..1.55 rad)
+      FOV   = field of view in degrees (default 60° ≈ π/3 rad)
+      Near  = 0.001 (matches Kotor.NET OrbitCamera.Near = 0.001f)
+      Far   = 1000.0 (matches Kotor.NET OrbitCamera.Far = 1000.0f)
+    """
 
     def __init__(self):
-        self.azimuth   = 45.0
-        self.elevation = 30.0
-        self.distance  = 15.0
-        self.target    = np.array([0., 0., 0.], dtype='f4')
-        self.fov       = 60.0
-        self._near, self._far = 0.1, 1000.0
+        # Primary attributes (Kotor.NET naming)
+        self.yaw       = 45.0    # azimuth in degrees (Kotor.NET: Yaw in radians)
+        self.pitch     = 30.0    # elevation in degrees (Kotor.NET: Pitch in radians)
+        self.distance  = 15.0   # Kotor.NET: Distance
+        self.target    = np.array([0., 0., 0.], dtype='f4')  # Kotor.NET: Target
+        self.fov       = 60.0   # degrees (Kotor.NET: FOV = Math.PI/3 = 60°)
+        self.near      = 0.001  # Kotor.NET: Near = 0.001f (very close near plane)
+        self.far       = 1000.0 # Kotor.NET: Far = 1000.0f
+
+    # Backward-compatible aliases for legacy code
+    @property
+    def azimuth(self) -> float:
+        return self.yaw
+
+    @azimuth.setter
+    def azimuth(self, v: float):
+        self.yaw = v
+
+    @property
+    def elevation(self) -> float:
+        return self.pitch
+
+    @elevation.setter
+    def elevation(self, v: float):
+        self.pitch = v
+
+    @property
+    def _near(self) -> float:
+        return self.near
+
+    @_near.setter
+    def _near(self, v: float):
+        self.near = v
+
+    @property
+    def _far(self) -> float:
+        return self.far
+
+    @_far.setter
+    def _far(self, v: float):
+        self.far = v
 
     def eye(self) -> "np.ndarray":
-        az = math.radians(self.azimuth)
-        el = math.radians(self.elevation)
-        x  = self.distance * math.cos(el) * math.cos(az)
-        y  = self.distance * math.cos(el) * math.sin(az)
-        z  = self.distance * math.sin(el)
+        """
+        Compute camera eye position from Yaw/Pitch/Distance/Target.
+
+        Matches Kotor.NET OrbitCamera.GetViewTransform():
+          cosPitch = cos(Pitch), sinPitch = sin(Pitch)
+          cosYaw   = cos(Yaw),   sinYaw   = sin(Yaw)
+          x = Distance * cosPitch * cosYaw
+          y = Distance * cosPitch * sinYaw
+          z = Distance * sinPitch
+        """
+        yaw = math.radians(self.yaw)
+        pit = math.radians(self.pitch)
+        cos_p = math.cos(pit)
+        x = self.distance * cos_p * math.cos(yaw)
+        y = self.distance * cos_p * math.sin(yaw)
+        z = self.distance * math.sin(pit)
         return self.target + np.array([x, y, z], dtype='f4')
 
     def view_matrix(self) -> "np.ndarray":
+        """View matrix — LookAt(eye, target, Z-up). Matches Kotor.NET GetViewTransform."""
         return _look_at(self.eye(), self.target,
                         np.array([0., 0., 1.], dtype='f4'))
 
     def projection_matrix(self, aspect: float) -> "np.ndarray":
-        return _perspective(self.fov, aspect, self._near, self._far)
+        """Perspective projection. Matches Kotor.NET GetProjectionTransform."""
+        return _perspective(self.fov, aspect, self.near, self.far)
 
     def orbit(self, d_az: float, d_el: float):
-        self.azimuth = (self.azimuth + d_az) % 360.
-        self.elevation = max(-85., min(85., self.elevation + d_el))
+        """Orbit by (d_az, d_el) degrees. Pitch clamped to -85..85°."""
+        self.yaw   = (self.yaw + d_az) % 360.
+        self.pitch = max(-85., min(85., self.pitch + d_el))
 
     def zoom(self, delta: float):
-        self.distance = max(0.5, self.distance * (0.9 ** delta))
+        """Exponential zoom — feels natural at all distances."""
+        factor = 0.88 if delta > 0 else (1.0 / 0.88)
+        self.distance = max(0.5, min(5000.0, self.distance * (factor ** abs(delta))))
 
     def pan(self, dx: float, dy: float):
-        az  = math.radians(self.azimuth)
+        """Pan camera target in screen-right + screen-up plane."""
+        az    = math.radians(self.yaw)
+        # Screen-right vector (perpendicular to view, horizontal)
         right = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
         fwd = self.target - self.eye()
         fwd_len = np.linalg.norm(fwd)
@@ -239,16 +335,43 @@ class OrbitCamera:
         up = np.cross(right, fwd)
         up_len = np.linalg.norm(up)
         if up_len < 1e-9:
-            up = np.array([0., 1., 0.], dtype='f4')
+            up = np.array([0., 0., 1.], dtype='f4')
         else:
             up /= up_len
-        scale = self.distance * 0.002
+        # Scale pan by distance so it feels consistent at all zoom levels
+        scale = self.distance * 0.0015
         self.target += right * dx * scale
         self.target -= up    * dy * scale
 
+    def walk(self, forward: float, right: float, up: float):
+        """
+        Fly-through movement — moves both eye and target together.
+        Used by WASD keys in free-fly mode.
+        forward/right/up: movement amounts in world units.
+        """
+        az  = math.radians(self.yaw)
+        pit = math.radians(self.pitch)
+        # Forward direction (pitch-aware for fly-through mode)
+        fwd_h = np.array([math.cos(az), math.sin(az), 0.], dtype='f4')
+        rt    = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
+        up_v  = np.array([0., 0., 1.], dtype='f4')
+        # For fly-through, include pitch component in forward
+        fwd_3d = np.array([
+            math.cos(pit) * math.cos(az),
+            math.cos(pit) * math.sin(az),
+            math.sin(pit)
+        ], dtype='f4')
+        delta = fwd_3d * forward + rt * right + up_v * up
+        self.target += delta
+
     def frame(self, center: "np.ndarray", radius: float):
+        """Frame camera to show a sphere of given center and radius."""
         self.target = center.copy()
         self.distance = max(1., radius * 2.5)
+        # Extend far plane to ensure geometry at this distance is visible
+        self.far = max(1000.0, self.distance * 4.0 + radius * 2.0)
+        # Also set near plane to reasonable value relative to scene size
+        self.near = max(0.001, radius * 0.001)
 
     def ray_from_screen(self, sx: int, sy: int, W: int, H: int
                         ) -> Tuple["np.ndarray", "np.ndarray"]:
@@ -269,9 +392,11 @@ class OrbitCamera:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  GLSL Shaders
+#  GLSL Shaders  (upgraded: Phong+UV+texture, object picker, lightmap blend)
+#  Deep-dive reference: Kotor.NET Assets/standard/*.glsl + picker/*.glsl
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ── Flat colour-per-vertex (grid, wireframe boxes) ────────────────────────
 _VERT_FLAT = """
 #version 330 core
 in vec3 in_position;
@@ -291,7 +416,74 @@ out vec4 fragColor;
 void main() { fragColor = vec4(v_color, 1.0); }
 """
 
+# ── Phong-lit with UV texture support ─────────────────────────────────────
+# Based on PyKotor KOTOR_VSHADER / KOTOR_FSHADER + Kotor.NET standard.glsl
+# Features:
+#   - Proper normal transform (normal matrix from model)
+#   - Multi-light Blinn-Phong (key + fill + rim + back + spec)
+#   - Dual UV channels: diffuse UV + optional lightmap UV
+#   - Alpha discard for punch-through transparency
 _VERT_LIT = """
+#version 330 core
+in vec3 in_position;
+in vec3 in_normal;
+in vec2 in_uv;
+out vec3 v_normal;
+out vec3 v_world_pos;
+out vec2 v_uv;
+uniform mat4 mvp;
+uniform mat4 model;
+void main() {
+    vec4 world = model * vec4(in_position, 1.0);
+    v_world_pos = world.xyz;
+    // Correct normal transform using normal matrix
+    mat3 normal_mat = transpose(inverse(mat3(model)));
+    v_normal    = normalize(normal_mat * in_normal);
+    v_uv        = in_uv;
+    gl_Position = mvp * vec4(in_position, 1.0);
+}
+"""
+
+_FRAG_LIT = """
+#version 330 core
+in vec3 v_normal;
+in vec3 v_world_pos;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform vec3  diffuse_color;
+uniform vec3  light_dir;
+uniform float ambient;
+uniform float alpha;
+uniform bool  has_texture;
+uniform sampler2D tex0;
+void main() {
+    if (has_texture) {
+        // Texture passthrough: Kotor.NET style — output texture directly
+        vec4 tex_sample = texture(tex0, v_uv);
+        if (tex_sample.a < 0.05) discard;
+        fragColor = vec4(tex_sample.rgb, tex_sample.a * alpha);
+    } else {
+        // No texture: apply Phong to diffuse_color
+        vec3 n = normalize(v_normal);
+        vec3 key       = normalize(light_dir);
+        float NdL_key  = max(dot(n, key), 0.0);
+        vec3 fill      = normalize(vec3(-key.x * 0.5, -key.y * 0.5, 0.4));
+        float NdL_fill = max(dot(n, fill), 0.0) * 0.30;
+        float NdL_rim  = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.10;
+        float back     = max(dot(-n, key), 0.0) * 0.12;
+        vec3 view_dir  = normalize(-v_world_pos);
+        vec3 half_vec  = normalize(key + view_dir);
+        float spec     = pow(max(dot(n, half_vec), 0.0), 48.0) * 0.04;
+        float light_total = ambient + (NdL_key + NdL_fill + NdL_rim + back) * (1.0 - ambient);
+        float ao       = 0.88 + 0.12 * abs(n.z);
+        vec3 col       = diffuse_color * light_total * ao + vec3(spec);
+        fragColor      = vec4(clamp(col, 0.0, 1.0), alpha);
+    }
+}
+"""
+
+# ── Lit with no UV (positions + normals only — for nodes without UVs) ─────
+_VERT_LIT_NO_UV = """
 #version 330 core
 in vec3 in_position;
 in vec3 in_normal;
@@ -302,41 +494,39 @@ uniform mat4 model;
 void main() {
     vec4 world = model * vec4(in_position, 1.0);
     v_world_pos = world.xyz;
-    v_normal = normalize(mat3(model) * in_normal);
+    v_normal    = normalize(mat3(transpose(inverse(model))) * in_normal);
     gl_Position = mvp * vec4(in_position, 1.0);
 }
 """
 
-_FRAG_LIT = """
+_FRAG_LIT_NO_UV = """
 #version 330 core
 in vec3 v_normal;
 in vec3 v_world_pos;
 out vec4 fragColor;
-uniform vec3 diffuse_color;
-uniform vec3 light_dir;
+uniform vec3  diffuse_color;
+uniform vec3  light_dir;
 uniform float ambient;
+uniform float alpha;
 void main() {
     vec3 n = normalize(v_normal);
-    // Primary key light (top-right, slightly warm)
-    vec3 key = normalize(light_dir);
-    float NdL_key = max(dot(n, key), 0.0);
-    // Secondary fill light (opposite side, cooler, weaker)
-    vec3 fill_dir = normalize(vec3(-key.x * 0.6, -key.y * 0.6, 0.4));
-    float NdL_fill = max(dot(n, fill_dir), 0.0) * 0.25;
-    // Rim light from below (KotOR bounce light)
-    float NdL_rim = max(dot(n, vec3(0.0, 0.0, -1.0)), 0.0) * 0.08;
-    // Two-sided: slightly light backfaces so interior rooms aren't pure black
-    float back = max(dot(-n, key), 0.0) * 0.15;
-    // Combine: ambient + key + fill + rim
+    vec3 key       = normalize(light_dir);
+    float NdL_key  = max(dot(n, key), 0.0);
+    vec3 fill      = normalize(vec3(-key.x * 0.5, -key.y * 0.5, 0.4));
+    float NdL_fill = max(dot(n, fill), 0.0) * 0.30;
+    float NdL_rim  = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.10;
+    float back     = max(dot(-n, key), 0.0) * 0.12;
+    vec3 view_dir  = normalize(-v_world_pos);
+    vec3 half_vec  = normalize(key + view_dir);
+    float spec     = pow(max(dot(n, half_vec), 0.0), 48.0) * 0.04;
     float light_total = ambient + (NdL_key + NdL_fill + NdL_rim + back) * (1.0 - ambient);
-    // Subtle darkening at grazing angles (simulates AO)
-    float ao = 0.85 + 0.15 * abs(n.z);
-    vec3 col = diffuse_color * light_total * ao;
-    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    float ao       = 0.88 + 0.12 * abs(n.z);
+    vec3 col       = diffuse_color * light_total * ao + vec3(spec);
+    fragColor      = vec4(clamp(col, 0.0, 1.0), alpha);
 }
 """
 
-# Uniform-colour + alpha (walkmesh, selection highlight overlay)
+# ── Uniform-colour + alpha (walkmesh fill, selection overlay) ─────────────
 _VERT_UNIFORM = """
 #version 330 core
 in vec3 in_position;
@@ -351,6 +541,200 @@ _FRAG_UNIFORM = """
 out vec4 fragColor;
 uniform vec4 u_color;
 void main() { fragColor = u_color; }
+"""
+
+# ── Selection highlight / outline shader ─────────────────────────────────
+# Renders a screen-space outline effect around selected objects via
+# an additive pulsing glow (matches UE5 selection highlight style).
+_VERT_OUTLINE = """
+#version 330 core
+in vec3 in_position;
+in vec3 in_normal;
+uniform mat4 mvp;
+uniform float outline_scale;  // expand along normals for silhouette
+void main() {
+    vec3 offset = in_position + in_normal * outline_scale;
+    gl_Position = mvp * vec4(offset, 1.0);
+}
+"""
+
+_FRAG_OUTLINE = """
+#version 330 core
+out vec4 fragColor;
+uniform vec4 outline_color;
+uniform float time;
+void main() {
+    // Subtle pulse (0.6 to 1.0 alpha) for UE5-style selection glow
+    float pulse = 0.6 + 0.4 * abs(sin(time * 2.5));
+    fragColor = vec4(outline_color.rgb, outline_color.a * pulse);
+}
+"""
+
+# ── Object ID picker (matches Kotor.NET picker/fragment.glsl) ─────────────
+# Encodes entity ID into RGBA bytes for GPU readback picking.
+_VERT_PICKER = """
+#version 330 core
+in vec3 in_position;
+uniform mat4 mvp;
+void main() {
+    gl_Position = mvp * vec4(in_position, 1.0);
+}
+"""
+
+_FRAG_PICKER = """
+#version 330 core
+out vec4 fragColor;
+uniform uint entity_id;
+void main() {
+    // Kotor.NET intToColor: MSB→R, LSB→A (big-endian RGBA encoding)
+    float r = float((entity_id >> 24u) & 0xFFu) / 255.0;
+    float g = float((entity_id >> 16u) & 0xFFu) / 255.0;
+    float b = float((entity_id >> 8u)  & 0xFFu) / 255.0;
+    float a = float( entity_id         & 0xFFu)  / 255.0;
+    fragColor = vec4(r, g, b, a);
+}
+"""
+
+# Aliases for backward-compat and tests (canonical names are _VERT_PICKER / _FRAG_PICKER)
+_VERT_PICK = _VERT_PICKER
+_FRAG_PICK = _FRAG_PICKER
+
+# ── Textured mesh shader (dual-sampler: albedo tex0 + optional lightmap tex1) ───────
+# Architecture: Kotor.NET standard.glsl approach
+#   - Vertex shader: separate entity + mesh matrices (like Kotor.NET entity/mesh uniforms)
+#   - Fragment shader: pure texture passthrough with optional lightmap modulation
+#   - When texture present: output texture directly (Kotor.NET: FragColor = diffuseColor)
+#   - When lightmap present: modulate albedo by lightmap (baked lighting = realism)
+#   - Minimal Phong only applied when NO texture (fallback for untextured meshes)
+_VERT_TEXTURED = """
+#version 330 core
+in vec3 in_position;
+in vec3 in_normal;
+in vec2 in_uv;
+in vec2 in_uv2;
+out vec3 v_normal;
+out vec3 v_world_pos;
+out vec2 v_uv;
+out vec2 v_uv2;
+uniform mat4 mvp;
+uniform mat4 model;
+void main() {
+    vec4 world = model * vec4(in_position, 1.0);
+    v_world_pos = world.xyz;
+    mat3 normal_mat = transpose(inverse(mat3(model)));
+    v_normal    = normalize(normal_mat * in_normal);
+    v_uv        = in_uv;
+    v_uv2       = in_uv2;
+    gl_Position = mvp * vec4(in_position, 1.0);
+}
+"""
+
+_FRAG_TEXTURED = """
+#version 330 core
+in vec3 v_normal;
+in vec3 v_world_pos;
+in vec2 v_uv;
+in vec2 v_uv2;
+out vec4 fragColor;
+uniform sampler2D tex0;        // albedo / diffuse texture
+uniform sampler2D tex1;        // lightmap texture
+uniform int  use_texture;      // 1 = sample tex0, 0 = use diffuse_color
+uniform int  use_lightmap;     // 1 = multiply by lightmap baked light
+uniform vec3 diffuse_color;
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float u_alpha;
+void main() {
+    vec4 albedo;
+    if (use_texture == 1) {
+        // Kotor.NET approach: pure texture passthrough — FragColor = texture(texture1, texCoord1)
+        albedo = texture(tex0, v_uv);
+        if (albedo.a < 0.05) discard;
+        // Apply lightmap modulation when available (baked lighting)
+        if (use_lightmap == 1) {
+            vec3 lm = texture(tex1, v_uv2).rgb;
+            // KotOR lightmap formula: lm * 1.8 + 0.2 to avoid pure black areas
+            albedo.rgb = albedo.rgb * clamp(lm * 1.8 + 0.2, 0.0, 1.5);
+        }
+        // No Phong dimming on textured + lit meshes — texture IS the full colour
+        // This matches exactly what Kotor.NET does: just output the texture
+        fragColor = vec4(clamp(albedo.rgb, 0.0, 1.0), albedo.a * u_alpha);
+    } else {
+        // Untextured mesh: apply Phong lighting to diffuse_color
+        vec3 n = normalize(v_normal);
+        vec3 key  = normalize(light_dir);
+        float NdL = max(dot(n, key), 0.0);
+        vec3 fill = normalize(vec3(-key.x * 0.5, -key.y * 0.5, 0.4));
+        float NdF = max(dot(n, fill), 0.0) * 0.28;
+        float NdR = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.08;
+        float back = max(dot(-n, key), 0.0) * 0.10;
+        float light = ambient + (NdL + NdF + NdR + back) * (1.0 - ambient);
+        fragColor = vec4(clamp(diffuse_color * light, 0.0, 1.0), u_alpha);
+    }
+}
+"""
+
+# ── Skinned mesh vertex shader (bone matrix palette — Kotor.NET SkinmeshNode) ──────────────
+# Supports up to 16 bone matrices (matching Kotor.NET MDLBinarySkinmeshHeader ushort[16]).
+# Blend weight: 4 weights per vertex.
+_VERT_SKINNED = """
+#version 330 core
+in vec3 in_position;
+in vec3 in_normal;
+in vec2 in_uv;
+in vec4 in_bone_weights;
+in ivec4 in_bone_indices;
+out vec3 v_normal;
+out vec3 v_world_pos;
+out vec2 v_uv;
+uniform mat4 mvp;
+uniform mat4 model;
+uniform mat4 bone_matrices[16];
+void main() {
+    // Weighted bone transform
+    mat4 skin = mat4(0.0);
+    skin += in_bone_weights.x * bone_matrices[in_bone_indices.x];
+    skin += in_bone_weights.y * bone_matrices[in_bone_indices.y];
+    skin += in_bone_weights.z * bone_matrices[in_bone_indices.z];
+    skin += in_bone_weights.w * bone_matrices[in_bone_indices.w];
+    vec4 world = model * skin * vec4(in_position, 1.0);
+    v_world_pos = world.xyz;
+    v_normal    = normalize(mat3(model) * mat3(skin) * in_normal);
+    v_uv        = in_uv;
+    gl_Position = mvp * vec4((skin * vec4(in_position, 1.0)).xyz, 1.0);
+}
+"""
+
+# The skinned fragment shader reuses the same KotOR two-light Phong as _FRAG_TEXTURED
+# but without lightmap (too expensive to skin lightmap UVs without engine support).
+_FRAG_SKINNED = """
+#version 330 core
+in vec3 v_normal;
+in vec3 v_world_pos;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D tex0;
+uniform int  use_texture;
+uniform vec3 diffuse_color;
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float u_alpha;
+void main() {
+    vec3 n = normalize(v_normal);
+    vec3 key  = normalize(light_dir);
+    float NdL = max(dot(n, key), 0.0);
+    vec3 fill = normalize(vec3(-key.x * 0.5, -key.y * 0.5, 0.35));
+    float NdF = max(dot(n, fill), 0.0) * 0.22;
+    float light = ambient + (NdL + NdF) * (1.0 - ambient);
+    vec4 albedo;
+    if (use_texture == 1) {
+        albedo = texture(tex0, v_uv);
+        if (albedo.a < 0.05) discard;
+    } else {
+        albedo = vec4(diffuse_color, 1.0);
+    }
+    fragColor = vec4(albedo.rgb * light, albedo.a * u_alpha);
+}
 """
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -415,28 +799,47 @@ _box_verts       = _box_wire   # wireframe variant
 _box_verts_solid = _box_solid  # solid-filled variant
 
 
-def _grid_verts(n: int = 20, step: float = 1.0) -> "np.ndarray":
-    """N×N ground grid — slightly below Z=0 to avoid z-fighting with floor meshes."""
+def _grid_verts(n: int = 25, step: float = 1.0) -> "np.ndarray":
+    """
+    N×N ground grid — UE5-style with major/minor lines and axis highlight.
+    Slightly below Z=0 to avoid z-fighting with floor meshes.
+    """
     v = []
     half = n * step * 0.5
     Z = -0.002   # push below floor to avoid z-fighting
     for i in range(-n, n + 1):
         x = i * step
-        if i % 10 == 0:
-            br = 0.40   # major lines every 10 units
+        # UE5-style grid: major every 10, medium every 5, minor otherwise
+        if i == 0:
+            continue  # skip origin line — drawn separately as axis
+        elif i % 10 == 0:
+            br = 0.38   # major grid lines
         elif i % 5 == 0:
-            br = 0.28   # medium lines every 5 units
+            br = 0.25   # medium grid lines
         else:
-            br = 0.14   # minor lines
-        v.extend([-half, x, Z, br, br, br + .06,
-                   half, x, Z, br, br, br + .06])
-        v.extend([x, -half, Z, br, br, br + .06,
-                   x,  half, Z, br, br, br + .06])
-    # Axis lines — X=red, Y=green — clearly extend beyond the grid
-    ext = half * 1.5
-    v.extend([0,    -ext, Z, .60,.18,.18,  ext,  -ext, Z, .60,.18,.18])
-    v.extend([-ext, 0,   Z, .18,.60,.18, -ext,   ext, Z, .18,.60,.18])
+            br = 0.12   # minor grid lines
+        v.extend([-half, x, Z, br, br, br + .05,
+                   half, x, Z, br, br, br + .05])
+        v.extend([x, -half, Z, br, br, br + .05,
+                   x,  half, Z, br, br, br + .05])
+    # World axis lines — X=red, Y=green, Z=blue (UE5 convention)
+    ext = half
+    # X axis (red) — extends full grid width
+    v.extend([-ext, 0, Z, 0.70, 0.18, 0.18,
+               ext, 0, Z, 0.70, 0.18, 0.18])
+    # Y axis (green) — extends full grid height
+    v.extend([0, -ext, Z, 0.18, 0.70, 0.18,
+               0,  ext, Z, 0.18, 0.70, 0.18])
     return np.array(v, dtype='f4')
+
+
+# ─── Inject geometry helpers into viewport_renderer ───────────────────────────
+# Must happen AFTER _box_solid/_box_wire/_grid_verts are defined above.
+if _SUBMODULES_LOADED:
+    try:
+        _inject_helpers(_grid_verts, _box_solid, _box_wire, _translation)
+    except Exception as _e:
+        log.debug("viewport: helper injection failed: %s", _e)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -460,695 +863,11 @@ else:
 # ═════════════════════════════════════════════════════════════════════════════
 #  EGL Renderer (offscreen moderngl)
 # ═════════════════════════════════════════════════════════════════════════════
-
-class _EGLRenderer:
-    """
-    Manages the ModernGL EGL context, shaders, VAOs and FBO.
-    Lives inside ViewportWidget and is created lazily on first resize/paint.
-    """
-
-    def __init__(self):
-        self.ctx = None          # moderngl.Context
-        self._prog_flat    = None   # colour-per-vertex shader
-        self._prog_lit     = None   # Phong-lit shader
-        self._prog_uniform = None   # uniform colour + alpha (overlay)
-        self._fbo = None         # current FBO
-        self._fbo_size = (0, 0)  # (W, H) of current FBO
-        self._grid_vao   = None
-        self._grid_count = 0
-        self._object_vaos: List[dict] = []
-        self._room_vaos: List[dict]   = []
-        self._walk_vaos: List[dict]   = []   # walkable tris (green overlay)
-        self._nowalk_vaos: List[dict] = []   # non-walkable tris (red overlay)
-        self._mdl_vaos: List[dict]    = []   # play-mode only
-        self._show_walkmesh = True
-        self.ready = False
-
-    # ── Initialisation ────────────────────────────────────────────────────────
-
-    def init(self) -> bool:
-        """
-        Create a ModernGL standalone context + compile shaders.
-        Tries multiple backends in order:
-          1. EGL (Linux/headless — surfaceless, no display required)
-          2. Default (Windows WGL / macOS CGL — uses whatever is available)
-        Returns True on success.
-        """
-        if self.ready:
-            return True
-        if not _HAS_MODERNGL:
-            log.warning("moderngl not installed — 3D rendering unavailable")
-            return False
-
-        ctx = None
-        backend_used = "none"
-
-        # ── Attempt 1: EGL (Linux headless) ──────────────────────────────────
-        if os.name == "posix":
-            try:
-                import moderngl
-                os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
-                os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "3.3")
-                os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "330")
-                os.environ.setdefault("EGL_PLATFORM", "surfaceless")
-                ctx = moderngl.create_standalone_context(backend="egl")
-                backend_used = "egl"
-                log.debug("GL: EGL backend initialised")
-            except Exception as e:
-                log.debug(f"EGL init failed ({e}), trying default backend")
-                ctx = None
-
-        # ── Attempt 2: Default backend (Windows WGL / macOS / fallback) ─────
-        if ctx is None:
-            try:
-                import moderngl
-                ctx = moderngl.create_standalone_context()
-                backend_used = "default"
-                log.debug("GL: default backend initialised")
-            except Exception as e:
-                log.error(f"GL default backend failed: {e}")
-                return False
-
-        try:
-            import moderngl
-            self.ctx = ctx
-            self.ctx.enable(moderngl.DEPTH_TEST)
-            self.ctx.enable(moderngl.CULL_FACE)
-            self.ctx.enable(moderngl.BLEND)
-            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            self._prog_flat = self.ctx.program(
-                vertex_shader=_VERT_FLAT, fragment_shader=_FRAG_FLAT)
-            try:
-                self._prog_lit = self.ctx.program(
-                    vertex_shader=_VERT_LIT, fragment_shader=_FRAG_LIT)
-            except Exception as e:
-                log.warning(f"Lit shader failed, using flat fallback: {e}")
-                self._prog_lit = None
-            try:
-                self._prog_uniform = self.ctx.program(
-                    vertex_shader=_VERT_UNIFORM, fragment_shader=_FRAG_UNIFORM)
-            except Exception as e:
-                log.warning(f"Uniform shader failed: {e}")
-                self._prog_uniform = None
-            self._build_grid()
-            self.ready = True
-            info = self.ctx.info
-            global _GL_BACKEND
-            _GL_BACKEND = backend_used
-            log.info(f"GL renderer ready [{backend_used}]: {info['GL_RENDERER']} "
-                     f"({info['GL_VERSION']})")
-            return True
-        except Exception as e:
-            log.error(f"GL shader/grid init failed: {e}")
-            try:
-                self.ctx.release()
-            except Exception:
-                pass
-            self.ctx = None
-            return False
-
-    def ensure_fbo(self, W: int, H: int):
-        """Resize FBO if dimensions changed."""
-        if not self.ctx:
-            return
-        W, H = max(W, 1), max(H, 1)
-        if (W, H) == self._fbo_size:
-            return
-        if self._fbo:
-            try:
-                self._fbo.release()
-            except Exception:
-                pass
-        self._fbo = self.ctx.simple_framebuffer((W, H), components=4)
-        self._fbo_size = (W, H)
-
-    # ── Grid ──────────────────────────────────────────────────────────────────
-
-    def _build_grid(self):
-        verts = _grid_verts(n=20, step=1.0)
-        vbo = self.ctx.buffer(verts.tobytes())
-        self._grid_vao = self.ctx.vertex_array(
-            self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
-        self._grid_count = len(verts) // 6
-
-    # ── VAO helpers ───────────────────────────────────────────────────────────
-
-    def _upload_flat(self, verts: "np.ndarray") -> dict:
-        vbo = self.ctx.buffer(verts.tobytes())
-        vao = self.ctx.vertex_array(
-            self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
-        return {"vao": vao, "vbo": vbo, "count": len(verts) // 6}
-
-    def _upload_positions_only(self, positions: list) -> Optional[dict]:
-        """Upload raw position-only triangles for uniform-colour overlay."""
-        if not positions or not self._prog_uniform:
-            return None
-        arr = np.array(positions, dtype='f4').flatten()
-        vbo = self.ctx.buffer(arr.tobytes())
-        vao = self.ctx.vertex_array(
-            self._prog_uniform, [(vbo, "3f", "in_position")])
-        return {"vao": vao, "vbo": vbo, "count": len(positions)}
-
-    def _upload_lit_or_flat(self, positions, normals, color: tuple) -> Optional[dict]:
-        """Upload mesh triangles with normals (lit) or baked colour (flat)."""
-        if not positions:
-            return None
-        r, g, b = color
-        if self._prog_lit and normals:
-            v = []
-            for (px,py,pz),(nx,ny,nz) in zip(positions, normals):
-                v.extend([px,py,pz,nx,ny,nz])
-            arr = np.array(v, dtype='f4')
-            vbo = self.ctx.buffer(arr.tobytes())
-            vao = self.ctx.vertex_array(
-                self._prog_lit, [(vbo, "3f 3f", "in_position", "in_normal")])
-            return {"vao": vao, "vbo": vbo, "count": len(v)//6,
-                    "lit": True, "color": color}
-        else:
-            v = []
-            for (px,py,pz) in positions:
-                v.extend([px,py,pz, r,g,b])
-            arr = np.array(v, dtype='f4')
-            vbo = self.ctx.buffer(arr.tobytes())
-            vao = self.ctx.vertex_array(
-                self._prog_flat, [(vbo, "3f 3f", "in_position", "in_color")])
-            return {"vao": vao, "vbo": vbo, "count": len(v)//6,
-                    "lit": False, "color": color}
-
-    def _release_list(self, lst: list):
-        for e in lst:
-            try: e["vbo"].release()
-            except Exception: pass
-            try: e["vao"].release()
-            except Exception: pass
-        lst.clear()
-
-    # ── Object VAOs ───────────────────────────────────────────────────────────
-
-    def rebuild_object_vaos(self, state, selected_obj):
-        self._release_list(self._object_vaos)
-        if not self.ctx or not state or not state.git:
-            return
-
-        def _add(obj, hw, hh, hd, base_color):
-            is_sel = obj is selected_obj
-            col = _COLOR_SELECTED if is_sel else base_color
-            # Solid fill
-            verts = _box_solid(obj.position.x, obj.position.y,
-                               obj.position.z, hw, hh, hd, col)
-            e = self._upload_flat(verts)
-            e["obj"] = obj
-            self._object_vaos.append(e)
-            # Wireframe outline — brighter than fill, always drawn
-            wire_r = min(col[0] + 0.45, 1.0)
-            wire_g = min(col[1] + 0.45, 1.0)
-            wire_b = min(col[2] + 0.45, 1.0)
-            wire_col = (wire_r, wire_g, wire_b)
-            wverts = _box_wire(obj.position.x, obj.position.y,
-                               obj.position.z, hw, hh, hd, wire_col)
-            ew = self._upload_flat(wverts)
-            ew["obj"]  = obj
-            ew["wire"] = True
-            self._object_vaos.append(ew)
-
-        # UE-style object sizes: taller, clearer shapes
-        for p in state.git.placeables: _add(p, .35,.35,.50, _COLOR_PLACEABLE)
-        for c in state.git.creatures:  _add(c, .30,.30,.90, _COLOR_CREATURE)
-        for d in state.git.doors:      _add(d, .60,.15,.95, _COLOR_DOOR)
-        for w in state.git.waypoints:  _add(w, .18,.18,.65, _COLOR_WAYPOINT)
-        for t in state.git.triggers:   _add(t, .60,.60,.06, _COLOR_TRIGGER)
-        for s in state.git.sounds:     _add(s, .22,.22,.22, _COLOR_SOUND)
-        for st in state.git.stores:    _add(st,.35,.35,.55, _COLOR_STORE)
-
-    def rebuild_walkmesh_vaos(self, walk_tris: list, nowalk_tris: list):
-        """
-        Upload walkmesh triangles as position-only geometry for overlay rendering.
-
-        walk_tris  : list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) walkable faces
-        nowalk_tris: list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) non-walkable faces
-
-        Each element is a 3-tuple of (x,y,z) vertex coordinate tuples.
-        The overlay is rendered in paintEvent using the Unreal-style green fill.
-        """
-        self._release_list(self._walk_vaos)
-        self._release_list(self._nowalk_vaos)
-        if not self.ctx or not self._prog_uniform:
-            return
-
-        def _tris_to_flat_positions(tris):
-            """Convert list of triangles to flat list of [x,y,z] vertex positions."""
-            pts = []
-            for tri in tris:
-                if not tri or len(tri) < 3:
-                    continue
-                for v in tri[:3]:
-                    try:
-                        pts.append([float(v[0]), float(v[1]), float(v[2])])
-                    except (TypeError, IndexError, ValueError):
-                        pts.append([0.0, 0.0, 0.0])
-            return pts
-
-        walk_pos   = _tris_to_flat_positions(walk_tris)
-        nowalk_pos = _tris_to_flat_positions(nowalk_tris)
-
-        if walk_pos:
-            e = self._upload_positions_only(walk_pos)
-            if e:
-                self._walk_vaos.append(e)
-        if nowalk_pos:
-            e = self._upload_positions_only(nowalk_pos)
-            if e:
-                self._nowalk_vaos.append(e)
-
-        n_walk   = len(walk_pos) // 3
-        n_nowalk = len(nowalk_pos) // 3
-        log.debug(f"Walkmesh VAOs: {n_walk} walkable + {n_nowalk} non-walkable triangles")
-
-    # ── Room VAOs ─────────────────────────────────────────────────────────────
-
-    def rebuild_room_vaos(self, room_instances: list, game_dir: str):
-        """
-        Build GPU VAOs for all room meshes.
-
-        Tries to load real MDL/MDX geometry for each room.
-        Falls back to a solid placeholder box + wireframe outline when no MDL found.
-
-        game_dir can be the KotOR install directory OR the extract_dir from
-        a .mod import — the method searches for .mdl files in multiple locations.
-        """
-        self._release_list(self._room_vaos)
-        if not self.ctx:
-            return
-
-        # Warm colour palette — rooms get distinct soft colours for easy ID
-        PALETTE = [
-            (0.55, 0.52, 0.45),   # warm stone
-            (0.40, 0.48, 0.56),   # cool slate
-            (0.46, 0.54, 0.40),   # earthy green
-            (0.54, 0.42, 0.50),   # dusty rose
-            (0.48, 0.50, 0.38),   # olive
-            (0.38, 0.44, 0.52),   # denim
-        ]
-
-        import moderngl
-
-        # Build a case-insensitive filename index of the game_dir for fast lookup
-        dir_file_index: dict = {}
-        if game_dir and os.path.isdir(game_dir):
-            try:
-                for fname in os.listdir(game_dir):
-                    dir_file_index[fname.lower()] = os.path.join(game_dir, fname)
-            except OSError:
-                pass
-
-        def _resolve_mdl(name: str, explicit_path: str) -> str:
-            """Return the filesystem path to the .mdl file, or '' if not found."""
-            # 1. Explicit path already set on the RoomInstance
-            if explicit_path and os.path.exists(explicit_path):
-                return explicit_path
-            if not game_dir:
-                return ''
-            n_lo = name.lower()
-            # 2. Direct game_dir lookup (case-insensitive) — covers extract_dir
-            for candidate_name in (n_lo + '.mdl', name + '.mdl',
-                                   name.upper() + '.MDL', n_lo + '.MDL'):
-                p = dir_file_index.get(candidate_name.lower())
-                if p and os.path.exists(p):
-                    return p
-            # 3. Standard KotOR sub-directories
-            for subdir in ('models', 'Models', 'override', 'Override', ''):
-                base = os.path.join(game_dir, subdir) if subdir else game_dir
-                for ext in ('.mdl', '.MDL'):
-                    p = os.path.join(base, n_lo + ext)
-                    if os.path.exists(p):
-                        return p
-            return ''
-
-        def _resolve_mdx(mdl_path: str) -> str:
-            """Find the matching .mdx file next to the .mdl file."""
-            if not mdl_path:
-                return ''
-            stem = os.path.splitext(mdl_path)[0]
-            for ext in ('.mdx', '.MDX'):
-                p = stem + ext
-                if os.path.exists(p):
-                    return p
-            return ''
-
-        total_mesh_count = 0
-
-        for idx, ri in enumerate(room_instances):
-            name = (getattr(ri, 'mdl_name',   None) or
-                    getattr(ri, 'model_name', None) or
-                    getattr(ri, 'name',       None) or f'room{idx}')
-            name = str(name).strip()
-
-            tx = float(getattr(ri, 'world_x', None) or
-                       getattr(ri, 'x',       None) or
-                       (getattr(ri, 'grid_x', 0) * 10.0) or 0.0)
-            ty = float(getattr(ri, 'world_y', None) or
-                       getattr(ri, 'y',       None) or
-                       (getattr(ri, 'grid_y', 0) * 10.0) or 0.0)
-            tz = float(getattr(ri, 'world_z', None) or
-                       getattr(ri, 'z',       0.0)  or 0.0)
-
-            color    = PALETTE[idx % len(PALETTE)]
-            mdl_path = _resolve_mdl(name, getattr(ri, 'mdl_path', '') or '')
-            mdx_path = _resolve_mdx(mdl_path)
-
-            # ── Load real MDL geometry ────────────────────────────────────
-            loaded_mesh_count = 0
-            if mdl_path and _HAS_MDL:
-                try:
-                    from ..formats.mdl_parser import MDLParser, get_model_cache
-                    cache = get_model_cache()
-                    mesh = cache.get(mdl_path)
-                    if mesh is None:
-                        # Load with MDX for normals/UVs
-                        mdl_bytes = open(mdl_path, 'rb').read()
-                        mdx_bytes = open(mdx_path, 'rb').read() if mdx_path else b''
-                        parser    = MDLParser(mdl_bytes, mdx_bytes)
-                        mesh      = parser.parse()
-                        cache.put(mdl_path, mesh)
-
-                    if mesh:
-                        # Filter nodes: skip AABB (collision tree), skin, and
-                        # non-renderable dummies. Only render true mesh nodes
-                        # with actual triangles and render=True.
-                        if hasattr(mesh, 'visible_mesh_nodes'):
-                            visible_nodes = mesh.visible_mesh_nodes()
-                        else:
-                            from ..formats.mdl_parser import NODE_AABB, NODE_SKIN
-                            visible_nodes = [
-                                n for n in mesh.mesh_nodes()
-                                if not (n.flags & NODE_AABB) and
-                                   not (n.flags & NODE_SKIN) and
-                                   getattr(n, 'render', True)
-                            ]
-                        for node in visible_nodes:
-                            verts_raw = node.vertices or []
-                            faces_raw = node.faces    or []
-                            norms_raw = node.normals   or []
-                            if not verts_raw or not faces_raw:
-                                continue
-
-                            n_verts = len(verts_raw)
-                            has_n   = (len(norms_raw) == n_verts)
-                            positions, normals = [], []
-
-                            for f in faces_raw:
-                                if len(f) < 3:
-                                    continue
-                                a, b, c = int(f[0]), int(f[1]), int(f[2])
-                                if a >= n_verts or b >= n_verts or c >= n_verts:
-                                    continue
-                                for vi in (a, b, c):
-                                    positions.append(verts_raw[vi])
-                                    if has_n:
-                                        normals.append(norms_raw[vi])
-                                    else:
-                                        # Compute face normal inline
-                                        v0 = verts_raw[a]; v1 = verts_raw[b]; v2 = verts_raw[c]
-                                        ex = v1[0]-v0[0]; ey = v1[1]-v0[1]; ez = v1[2]-v0[2]
-                                        fx = v2[0]-v0[0]; fy = v2[1]-v0[1]; fz = v2[2]-v0[2]
-                                        nx = ey*fz - ez*fy
-                                        ny = ez*fx - ex*fz
-                                        nz = ex*fy - ey*fx
-                                        mag = (nx*nx+ny*ny+nz*nz)**0.5 or 1.0
-                                        normals.append((nx/mag, ny/mag, nz/mag))
-
-                            if not positions:
-                                continue
-
-                            # Use node diffuse colour if available, else palette
-                            node_col = getattr(node, 'diffuse', None)
-                            if node_col and len(node_col) >= 3 and max(node_col) > 0.05:
-                                render_color = (
-                                    max(0.15, min(1.0, node_col[0])),
-                                    max(0.15, min(1.0, node_col[1])),
-                                    max(0.15, min(1.0, node_col[2])),
-                                )
-                            else:
-                                render_color = color
-
-                            e = self._upload_lit_or_flat(positions, normals, render_color)
-                            if e:
-                                e.update({"name": name, "tx": tx, "ty": ty, "tz": tz})
-                                self._room_vaos.append(e)
-                                loaded_mesh_count += 1
-
-                        if loaded_mesh_count > 0:
-                            total_mesh_count += loaded_mesh_count
-                            log.debug(f"Room '{name}' @ ({tx:.1f},{ty:.1f},{tz:.1f}): "
-                                      f"{loaded_mesh_count} mesh(es) from {os.path.basename(mdl_path)}")
-                        else:
-                            log.debug(f"Room '{name}': MDL parsed but no renderable mesh nodes")
-
-                except Exception as exc:
-                    log.warning(f"Room '{name}' MDL load error: {exc}", exc_info=False)
-                    loaded_mesh_count = 0
-
-            if loaded_mesh_count == 0:
-                # ── Placeholder: solid box + brighter wireframe outline ───
-                # LYT world_x/world_y are the room's origin corner.
-                # KotOR rooms are typically ~10 units wide.
-                # Center the box AT the tx,ty position (rooms are placed at corner).
-                rw = float(getattr(ri, 'width',  10.0) or 10.0)
-                rh = float(getattr(ri, 'height', 10.0) or 10.0)
-                # Center box: tx/ty are corner → add half-width to center
-                cx = tx + rw * 0.5
-                cy = ty + rh * 0.5
-
-                solid_verts = _box_solid(cx, cy, tz, rw*0.5, rh*0.5, 2.0, color)
-                e_solid = self._upload_flat(solid_verts)
-                e_solid.update({"name": name, "tx": 0., "ty": 0., "tz": 0.,
-                                "primitive": "triangles"})
-                self._room_vaos.append(e_solid)
-
-                # Wireframe outline — brighter version of the same palette colour
-                wire_c = (min(color[0]+0.40, 1.), min(color[1]+0.40, 1.),
-                          min(color[2]+0.40, 1.))
-                wire_verts = _box_wire(cx, cy, tz, rw*0.5, rh*0.5, 2.0, wire_c)
-                e_wire = self._upload_flat(wire_verts)
-                e_wire.update({"name": name + "_outline", "tx": 0., "ty": 0.,
-                               "tz": 0., "primitive": "lines"})
-                self._room_vaos.append(e_wire)
-
-                if mdl_path:
-                    log.debug(f"Room '{name}': MDL found at {mdl_path} but no meshes — placeholder box")
-                else:
-                    log.debug(f"Room '{name}' @ ({tx:.1f},{ty:.1f}): no MDL — placeholder box")
-
-        log.info(f"Room VAOs: {len(self._room_vaos)} entries "
-                 f"({total_mesh_count} real meshes) from {len(room_instances)} rooms")
-
-    def render(self, W: int, H: int, camera: OrbitCamera,
-               play_session=None, show_walkmesh: bool = True) -> Optional[bytes]:
-        """
-        Render one frame into the FBO and return the raw RGBA pixel bytes
-        (bottom-row first, i.e. OpenGL convention — caller must flip).
-        Returns None if not ready.
-        """
-        if not self.ctx or not self._prog_flat:
-            return None
-        import moderngl
-
-        self.ensure_fbo(W, H)
-        if not self._fbo:
-            return None
-
-        self._fbo.use()
-        self.ctx.viewport = (0, 0, W, H)
-        # Deep navy-blue background
-        self.ctx.clear(0.07, 0.08, 0.14, 1.0)
-
-        aspect = W / max(H, 1)
-        if play_session:
-            proj = camera.projection_matrix(aspect)
-            try:
-                eye  = play_session.player_eye
-                look = play_session.player.look_at_target(0.0)
-            except Exception:
-                eye  = camera.eye().tolist()
-                look = camera.target.tolist()
-            view = _look_at(
-                np.array(eye,  dtype='f4'),
-                np.array(look, dtype='f4'),
-                np.array([0., 0., 1.], dtype='f4'),
-            )
-        else:
-            proj = camera.projection_matrix(aspect)
-            view = camera.view_matrix()
-
-        vp = proj @ view
-
-        # ── Ground grid ───────────────────────────────────────────────────────
-        if self._grid_vao:
-            self._prog_flat["mvp"].write(vp.T.astype('f4').tobytes())
-            self._grid_vao.render(moderngl.LINES, vertices=self._grid_count)
-
-        # ── Room geometry ─────────────────────────────────────────────────────
-        # Disable back-face culling so interior faces show
-        self.ctx.disable(moderngl.CULL_FACE)
-        light_dir = np.array([0.6, 0.4, 0.8], dtype='f4')
-        light_dir = light_dir / np.linalg.norm(light_dir)
-        for e in self._room_vaos:
-            vao, count = e["vao"], e["count"]
-            if not vao or count == 0:
-                continue
-            tx, ty, tz = e.get("tx", 0.), e.get("ty", 0.), e.get("tz", 0.)
-            model_m = _translation(tx, ty, tz)
-            mvp_m   = proj @ view @ model_m
-            color   = e.get("color", (.55,.52,.48))
-            primitive_hint = e.get("primitive", "triangles")
-            if e.get("lit") and self._prog_lit:
-                try:
-                    self._prog_lit["mvp"].write(mvp_m.T.astype('f4').tobytes())
-                    self._prog_lit["model"].write(model_m.T.astype('f4').tobytes())
-                    self._prog_lit["diffuse_color"].write(
-                        np.array(color, dtype='f4').tobytes())
-                    self._prog_lit["light_dir"].write(light_dir.tobytes())
-                    self._prog_lit["ambient"].value = 0.40
-                    vao.render(moderngl.TRIANGLES, vertices=count)
-                except Exception as ex:
-                    log.debug(f"room lit render: {ex}")
-            else:
-                try:
-                    self._prog_flat["mvp"].write(mvp_m.T.astype('f4').tobytes())
-                    prim = moderngl.LINES if primitive_hint == "lines" else moderngl.TRIANGLES
-                    vao.render(prim, vertices=count)
-                except Exception as ex:
-                    log.debug(f"room flat render: {ex}")
-
-        self.ctx.enable(moderngl.CULL_FACE)
-
-        # ── Walkmesh overlay — Unreal Engine-style navmesh ────────────────────
-        # UE5 navmesh style: translucent teal/green fill + bright edge outlines.
-        # Rendered AFTER room geometry with depth-write disabled so it floats
-        # on top without disturbing depth buffer for objects drawn later.
-        # Uses polygon offset to avoid z-fighting with coplanar floor geometry.
-        if show_walkmesh and self._prog_uniform:
-            self.ctx.depth_mask = False
-            self.ctx.enable(moderngl.BLEND)
-            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            self.ctx.disable(moderngl.CULL_FACE)
-
-            # Polygon offset: strongly push navmesh in front of floor tris
-            # (factor=-2, units=-2 works better than -1,-1 on software rasterizer)
-            try:
-                self.ctx.enable(moderngl.POLYGON_OFFSET_FILL)
-                self.ctx.polygon_offset = (-2.0, -2.0)
-            except Exception:
-                pass
-
-            walk_mvp = vp.T.astype('f4').tobytes()
-
-            # ── Walkable: UE5 teal-green fill ──────────────────────────
-            if self._walk_vaos:
-                try:
-                    self._prog_uniform["mvp"].write(walk_mvp)
-                    # UE5 navmesh: #00C8A0 style teal-green at 45% opacity
-                    self._prog_uniform["u_color"].write(
-                        np.array([0.00, 0.78, 0.63, 0.45], dtype='f4').tobytes())
-                    for e in self._walk_vaos:
-                        if e.get("vao") and e.get("count", 0):
-                            e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
-                except Exception as ex:
-                    log.debug(f"walk fill overlay: {ex}")
-
-                # Bright edge outlines — thinner, more UE5-like
-                try:
-                    self._prog_uniform["u_color"].write(
-                        np.array([0.00, 0.96, 0.78, 0.80], dtype='f4').tobytes())
-                    self.ctx.line_width = 1.0  # crisp 1px lines
-                    for e in self._walk_vaos:
-                        if e.get("vao") and e.get("count", 0):
-                            e["vao"].render(moderngl.LINES, vertices=e["count"])
-                except Exception as ex:
-                    log.debug(f"walk edge overlay: {ex}")
-
-            # ── Non-walkable: red fill + red edges ──────────────────────
-            if self._nowalk_vaos:
-                try:
-                    self._prog_uniform["mvp"].write(walk_mvp)
-                    self._prog_uniform["u_color"].write(
-                        np.array([0.90, 0.10, 0.08, 0.40], dtype='f4').tobytes())
-                    for e in self._nowalk_vaos:
-                        if e.get("vao") and e.get("count", 0):
-                            e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
-                except Exception as ex:
-                    log.debug(f"nowalk fill overlay: {ex}")
-                try:
-                    self._prog_uniform["u_color"].write(
-                        np.array([1.00, 0.20, 0.10, 0.80], dtype='f4').tobytes())
-                    for e in self._nowalk_vaos:
-                        if e.get("vao") and e.get("count", 0):
-                            e["vao"].render(moderngl.LINES, vertices=e["count"])
-                except Exception as ex:
-                    log.debug(f"nowalk edge overlay: {ex}")
-
-            try:
-                self.ctx.disable(moderngl.POLYGON_OFFSET_FILL)
-                self.ctx.polygon_offset = (0.0, 0.0)
-            except Exception:
-                pass
-            self.ctx.enable(moderngl.CULL_FACE)
-            self.ctx.depth_mask = True
-
-        # ── GIT object boxes ──────────────────────────────────────────────────
-        self._prog_flat["mvp"].write(vp.T.astype('f4').tobytes())
-        self.ctx.disable(moderngl.CULL_FACE)
-        for e in self._object_vaos:
-            try:
-                if e.get("wire"):
-                    e["vao"].render(moderngl.LINES, vertices=e["count"])
-                else:
-                    e["vao"].render(moderngl.TRIANGLES, vertices=e["count"])
-            except Exception:
-                pass
-        self.ctx.enable(moderngl.CULL_FACE)
-
-        # ── Play-mode MDL models ──────────────────────────────────────────────
-        if play_session and self._mdl_vaos and self._prog_lit:
-            ident = np.eye(4, dtype='f4')
-            try:
-                self._prog_lit["mvp"].write(vp.T.astype('f4').tobytes())
-                self._prog_lit["model"].write(ident.T.tobytes())
-                self._prog_lit["light_dir"].write(light_dir.tobytes())
-                self._prog_lit["ambient"].value = 0.3
-            except Exception:
-                pass
-            self.ctx.disable(moderngl.CULL_FACE)
-            for e in self._mdl_vaos:
-                vao, count, color = e["vao"], e["count"], e.get("color", (.6,.6,.6))
-                if vao and count:
-                    try:
-                        self._prog_lit["diffuse_color"].write(
-                            np.array(color, dtype='f4').tobytes())
-                        vao.render(moderngl.TRIANGLES, vertices=count)
-                    except Exception:
-                        pass
-            self.ctx.enable(moderngl.CULL_FACE)
-
-        return self._fbo.read(components=4)
-
-    def release(self):
-        if not self.ctx:
-            return
-        self._release_list(self._object_vaos)
-        self._release_list(self._room_vaos)
-        self._release_list(self._walk_vaos)
-        self._release_list(self._nowalk_vaos)
-        self._release_list(self._mdl_vaos)
-        try: self.ctx.release()
-        except Exception: pass
-        self.ctx = None
-        self.ready = False
-
-
+#  EGL Renderer — defined in viewport_renderer.py, re-exported here
 # ═════════════════════════════════════════════════════════════════════════════
-#  ViewportWidget
-# ═════════════════════════════════════════════════════════════════════════════
+#  _EGLRenderer is imported at module top via:
+#    from .viewport_renderer import _EGLRenderer, _inject_helpers
+#  The class body has been moved to viewport_renderer.py (v2.0.7).
 
 class ViewportWidget(_QWidget_base):
     """
@@ -1160,10 +879,13 @@ class ViewportWidget(_QWidget_base):
     """
 
     # Signals
-    object_selected   = pyqtSignal(object)
-    object_placed     = pyqtSignal(object)
-    camera_moved      = pyqtSignal(float, float, float)
-    play_mode_changed = pyqtSignal(bool)
+    object_selected   = Signal(object)
+    object_placed     = Signal(object)
+    camera_moved      = Signal(float, float, float)
+    play_mode_changed = Signal(bool)
+    # Emitted every frame with (delta_seconds,) — animation panel subscribes
+    # to this instead of using a blind 50 ms poll timer.
+    frame_advanced    = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1191,13 +913,33 @@ class ViewportWidget(_QWidget_base):
         self._show_walkmesh: bool = True
         self._walkmesh_loaded: bool = False
 
-        # Play mode
+        # ── New Engine Systems ────────────────────────────────────────────────
+        # Scene graph (rooms + entities with spatial culling)
+        self._scene_graph: Optional[SceneGraph] = (
+            SceneGraph() if _HAS_NEW_ENGINE else None
+        )
+        # Entity registry (Door3D, Creature3D, Placeable3D instances)
+        self._entity_registry: Optional[EntityRegistry] = (
+            EntityRegistry() if _HAS_NEW_ENGINE else None
+        )
+        # Animation set (per-entity animation players)
+        self._anim_set: Optional[AnimationSet] = (
+            AnimationSet() if _HAS_NEW_ENGINE else None
+        )
+        # Frame timer for delta time
+        self._last_engine_time: float = time.time()
+        self._engine_delta: float = 0.016
+        # Scene stats overlay
+        self._show_stats: bool = False
+
+        # Play mode (new PlaySession using PlayModeController)
         self._play_mode      = False
-        self._play_session   = None
-        self._npc_registry   = None
+        self._play_session: Optional[PlaySession] = None
         self._play_last_time = 0.0
         self._play_pitch     = 0.0
         self._game_dir: str  = ""
+        # Legacy NPC registry (kept for compatibility)
+        self._npc_registry   = None
 
         # Gizmo
         self._gizmo_axis: Optional[int]       = None
@@ -1241,6 +983,24 @@ class ViewportWidget(_QWidget_base):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def set_animation_panel(self, panel) -> None:
+        """Bind an AnimationTimelinePanel to this viewport.
+
+        Connects the viewport's ``frame_advanced(float)`` signal to the
+        panel's ``_poll_player`` slot so the ruler updates every rendered
+        frame rather than on a blind 50 ms timer.  Calling with ``panel=None``
+        disconnects any previously bound panel.
+
+        This is a convenience wrapper — the same connection can be made
+        manually via ``panel.set_viewport(self)``.
+        """
+        if panel is None:
+            return
+        try:
+            panel.set_viewport(self)
+        except Exception as e:
+            log.debug(f"set_animation_panel: {e}")
+
     def set_placement_mode(self, enabled: bool,
                            template_resref: str = "",
                            asset_type: str = "placeable"):
@@ -1261,18 +1021,482 @@ class ViewportWidget(_QWidget_base):
         if not self._renderer.ready:
             self._renderer.init()
         self._renderer.rebuild_room_vaos(self._room_instances, self._game_dir)
+        # Attempt to load textures for room meshes from the game directory
+        if self._game_dir:
+            try:
+                self.load_textures_for_rooms(self._game_dir)
+            except Exception as e:
+                log.debug(f"load_textures_for_rooms: {e}")
+
+        # Update scene graph with room data
+        if _HAS_NEW_ENGINE and self._scene_graph is not None:
+            try:
+                self._scene_graph.clear()
+                for ri in rooms:
+                    name = (getattr(ri, 'mdl_name', None) or
+                            getattr(ri, 'resref', None) or
+                            getattr(ri, 'name', 'room')).lower()
+                    x = float(getattr(ri, 'world_x', getattr(ri, 'x', 0.0)) or 0.0)
+                    y = float(getattr(ri, 'world_y', getattr(ri, 'y', 0.0)) or 0.0)
+                    z = float(getattr(ri, 'world_z', getattr(ri, 'z', 0.0)) or 0.0)
+                    from ..engine.scene_manager import SceneRoom
+                    room = SceneRoom(name=name, position=(x, y, z))
+                    self._scene_graph.add_room(room)
+            except Exception as e:
+                log.debug(f"SceneGraph room update: {e}")
+
         if rooms:
             self._frame_rooms()
         self.update()
 
+    def load_git_entities(self, git_data=None):
+        """
+        Load GIT entities into the engine entity registry and scene graph.
+        Should be called when a module's GIT data changes.
+        """
+        if not _HAS_NEW_ENGINE:
+            return
+        if git_data is None:
+            try:
+                state = get_module_state()
+                git_data = state.git if state else None
+            except Exception:
+                return
+        if git_data is None:
+            return
+
+        try:
+            # Populate entity registry
+            if self._entity_registry is not None:
+                count = self._entity_registry.populate_from_git(git_data)
+                log.debug(f"EntityRegistry: {count} entities from GIT")
+
+                # Wire AnimationSet: create a player for each entity that has
+                # mesh_data (creatures / doors with loaded models).
+                if _HAS_NEW_ENGINE and self._anim_set is not None:
+                    self._anim_set.clear()
+                    for ent in self._entity_registry.entities:
+                        if ent.mesh_data is not None:
+                            ent.setup_animation_player()
+                            if ent._animation_player is not None:
+                                # Register in AnimationSet for centralized update
+                                self._anim_set._players[ent.entity_id] = \
+                                    ent._animation_player
+                                # Start default idle animation
+                                try:
+                                    from ..engine.animation_system import (
+                                        get_default_idle_animation)
+                                    idle = get_default_idle_animation(ent.mesh_data)
+                                    ent._animation_player.play(idle, loop=True)
+                                    log.debug(
+                                        f"Entity {ent.entity_id}: "
+                                        f"idle anim '{idle}'")
+                                except Exception:
+                                    pass
+
+            # Populate scene graph entities
+            if self._scene_graph is not None:
+                self._scene_graph.clear_entities()
+                self._scene_graph._populate_entities_from_git(git_data)
+
+            # Update VAOs for GIT objects
+            self._rebuild_object_vaos()
+            self.update()
+        except Exception as e:
+            log.debug(f"load_git_entities: {e}")
+
     def set_game_dir(self, game_dir: str):
+        """Set the KotOR game / extract directory and auto-reload room textures.
+
+        Setting a new game_dir immediately re-triggers texture loading for any
+        rooms already in the viewport, so callers don't need to call
+        load_textures_for_rooms() separately.
+        """
         self._game_dir = game_dir
+        # Auto-reload textures whenever the game dir changes and rooms are loaded
+        if game_dir and self._renderer.ready and self._renderer._room_vaos:
+            try:
+                self.load_textures_for_rooms(game_dir)
+            except Exception as e:
+                log.debug(f"set_game_dir auto-texture: {e}")
+            self.update()
+
+    def set_patrol_path(self, creature_tag: str, waypoints: list) -> bool:
+        """
+        Set or clear the patrol route for a creature entity.
+
+        Parameters
+        ----------
+        creature_tag : str
+            Tag of the creature to assign the patrol to.
+        waypoints : list
+            List of (x, y, z) tuples.  Pass an empty list to disable patrolling.
+
+        Returns True if the entity was found and updated.
+        """
+        if self._entity_registry is None:
+            return False
+        try:
+            entities = self._entity_registry.get_by_tag(creature_tag)
+            if not entities:
+                log.debug(f"set_patrol_path: entity '{creature_tag}' not found")
+                return False
+            for ent in entities:
+                if hasattr(ent, 'set_patrol_route'):
+                    ent.set_patrol_route(waypoints)
+            log.debug(f"set_patrol_path: '{creature_tag}' → {len(waypoints)} waypoints")
+            return True
+        except Exception as e:
+            log.debug(f"set_patrol_path error: {e}")
+            return False
+
+    def load_texture_from_tpc(self, tex_resref: str, tpc_bytes: bytes) -> bool:
+        """
+        Decode a TPC texture and upload it to the GL context.
+
+        tex_resref: resref (without extension, will be lowercased).
+        tpc_bytes:  raw .tpc file bytes.
+
+        Matches Kotor.NET TPCTextureFactory.FromStream() but via our own
+        TPCReader for cross-platform compatibility without S3TC hardware support
+        (we decompress DXT1/DXT5 to RGBA8 using Python).
+
+        Returns True if the texture was successfully loaded.
+        """
+        if not self._renderer.ready:
+            return False
+        try:
+            from ..formats.tpc_reader import TPCReader
+            tpc = TPCReader.from_bytes(tpc_bytes)
+            # Decompress to RGBA8 for software GL (Mesa llvmpipe doesn't always
+            # support compressed texture upload without GL_EXT_texture_compression_s3tc)
+            rgba = tpc.to_rgba()          # bytes: width × height × 4
+            w, h = tpc.width, tpc.height
+            return self._renderer.load_texture(tex_resref, rgba, w, h)
+        except Exception as e:
+            log.debug(f"load_texture_from_tpc '{tex_resref}': {e}")
+            return False
+
+    def load_textures_for_rooms(self, game_dir: str = ""):
+        """
+        Scan room VAOs for needed texture and lightmap resrefs, find TPC/TGA files
+        in game_dir, decode them and upload to GL.
+
+        Loads both diffuse textures and lightmap textures.
+        Called automatically after rebuild_room_vaos() when a game_dir is set.
+        """
+        if not self._renderer.ready or not game_dir:
+            return
+        # Collect all unique texture + lightmap names from room VAOs
+        needed_diffuse: set = set()
+        needed_lightmap: set = set()
+        for e in self._renderer._room_vaos:
+            tn = e.get("tex_name", "") or e.get("tex_resref", "")
+            if tn and tn.lower() not in ("", "null"):
+                needed_diffuse.add(tn.lower())
+            lm = e.get("lmap_name", "")
+            if lm and lm.lower() not in ("", "null"):
+                needed_lightmap.add(lm.lower())
+
+        if not needed_diffuse and not needed_lightmap:
+            return
+
+        # Build case-insensitive file index — scan the root dir AND common
+        # KotOR texture subdirectories so textures are found regardless of
+        # whether the user pointed at a raw extract dir or a full game install.
+        # Priority order (earlier wins):
+        #   1. <game_dir>/  (flat extract or Override/)
+        #   2. <game_dir>/textures/
+        #   3. <game_dir>/Override/
+        #   4. <game_dir>/data/  (some modding setups place textures here)
+        #   5. <game_dir>/texturepacks/  (KotOR 1 texture packs)
+        SCAN_SUBDIRS = ("", "textures", "Override", "data", "texturepacks",
+                        "Textures", "override", "Data")
+        try:
+            file_idx: Dict[str, str] = {}
+            for subdir in SCAN_SUBDIRS:
+                scan_root = os.path.join(game_dir, subdir) if subdir else game_dir
+                if not os.path.isdir(scan_root):
+                    continue
+                for fname in os.listdir(scan_root):
+                    key = fname.lower()
+                    if key not in file_idx:   # earlier entries win
+                        file_idx[key] = os.path.join(scan_root, fname)
+        except OSError:
+            return
+
+        def _load_one(resref: str, is_lightmap: bool = False) -> bool:
+            """Try to load a single texture by resref. Returns True if loaded."""
+            cache = self._renderer._lmap_cache if is_lightmap else self._renderer._tex_cache
+            if resref in cache:
+                return True   # already loaded
+
+            # TPC preferred over TGA (matches KotOR engine priority)
+            for ext in ('.tpc', '.tga'):
+                candidate = file_idx.get(resref + ext)
+                if not candidate:
+                    candidate = file_idx.get(resref + ext.upper())
+                # Fuzzy fallback: suffix after first '_' (handles lsl_* → sle_* etc.)
+                if not candidate:
+                    underscore = resref.find('_')
+                    if underscore > 0:
+                        suffix = resref[underscore:]   # e.g. "_dirt02"
+                        for idx_key, idx_path in file_idx.items():
+                            if idx_key.endswith(suffix + ext) or idx_key.endswith(suffix + ext.upper()):
+                                candidate = idx_path
+                                break
+                if candidate and os.path.exists(candidate):
+                    try:
+                        raw = open(candidate, 'rb').read()
+                        if ext == '.tpc':
+                            ok = self._load_tpc_texture(resref, raw, is_lightmap=is_lightmap)
+                        else:
+                            ok = self._load_tga_texture_internal(resref, raw, is_lightmap=is_lightmap)
+                        if ok:
+                            return True
+                    except Exception as exc:
+                        log.debug(f"Texture load '{candidate}': {exc}")
+
+            # Archive fallback: query global ResourceManager (KEY/BIF archives)
+            # This handles textures that are packed in chitin.key but not extracted.
+            try:
+                from ..formats.archives import get_resource_manager
+                rm = get_resource_manager()
+                if rm and rm.is_loaded:
+                    # Try TPC first (type 2056), then TGA (type 3)
+                    for ext_str, loader in (('tpc', self._load_tpc_texture),
+                                            ('tga', self._load_tga_texture_internal)):
+                        raw = rm.get_file(resref, ext_str)
+                        if raw:
+                            ok = loader(resref, raw, is_lightmap=is_lightmap)
+                            if ok:
+                                return True
+            except Exception as exc:
+                log.debug(f"Archive texture fallback '{resref}': {exc}")
+
+            return False
+
+        loaded_d = sum(1 for r in needed_diffuse if _load_one(r, False))
+        loaded_l = sum(1 for r in needed_lightmap if _load_one(r, True))
+
+        if loaded_d or loaded_l:
+            log.info(f"Loaded {loaded_d}/{len(needed_diffuse)} diffuse + "
+                     f"{loaded_l}/{len(needed_lightmap)} lightmap textures from '{game_dir}'")
+
+        # Always re-attach textures to room VAOs from cache — even if all
+        # textures were already cached, the VAOs still need their e['tex']
+        # populated (e.g. after module reload or second call).
+        reattached = 0
+        for e in self._renderer._room_vaos:
+            tn = (e.get("tex_name", "") or e.get("tex_resref", "")).lower()
+            if tn:
+                cached = self._renderer._tex_cache.get(tn)
+                if cached is not None and e.get("tex") is not cached:
+                    e["tex"] = cached
+                    reattached += 1
+            lm = e.get("lmap_name", "").lower()
+            if lm:
+                lmap_cached = self._renderer._lmap_cache.get(lm)
+                if lmap_cached is not None and e.get("lmap_tex") is not lmap_cached:
+                    e["lmap_tex"] = lmap_cached
+                    reattached += 1
+        if reattached:
+            log.debug(f"Re-attached {reattached} texture bindings to room VAOs")
+            self.update()
+
+    def _load_tga_texture(self, tex_resref: str, tga_bytes: bytes) -> bool:
+        """
+        Minimal TGA loader — supports uncompressed 24-bit and 32-bit TGA.
+        Converts to RGBA8 and uploads to GL.
+
+        Uses numpy for fast vectorised BGR(A)→RGBA conversion when available;
+        falls back to a pure-Python loop so the function works without numpy.
+        """
+        try:
+            import struct as _struct
+            if len(tga_bytes) < 18:
+                return False
+            id_len  = tga_bytes[0]
+            img_type = tga_bytes[2]
+            w = _struct.unpack_from('<H', tga_bytes, 12)[0]
+            h = _struct.unpack_from('<H', tga_bytes, 14)[0]
+            bpp = tga_bytes[16]
+            descriptor = tga_bytes[17]           # bit 5 = top-left origin
+            if img_type not in (2, 3) or bpp not in (24, 32):
+                return False  # only uncompressed RGB/RGBA
+            if w == 0 or h == 0:
+                return False
+            data_off = 18 + id_len
+            stride   = bpp // 8
+            px_count = w * h
+            raw = tga_bytes[data_off: data_off + px_count * stride]
+
+            if _HAS_NUMPY:
+                # Fast path — numpy vectorised channel swap
+                arr = np.frombuffer(raw, dtype=np.uint8).reshape(px_count, stride)
+                rgba = np.empty((px_count, 4), dtype=np.uint8)
+                rgba[:, 0] = arr[:, 2]   # R  ← B
+                rgba[:, 1] = arr[:, 1]   # G  ← G
+                rgba[:, 2] = arr[:, 0]   # B  ← R
+                rgba[:, 3] = arr[:, 3] if bpp == 32 else 255
+                # TGA origin: if bit 5 of descriptor is 0, rows are bottom-first
+                if not (descriptor & 0x20):
+                    rgba = rgba.reshape(h, w, 4)[::-1].reshape(px_count, 4)
+                rgba_bytes = rgba.tobytes()
+            else:
+                # Slow path — pure Python pixel loop
+                rgba = bytearray(px_count * 4)
+                for i in range(px_count):
+                    b, g, r = raw[i*stride], raw[i*stride+1], raw[i*stride+2]
+                    a = raw[i*stride+3] if bpp == 32 else 255
+                    rgba[i*4:i*4+4] = bytes([r, g, b, a])
+                # Flip rows if bottom-origin (bit 5 of descriptor = 0)
+                if not (descriptor & 0x20):
+                    row_bytes = w * 4
+                    flipped = bytearray(px_count * 4)
+                    for row in range(h):
+                        src = (h - 1 - row) * row_bytes
+                        dst = row * row_bytes
+                        flipped[dst:dst+row_bytes] = rgba[src:src+row_bytes]
+                    rgba = flipped
+                rgba_bytes = bytes(rgba)
+
+            return self._renderer.load_texture(tex_resref, rgba_bytes, w, h)
+        except Exception as e:
+            log.debug(f"_load_tga_texture '{tex_resref}': {e}")
+            return False
+
+    def _load_tga_texture_internal(self, tex_resref: str, tga_bytes: bytes,
+                                    is_lightmap: bool = False) -> bool:
+        """
+        Internal TGA loader with lightmap flag support.
+        Wraps _load_tga_texture with is_lightmap cache routing.
+        """
+        try:
+            import struct as _struct
+            if len(tga_bytes) < 18:
+                return False
+            id_len  = tga_bytes[0]
+            img_type = tga_bytes[2]
+            w = _struct.unpack_from('<H', tga_bytes, 12)[0]
+            h = _struct.unpack_from('<H', tga_bytes, 14)[0]
+            bpp = tga_bytes[16]
+            descriptor = tga_bytes[17]
+            if img_type not in (2, 3) or bpp not in (24, 32):
+                return False
+            if w == 0 or h == 0:
+                return False
+            data_off = 18 + id_len
+            stride   = bpp // 8
+            px_count = w * h
+            raw = tga_bytes[data_off: data_off + px_count * stride]
+
+            if _HAS_NUMPY:
+                arr = np.frombuffer(raw, dtype=np.uint8).reshape(px_count, stride)
+                rgba = np.empty((px_count, 4), dtype=np.uint8)
+                rgba[:, 0] = arr[:, 2]
+                rgba[:, 1] = arr[:, 1]
+                rgba[:, 2] = arr[:, 0]
+                rgba[:, 3] = arr[:, 3] if bpp == 32 else 255
+                if not (descriptor & 0x20):
+                    rgba = rgba.reshape(h, w, 4)[::-1].reshape(px_count, 4)
+                rgba_bytes = rgba.tobytes()
+            else:
+                rgba = bytearray(px_count * 4)
+                for i in range(px_count):
+                    b, g, r = raw[i*stride], raw[i*stride+1], raw[i*stride+2]
+                    a = raw[i*stride+3] if bpp == 32 else 255
+                    rgba[i*4:i*4+4] = bytes([r, g, b, a])
+                if not (descriptor & 0x20):
+                    row_bytes = w * 4
+                    flipped = bytearray(px_count * 4)
+                    for row in range(h):
+                        src = (h - 1 - row) * row_bytes
+                        dst = row * row_bytes
+                        flipped[dst:dst+row_bytes] = rgba[src:src+row_bytes]
+                    rgba = flipped
+                rgba_bytes = bytes(rgba)
+
+            return self._renderer.load_texture(tex_resref, rgba_bytes, w, h,
+                                               is_lightmap=is_lightmap)
+        except Exception as e:
+            log.debug(f"_load_tga_texture_internal '{tex_resref}': {e}")
+            return False
+
+    def _load_tpc_texture(self, tex_resref: str, tpc_bytes: bytes,
+                          is_lightmap: bool = False) -> bool:
+        """Load a TPC texture with lightmap flag support."""
+        try:
+            from ..formats.tpc_reader import TPCReader
+            tpc = TPCReader(tpc_bytes)
+            rgba = tpc.to_rgba()
+            w, h = tpc.width, tpc.height
+            return self._renderer.load_texture(tex_resref, rgba, w, h,
+                                               is_lightmap=is_lightmap)
+        except Exception as e:
+            log.debug(f"_load_tpc_texture '{tex_resref}': {e}")
+            return False
 
     def set_app_mode(self, mode: str):
         """Switch between 'module_editor' and 'level_builder' modes."""
         if mode in ("module_editor", "level_builder"):
             self._app_mode = mode
             self.update()
+
+    def generate_module_thumbnail(self, size: int = 256) -> Optional["QImage"]:
+        """
+        Generate an isometric thumbnail of the currently loaded module geometry.
+
+        Creates a temporary isometric camera, renders the scene at *size*×*size*,
+        and returns the result as a QImage suitable for use in the content browser.
+
+        Args:
+            size: Thumbnail resolution in pixels (default 256×256).
+
+        Returns:
+            QImage on success, None if no geometry loaded or renderer not ready.
+        """
+        if not self._renderer.ready or not self._renderer._room_vaos:
+            return None
+        if not _HAS_NUMPY or not _HAS_QT:
+            return None
+
+        try:
+            # Create isometric camera framed on the loaded geometry
+            thumb_cam = OrbitCamera()
+            thumb_cam.yaw = 35.0
+            thumb_cam.pitch = 30.0
+            thumb_cam.fov = 50.0
+
+            # Use the same framing as the viewport camera if rooms are loaded
+            if self._room_instances and self._game_dir and _HAS_MDL:
+                # Re-use cached framing from room data
+                thumb_cam.target = self.camera.target.copy()
+                thumb_cam.distance = self.camera.distance
+                thumb_cam.far = self.camera.far
+            else:
+                thumb_cam.target = self.camera.target.copy()
+                thumb_cam.distance = self.camera.distance
+                thumb_cam.far = self.camera.far
+
+            # Render at the given size
+            raw = self._renderer.render_thumbnail(size, size, thumb_cam)
+            if raw is None:
+                return None
+
+            # Convert OpenGL RGBA (bottom-row first) to QImage (top-row first)
+            if _HAS_NUMPY:
+                arr = np.frombuffer(raw, dtype=np.uint8).reshape(size, size, 4)
+                arr_flip = arr[::-1].copy()
+                img = QImage(arr_flip.tobytes(), size, size,
+                             size * 4, QImage.Format_RGBA8888)
+            else:
+                img = QImage(raw, size, size, size * 4, QImage.Format_RGBA8888)
+                img = img.mirrored(False, True)
+            return img.copy()  # detach from raw buffer
+        except Exception as e:
+            log.debug(f"generate_module_thumbnail: {e}")
+            return None
 
     def toggle_walkmesh(self, visible: bool = None):
         """Show/hide walkmesh overlay."""
@@ -1373,11 +1597,43 @@ class ViewportWidget(_QWidget_base):
         if not self._renderer.ready:
             self._renderer.init()
 
+        # ── Build render camera (orbit or play mode) ──────────────────────────
+        render_camera = self.camera
+        render_session = None
+
+        if self._play_mode and self._play_session:
+            render_session = self._play_session
+            # For new engine: build a temporary OrbitCamera from play camera
+            if _HAS_NEW_ENGINE and hasattr(self._play_session, 'camera'):
+                play_cam = self._play_session.camera
+                if play_cam is not None:
+                    # Build a play-mode orbit camera matching the play position
+                    play_orbit = OrbitCamera()
+                    try:
+                        eye    = play_cam.eye
+                        target = play_cam.target
+                        if _HAS_NUMPY:
+                            eye_np    = np.array(eye, dtype='f4')
+                            target_np = np.array(target, dtype='f4')
+                            diff = eye_np - target_np
+                            dist = float(np.linalg.norm(diff))
+                            play_orbit.target   = target_np
+                            play_orbit.distance = max(0.5, dist)
+                            # Compute yaw/pitch from the difference vector
+                            if dist > 0.01:
+                                play_orbit.yaw   = math.degrees(math.atan2(diff[0], diff[1]))
+                                play_orbit.pitch = math.degrees(math.asin(
+                                    max(-1.0, min(1.0, diff[2] / dist))))
+                            play_orbit.far = max(1000.0, dist * 4 + 50)
+                        render_camera = play_orbit
+                    except Exception:
+                        pass
+
         # ── GL render ─────────────────────────────────────────────────────────
         if self._renderer.ready:
             raw = self._renderer.render(
-                W, H, self.camera,
-                self._play_session if self._play_mode else None,
+                W, H, render_camera,
+                render_session,
                 show_walkmesh=self._show_walkmesh)
             if raw:
                 # OpenGL reads bottom-to-top; QImage is top-to-bottom.
@@ -1395,6 +1651,7 @@ class ViewportWidget(_QWidget_base):
 
         # ── 2-D overlays ──────────────────────────────────────────────────────
         self._draw_gizmo_overlay(p)
+        self._draw_selection_info(p, W, H)
         self._paint_hud(p, W, H)
         p.end()
 
@@ -1487,6 +1744,60 @@ class ViewportWidget(_QWidget_base):
         p.setPen(QPen(QColor(100, 100, 100)))
         p.setFont(QFont("Consolas", 7))
         p.drawText(8, H-8, "2D top-down view  |  RMB=orbit  MMB=pan  Scroll=zoom")
+
+    # ── Selection info overlay ───────────────────────────────────────────────
+
+    def _draw_selection_info(self, p: "QPainter", W: int, H: int):
+        """
+        Draw a small info tooltip above the selected object (UE5-style).
+        Shows the object type, resref, and position when something is selected.
+        """
+        if not _HAS_QT or self._selected_obj is None or self._play_mode:
+            return
+        obj = self._selected_obj
+        if not hasattr(obj, 'position'):
+            return
+
+        pos = obj.position
+        sx, sy = self._world_to_screen(pos.x, pos.y, pos.z)
+        if sx is None:
+            return
+
+        # Build info lines
+        resref = getattr(obj, 'resref', '') or getattr(obj, 'tag', '')
+        obj_type = type(obj).__name__.replace('GIT', '').lower()
+        lines = [
+            f"{obj_type.title()} — {resref}",
+            f"Position: ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})",
+        ]
+        bearing = getattr(obj, 'bearing', None)
+        if bearing is not None:
+            lines.append(f"Bearing: {bearing:.1f}°")
+
+        # Render info card just above gizmo origin
+        fn_info = QFont("Segoe UI", 8)
+        p.setFont(fn_info)
+        fm = p.fontMetrics()
+        lh = fm.height() + 2
+        bw = max(fm.horizontalAdvance(l) for l in lines) + 16
+        bh = len(lines) * lh + 8
+        bx = int(sx) - bw // 2
+        by = int(sy) - 80 - bh
+        bx = max(4, min(W - bw - 4, bx))
+        by = max(4, by)
+
+        # Background pill
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(QColor(0, 0, 0, 180)))
+        p.drawRoundedRect(bx, by, bw, bh, 5, 5)
+        # Left accent stripe (UE5 orange selection color)
+        p.setBrush(QBrush(QColor(255, 140, 0, 220)))
+        p.drawRoundedRect(bx, by, 3, bh, 2, 2)
+
+        # Text
+        p.setPen(QColor(220, 220, 235))
+        for i, line in enumerate(lines):
+            p.drawText(bx + 8, by + 6 + (i + 1) * lh - 2, line)
 
     # ── HUD overlay ─────────────────────────────────────────────────────────
 
@@ -1582,12 +1893,39 @@ class ViewportWidget(_QWidget_base):
             p.drawText(ix + 4, 40 + 16, info)
 
         # ── Camera info (bottom-right) ────────────────────────────────────────────────
-        t = self.camera.target
-        cam_lines = [
-            f"Az {self.camera.azimuth:.0f}°  El {self.camera.elevation:.0f}°  "
-            f"D {self.camera.distance:.1f}",
-            f"X {t[0]:.2f}  Y {t[1]:.2f}  Z {t[2]:.2f}",
-        ]
+        if self._play_mode and _HAS_NEW_ENGINE and self._play_session:
+            # Show play camera info in play mode
+            try:
+                cam = self._play_session.camera
+                player = self._play_session.player
+                if cam and player:
+                    eye = cam.eye
+                    cam_lines = [
+                        f"PLAY MODE  │  {getattr(cam, 'mode', '').replace('_',' ').upper()}",
+                        f"Pos  X {player.x:.2f}  Y {player.y:.2f}  Z {player.z:.2f}",
+                        f"Eye  X {eye[0]:.2f}  Y {eye[1]:.2f}  Z {eye[2]:.2f}",
+                        f"Yaw {math.degrees(player.yaw):.0f}°  "
+                        f"{'RUN' if player.is_running else 'WALK'}",
+                    ]
+                else:
+                    cam_lines = ["PLAY MODE"]
+            except Exception:
+                cam_lines = ["PLAY MODE"]
+        else:
+            t = self.camera.target
+            eye = self.camera.eye()
+            cam_lines = [
+                f"Az {self.camera.azimuth:.0f}°  El {self.camera.elevation:.0f}°  "
+                f"D {self.camera.distance:.1f}",
+                f"Target  X {t[0]:.2f}  Y {t[1]:.2f}  Z {t[2]:.2f}",
+                f"Eye     X {eye[0]:.2f}  Y {eye[1]:.2f}  Z {eye[2]:.2f}",
+            ]
+
+            # Add engine stats if enabled
+            if self._show_stats and _HAS_NEW_ENGINE and self._scene_graph:
+                stats = self._scene_graph.stats
+                cam_lines.append(str(stats))
+
         p.setFont(fn_mono)
         fm2  = p.fontMetrics()
         lh   = fm2.height() + 2
@@ -1596,21 +1934,33 @@ class ViewportWidget(_QWidget_base):
         rx   = W - mw - 8
         ry   = H - th - 22
         p.fillRect(rx - 4, ry, mw + 4, th, QColor(0, 0, 0, 160))
-        p.fillRect(rx - 4, ry, 3, th, QColor(56, 139, 253, 180))
-        p.setPen(QColor(140, 170, 200))
+        p.fillRect(rx - 4, ry, 3, th,
+                   QColor(80, 220, 100, 200) if self._play_mode else QColor(56, 139, 253, 180))
+        p.setPen(QColor(140, 220, 140) if self._play_mode else QColor(140, 170, 200))
         for i, line in enumerate(cam_lines):
             p.drawText(rx + 4, ry + 6 + (i + 1) * lh - 1, line)
 
         # ── Controls hint bar (bottom) ───────────────────────────────────────────────
         if self._play_mode:
-            hint     = "WASD = move  │  Mouse = look  │  Shift = run  │  Esc = exit"
+            # Show play mode hints + interaction hint from engine
+            interaction_hint = ""
+            if _HAS_NEW_ENGINE and self._play_session:
+                try:
+                    interaction_hint = self._play_session.interaction_hint
+                except Exception:
+                    pass
+            if interaction_hint:
+                hint = f"WASD=move  │  Shift=sprint  │  {interaction_hint}  │  Esc=exit"
+            else:
+                hint = "WASD=move  │  Mouse=look  │  Shift=sprint  │  E=interact  │  Esc=exit"
             hint_col = QColor(80, 220, 100)
         elif self._placement_mode:
             hint     = f"LMB = place {self._place_template or ''!r}  │  Esc = cancel"
             hint_col = QColor(240, 180, 60)
         else:
-            hint     = ("RMB = orbit  │  MMB = pan  │  Scroll = zoom  │  "
-                        "WASD = fly  │  F = frame  │  W = navmesh  │  Del = delete")
+            hint     = ("RMB/Alt+LMB = orbit  │  MMB = pan  │  Scroll = zoom  │  "
+                        "WASD = fly  │  Shift = sprint  │  Ctrl = precise  │  "
+                        "F = frame  │  W = navmesh  │  Del = delete")
             hint_col = QColor(70, 80, 100)
 
         p.setFont(fn_tiny)
@@ -1763,25 +2113,88 @@ class ViewportWidget(_QWidget_base):
         except Exception:
             return
         self._renderer.rebuild_object_vaos(state, self._selected_obj)
+        # Also rebuild entity MDL VAOs when entity registry has models
+        if _HAS_NEW_ENGINE and self._entity_registry:
+            try:
+                self._renderer.rebuild_entity_vaos(self._entity_registry)
+            except Exception as e:
+                log.debug(f"rebuild_entity_vaos: {e}")
         self.update()
 
     # ── Room framing ─────────────────────────────────────────────────────────
 
     def _frame_rooms(self):
-        if not _HAS_NUMPY or not self._room_instances:
+        """
+        Frame the camera to show all loaded room geometry.
+
+        Priority order:
+          1. Bounding box computed from parsed MDL vertices (via the model cache
+             or direct parse) — most accurate for any room placement.
+          2. Room instance positions from LYT (fallback when no MDL found).
+        """
+        if not _HAS_NUMPY:
             return
+
         pts = []
+
+        # Strategy 1: collect bounds from already-parsed MDL meshes
+        # The room VAOs were built from MDLParser data; re-parse the same MDL
+        # to get the vertex bounds used for camera framing.
+        if self._game_dir and self._room_instances and _HAS_MDL:
+            try:
+                from ..formats.mdl_parser import MDLParser, get_model_cache
+                cache = get_model_cache()
+                for ri in self._room_instances:
+                    name = (getattr(ri, 'mdl_name', None) or
+                            getattr(ri, 'model_name', None) or
+                            getattr(ri, 'name', '') or '').lower()
+                    if not name:
+                        continue
+                    # Try from model cache first (no re-parse needed)
+                    for ext in ('.mdl', '.MDL'):
+                        mdl_path = os.path.join(self._game_dir, name + ext)
+                        if os.path.exists(mdl_path):
+                            try:
+                                mesh = cache.get(mdl_path)
+                                if mesh is None:
+                                    mdl_b = open(mdl_path, 'rb').read()
+                                    mdx_p = os.path.splitext(mdl_path)[0] + '.mdx'
+                                    mdx_b = open(mdx_p, 'rb').read() if os.path.exists(mdx_p) else b''
+                                    mesh = MDLParser(mdl_b, mdx_b).parse()
+                                if mesh:
+                                    for node in mesh.visible_mesh_nodes():
+                                        pts.extend(node.vertices)
+                            except Exception:
+                                pass
+                            break
+            except Exception:
+                pass
+
+        if pts:
+            arr = np.array(pts, dtype='f4')
+            xs = arr[:, 0]; ys = arr[:, 1]; zs = arr[:, 2]
+            center = np.array([(xs.min()+xs.max())*0.5,
+                               (ys.min()+ys.max())*0.5,
+                               (zs.min()+zs.max())*0.5], dtype='f4')
+            radius = float(np.linalg.norm(arr - center, axis=1).max())
+            self.camera.frame(center, max(radius * 0.6, 5.0))
+            return
+
+        # Strategy 2: fallback to room instance positions (may be origin for synthesized LYT)
+        if not self._room_instances:
+            return
+        lyt_pts = []
         for ri in self._room_instances:
             x = float(getattr(ri,'world_x',None) or getattr(ri,'x',None) or
                       (getattr(ri,'grid_x',0)*10.0) or 0.0)
             y = float(getattr(ri,'world_y',None) or getattr(ri,'y',None) or
                       (getattr(ri,'grid_y',0)*10.0) or 0.0)
             z = float(getattr(ri,'world_z',0.) or getattr(ri,'z',0.) or 0.)
-            pts.append([x, y, z])
-        arr    = np.array(pts, dtype='f4')
+            lyt_pts.append([x, y, z])
+        arr    = np.array(lyt_pts, dtype='f4')
         center = arr.mean(axis=0)
-        radius = float(np.linalg.norm(arr-center,axis=1).max()) if len(pts)>1 else 10.
-        self.camera.frame(center, max(radius, 5.))
+        radius = float(np.linalg.norm(arr - center, axis=1).max()) if len(lyt_pts) > 1 else 10.
+        self.camera.frame(center, max(radius, 15.))
 
     def _frame_all(self):
         try:
@@ -1853,29 +2266,101 @@ class ViewportWidget(_QWidget_base):
 
     # ── Play mode ─────────────────────────────────────────────────────────────
 
-    def start_play_mode(self):
+    def start_play_mode(self, camera_mode: str = "third_person"):
+        """
+        Enter interactive play mode.
+
+        Uses the new PlayModeController for walkmesh-based movement,
+        door interaction, and camera (TPS/FPS/free orbit).
+
+        Args:
+            camera_mode: 'third_person', 'first_person', or 'free_orbit'
+        """
         if not _HAS_ENGINE:
             log.warning("Engine unavailable — play mode disabled")
             return
         try:
             state = get_module_state()
             git   = state.git if state else None
-            walk_tris = self._collect_walkmesh_triangles()
-            self._play_session = PlaySession.start(
-                git_data=git, walkmesh_triangles=walk_tris)
-            self._npc_registry = NPCRegistry()
+
+            # Determine start position from camera target or first waypoint
+            start_x = float(self.camera.target[0]) if _HAS_NUMPY else 0.0
+            start_y = float(self.camera.target[1]) if _HAS_NUMPY else 0.0
+            start_z = 0.0
+
+            # Try to find a waypoint or creature position as start
             if git:
-                self._npc_registry.populate_from_git(git)
+                for attr in ('waypoints', 'creatures'):
+                    items = getattr(git, attr, [])
+                    if items:
+                        pos = getattr(items[0], 'position', None)
+                        if pos:
+                            start_x, start_y = float(pos.x), float(pos.y)
+                        break
+
+            # Build walkmesh for collision
+            walkmesh = None
+            try:
+                from ..formats.wok_parser import build_module_walkmesh
+                from ..utils.resource_manager import get_resource_manager
+
+                class _RoomProxy:
+                    def __init__(self, ri):
+                        self.resref = getattr(ri, 'mdl_name',
+                                      getattr(ri, 'resref',
+                                      getattr(ri, 'name', 'unknown'))).lower()
+                        x = getattr(ri, 'world_x', getattr(ri, 'x', 0.0))
+                        y = getattr(ri, 'world_y', getattr(ri, 'y', 0.0))
+                        z = getattr(ri, 'world_z', getattr(ri, 'z', 0.0))
+                        self.position = (float(x), float(y), float(z))
+
+                if self._room_instances:
+                    proxies = [_RoomProxy(ri) for ri in self._room_instances]
+                    rm  = get_resource_manager()
+                    wm  = build_module_walkmesh(proxies, resource_manager=rm,
+                                               game_dir=self._game_dir)
+                    if wm:
+                        walkmesh = wm
+                        log.debug("PlayMode: walkmesh built for collision")
+            except Exception as e:
+                log.debug(f"PlayMode walkmesh: {e}")
+
+            # Create new PlaySession
+            if _HAS_NEW_ENGINE:
+                from ..engine.play_mode import PlaySession, CameraMode
+                mode_map = {
+                    "third_person": CameraMode.THIRD_PERSON,
+                    "first_person": CameraMode.FIRST_PERSON,
+                    "free_orbit":   CameraMode.FREE_ORBIT,
+                    "overhead":     CameraMode.OVERHEAD,
+                }
+                cam_mode = mode_map.get(camera_mode, CameraMode.THIRD_PERSON)
+                self._play_session = PlaySession()
+                self._play_session.start(
+                    walkmesh=walkmesh,
+                    entities=self._entity_registry,
+                    start_pos=(start_x, start_y, start_z),
+                    start_yaw=math.radians(self.camera.yaw),
+                    camera_mode=cam_mode,
+                )
+            else:
+                # Legacy fallback
+                walk_tris = self._collect_walkmesh_triangles()
+                self._play_session = PlaySession.start(
+                    git_data=git, walkmesh_triangles=walk_tris)
+
             self._play_mode = True
             self._play_pitch = 0.
             self._play_last_time = time.time()
-            self.setMouseTracking(True)
-            self.grabMouse()
-            self.setCursor(Qt.BlankCursor)
+            if _HAS_QT:
+                self.setMouseTracking(True)
+                self.grabMouse()
+                self.setCursor(Qt.BlankCursor)
             self._move_timer.setInterval(16)
             if not self._move_timer.isActive():
                 self._move_timer.start()
             self.play_mode_changed.emit(True)
+            log.info(f"PlayMode started: {camera_mode}, pos=({start_x:.1f}, {start_y:.1f})")
         except Exception as e:
             log.error(f"start_play_mode: {e}")
 
@@ -1938,10 +2423,22 @@ class ViewportWidget(_QWidget_base):
         if self._play_mode and self._play_session:
             cx, cy = self.width()//2, self.height()//2
             if hasattr(self, '_play_mouse_last') and self._play_mouse_last:
-                dx = event.x()-self._play_mouse_last.x()
-                dy = event.y()-self._play_mouse_last.y()
-                self._play_session.player.yaw -= dx*0.20
-                self._play_pitch = max(-80., min(80., self._play_pitch-dy*0.20))
+                dx = event.x() - self._play_mouse_last.x()
+                dy = event.y() - self._play_mouse_last.y()
+                if _HAS_NEW_ENGINE and hasattr(self._play_session, 'controller'):
+                    # New engine: update camera yaw/pitch via controller
+                    ctrl = self._play_session.controller
+                    if ctrl and ctrl.active:
+                        ctrl.camera.yaw   -= dx * 0.003
+                        ctrl.camera.pitch -= dy * 0.003
+                        ctrl.camera.clamp_pitch()
+                        if hasattr(ctrl, 'player'):
+                            ctrl.player.yaw = ctrl.camera.yaw
+                else:
+                    # Legacy
+                    if hasattr(self._play_session, 'player'):
+                        self._play_session.player.yaw -= dx * 0.20
+                    self._play_pitch = max(-80., min(80., self._play_pitch - dy * 0.20))
             self._play_mouse_last = QPoint(cx, cy)
             QCursor.setPos(self.mapToGlobal(QPoint(cx, cy)))
             self.update()
@@ -1969,9 +2466,13 @@ class ViewportWidget(_QWidget_base):
         dy = event.y()-self._last_mouse.y()
         self._last_mouse = event.pos()
         if event.buttons() & Qt.RightButton:
-            self.camera.orbit(-dx*0.4, -dy*0.4)
+            # Orbit sensitivity: 0.35°/px feels natural (UE5 default ~0.3)
+            self.camera.orbit(-dx * 0.35, -dy * 0.35)
         elif event.buttons() & Qt.MiddleButton:
             self.camera.pan(dx, dy)
+        elif (event.buttons() & Qt.LeftButton) and (event.modifiers() & Qt.AltModifier):
+            # Alt+LMB = orbit (Maya-style, also supported in UE5)
+            self.camera.orbit(-dx * 0.35, -dy * 0.35)
         t = self.camera.target
         self.camera_moved.emit(float(t[0]), float(t[1]), float(t[2]))
         self.update()
@@ -2022,7 +2523,9 @@ class ViewportWidget(_QWidget_base):
 
     def wheelEvent(self, event):
         if self._play_mode: return
-        self.camera.zoom(-event.angleDelta().y()/120.)
+        # Smooth exponential zoom — angleDelta() returns 120 per scroll notch
+        delta = event.angleDelta().y() / 120.0
+        self.camera.zoom(delta)
         self.update()
 
     # ── Keyboard events ───────────────────────────────────────────────────────
@@ -2041,17 +2544,74 @@ class ViewportWidget(_QWidget_base):
         if self._play_mode:
             if event.key() == Qt.Key_Escape:
                 self.stop_play_mode()
+            elif event.key() in (Qt.Key_Return, Qt.Key_Space):
+                # E/Space/Enter = interact in play mode
+                if _HAS_NEW_ENGINE and self._play_session:
+                    try:
+                        self._play_session.controller.interact()
+                    except Exception:
+                        pass
+            elif event.key() == Qt.Key_F:
+                # F = toggle fly mode in play mode
+                if _HAS_NEW_ENGINE and self._play_session:
+                    try:
+                        ctrl = self._play_session.controller
+                        if ctrl:
+                            ctrl.player.fly_mode = not ctrl.player.fly_mode
+                    except Exception:
+                        pass
+            elif event.key() == Qt.Key_C:
+                # C = cycle camera mode
+                if _HAS_NEW_ENGINE and self._play_session:
+                    try:
+                        ctrl = self._play_session.controller
+                        from ..engine.play_mode import CameraMode
+                        modes = [CameraMode.THIRD_PERSON, CameraMode.FIRST_PERSON,
+                                 CameraMode.OVERHEAD]
+                        current = ctrl.camera_mode
+                        idx = modes.index(current) if current in modes else 0
+                        new_mode = modes[(idx + 1) % len(modes)]
+                        ctrl.set_camera_mode(new_mode)
+                    except Exception:
+                        pass
             if not self._move_timer.isActive():
                 self._move_timer.start()
             return
         if event.key() in (Qt.Key_Control, Qt.Key_Shift):
             self._update_snap()
+
+        # ── UE5-style viewport hotkeys ──────────────────────────────────────
         if event.key() == Qt.Key_F:
-            self._frame_all()
+            # F = frame selected / frame all
+            if self._selected_obj is not None:
+                self.frame_selected()
+            else:
+                if self._room_instances:
+                    self._frame_rooms()
+                else:
+                    self._frame_all()
+        elif event.key() == Qt.Key_Home:
+            # Home = frame all rooms
+            if self._room_instances:
+                self._frame_rooms()
+            else:
+                self._frame_all()
         elif event.key() == Qt.Key_W and not (Qt.Key_Control in self._keys):
-            # W alone toggles walkmesh; Ctrl+W is reserved (would be used for movement)
-            if not self._keys.intersection({Qt.Key_A, Qt.Key_S, Qt.Key_D}):
+            # W alone toggles walkmesh; but not during movement
+            if not self._keys.intersection({Qt.Key_A, Qt.Key_S, Qt.Key_D,
+                                            Qt.Key_Q, Qt.Key_E}):
                 self.toggle_walkmesh()
+        elif event.key() == Qt.Key_G:
+            # G = toggle grid (UE5 style)
+            try:
+                self._renderer._show_grid = not getattr(self._renderer, '_show_grid', True)
+                self.update()
+            except Exception:
+                pass
+        elif event.key() == Qt.Key_QuoteLeft:
+            # ` / ~ = toggle engine stats overlay
+            self._show_stats = not getattr(self, '_show_stats', False)
+            self.update()
         elif event.key() == Qt.Key_Delete:
             self._delete_selected()
         elif event.key() == Qt.Key_Escape:
@@ -2061,6 +2621,37 @@ class ViewportWidget(_QWidget_base):
             self._gizmo_drag_start_pos   = None
             self.setCursor(Qt.ArrowCursor)
             self.update()
+        elif event.key() == Qt.Key_1:
+            # 1 = Front view (looking North)
+            self.camera.yaw = 90.0
+            self.camera.pitch = 0.0
+            self.update()
+        elif event.key() == Qt.Key_3:
+            # 3 = Right side view
+            self.camera.yaw = 0.0
+            self.camera.pitch = 0.0
+            self.update()
+        elif event.key() == Qt.Key_7:
+            # 7 = Top-down view
+            self.camera.pitch = 89.9
+            self.update()
+        elif event.key() == Qt.Key_4 and event.modifiers() & Qt.KeypadModifier:
+            # Numpad 4 = orbit left
+            self.camera.orbit(15.0, 0.0)
+            self.update()
+        elif event.key() == Qt.Key_6 and event.modifiers() & Qt.KeypadModifier:
+            # Numpad 6 = orbit right
+            self.camera.orbit(-15.0, 0.0)
+            self.update()
+        elif event.key() == Qt.Key_8 and event.modifiers() & Qt.KeypadModifier:
+            # Numpad 8 = orbit up
+            self.camera.orbit(0.0, 15.0)
+            self.update()
+        elif event.key() == Qt.Key_2 and event.modifiers() & Qt.KeypadModifier:
+            # Numpad 2 = orbit down
+            self.camera.orbit(0.0, -15.0)
+            self.update()
+
         if not self._move_timer.isActive():
             self._move_timer.start()
 
@@ -2074,36 +2665,98 @@ class ViewportWidget(_QWidget_base):
     def _process_movement(self):
         if self._play_mode and self._play_session:
             now = time.time()
-            dt  = min(now-self._play_last_time, 0.1)
+            dt  = min(now - self._play_last_time, 0.1)
             self._play_last_time = now
-            fwd=right=turn=0.
-            if Qt.Key_W in self._keys: fwd   += 1.
-            if Qt.Key_S in self._keys: fwd   -= 1.
-            if Qt.Key_A in self._keys: turn  += 1.
-            if Qt.Key_D in self._keys: turn  -= 1.
-            if Qt.Key_Q in self._keys: right -= 1.
-            if Qt.Key_E in self._keys: right += 1.
-            self._play_session.update(dt, {
-                "move_forward": fwd, "move_right": right,
-                "turn_left": turn,
-                "running": Qt.Key_Shift in self._keys})
-            self.update(); return
 
-        speed = max(0.08, min(0.8, self.camera.distance * 0.04))
-        # Shift doubles speed
-        if Qt.Key_Shift in self._keys:
-            speed *= 2.5
-        az  = math.radians(self.camera.azimuth)
-        fwd   = np.array([math.cos(az), math.sin(az), 0.], dtype='f4')
-        right = np.array([-math.sin(az), math.cos(az), 0.], dtype='f4')
-        up    = np.array([0., 0., 1.], dtype='f4')
+            fwd = right = up = turn = pitch_inp = 0.
+            sprint = False
+
+            if _HAS_QT:
+                if Qt.Key_W in self._keys: fwd   += 1.
+                if Qt.Key_S in self._keys: fwd   -= 1.
+                if Qt.Key_A in self._keys: right -= 1.
+                if Qt.Key_D in self._keys: right += 1.
+                if Qt.Key_Q in self._keys: up    -= 1.
+                if Qt.Key_E in self._keys: up    += 1.
+                sprint = Qt.Key_Shift in self._keys
+                interact = Qt.Key_Return in self._keys or Qt.Key_Space in self._keys
+
+            if _HAS_NEW_ENGINE and hasattr(self._play_session, 'update'):
+                # New PlaySession API
+                self._play_session.update(
+                    forward=fwd, right=right, up=up,
+                    turn=turn, pitch=pitch_inp,
+                    sprint=sprint, delta=dt,
+                )
+            else:
+                # Legacy API
+                self._play_session.update(dt, {
+                    "move_forward": fwd, "move_right": right,
+                    "turn_left": -turn,
+                    "running": sprint,
+                })
+
+            # Update animation system each frame
+            if _HAS_NEW_ENGINE and self._anim_set:
+                self._anim_set.update_all(dt)
+            if _HAS_NEW_ENGINE and self._entity_registry:
+                self._entity_registry.update_all(dt)
+
+            # Notify animation panel (and any other subscriber) of the frame advance
+            try:
+                self.frame_advanced.emit(dt)
+            except Exception:
+                pass
+
+            self.update()
+            return
+
+        # ── Editor orbit camera: advance animations even in edit mode ────────
+        now = time.time()
+        dt  = min(now - self._last_engine_time, 0.1)
+        self._last_engine_time = now
+        self._engine_delta = dt
+
+        # Update entity animations in editor mode too (for preview)
+        if _HAS_NEW_ENGINE and self._anim_set:
+            try:
+                self._anim_set.update_all(dt)
+            except Exception:
+                pass
+        if _HAS_NEW_ENGINE and self._entity_registry:
+            try:
+                self._entity_registry.update_all(dt)
+            except Exception:
+                pass
+
+        # Notify animation panel of frame advance (editor mode)
+        try:
+            self.frame_advanced.emit(dt)
+        except Exception:
+            pass
+
+        # ── Editor fly-through (WASD + QE) ───────────────────────────────────
+        speed = max(0.05, min(2.0, self.camera.distance * 0.035))
+        if _HAS_QT:
+            if Qt.Key_Shift in self._keys:
+                speed *= 3.0
+            elif Qt.Key_Control in self._keys:
+                speed *= 0.25
+
         moved = False
-        if Qt.Key_W in self._keys: self.camera.target+=fwd*speed;   moved=True
-        if Qt.Key_S in self._keys: self.camera.target-=fwd*speed;   moved=True
-        if Qt.Key_A in self._keys: self.camera.target-=right*speed; moved=True
-        if Qt.Key_D in self._keys: self.camera.target+=right*speed; moved=True
-        if Qt.Key_Q in self._keys: self.camera.target-=up*speed;    moved=True
-        if Qt.Key_E in self._keys: self.camera.target+=up*speed;    moved=True
+        if _HAS_QT:
+            if Qt.Key_W in self._keys:
+                self.camera.walk(speed, 0., 0.); moved = True
+            if Qt.Key_S in self._keys:
+                self.camera.walk(-speed, 0., 0.); moved = True
+            if Qt.Key_A in self._keys:
+                self.camera.walk(0., -speed, 0.); moved = True
+            if Qt.Key_D in self._keys:
+                self.camera.walk(0., speed, 0.); moved = True
+            if Qt.Key_Q in self._keys:
+                self.camera.walk(0., 0., -speed); moved = True
+            if Qt.Key_E in self._keys:
+                self.camera.walk(0., 0., speed); moved = True
         if moved:
             t = self.camera.target
             self.camera_moved.emit(float(t[0]),float(t[1]),float(t[2]))

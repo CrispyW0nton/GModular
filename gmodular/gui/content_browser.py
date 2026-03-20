@@ -25,7 +25,7 @@ from typing import Optional, List, Dict, Set
 log = logging.getLogger(__name__)
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
         QPushButton, QListWidget, QListWidgetItem, QTreeWidget,
         QTreeWidgetItem, QSplitter, QFrame, QScrollArea,
@@ -33,20 +33,20 @@ try:
         QToolButton, QButtonGroup, QGridLayout, QApplication,
         QTabWidget, QComboBox, QInputDialog, QMessageBox,
     )
-    from PyQt5.QtCore import (
-        Qt, pyqtSignal, QMimeData, QSize, QTimer, QPoint,
+    from qtpy.QtCore import (
+        Qt, Signal, QMimeData, QSize, QTimer, QPoint,
         QPropertyAnimation, QEasingCurve,
     )
-    from PyQt5.QtGui import (
-        QFont, QColor, QBrush, QIcon, QPainter, QPixmap,
-        QPen, QLinearGradient, QDrag, QCursor,
+    from qtpy.QtGui import (
+        QFont, QColor, QBrush, QIcon, QPainter, QPixmap, QImage,
+        QPen, QLinearGradient, QDrag, QCursor, QPoint,
     )
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QWidget = object  # type: ignore[misc,assignment]
 
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *a, **kw): pass
         def __set_name__(self, o, n): pass
 
@@ -187,14 +187,16 @@ def _make_asset_icon(letter: str, color: str, size: int = 48) -> "QPixmap":
 class AssetItem:
     """Represents a single asset in the browser."""
     __slots__ = ("display_name", "resref", "template_resref", "asset_type",
-                 "category", "subcategory", "description", "starred")
+                 "category", "subcategory", "description", "starred",
+                 "file_path")
 
     def __init__(self, display_name: str, resref: str,
                  template_resref: str = "",
                  asset_type: str = "placeable",
                  category: str = "",
                  subcategory: str = "",
-                 description: str = ""):
+                 description: str = "",
+                 file_path: str = ""):
         self.display_name    = display_name
         self.resref          = resref[:16]
         self.template_resref = (template_resref or resref)[:16]
@@ -203,6 +205,7 @@ class AssetItem:
         self.subcategory     = subcategory
         self.description     = description
         self.starred         = False
+        self.file_path       = file_path   # absolute path on disk (may be empty)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,13 +213,13 @@ class AssetItem:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AssetTileWidget(QWidget):
-    """A single asset tile — icon + label, drag-and-drop capable."""
+    """A single asset tile — UE5-style icon + label, drag-and-drop capable."""
 
-    clicked = pyqtSignal(object)          # AssetItem
-    double_clicked = pyqtSignal(object)   # AssetItem
+    clicked = Signal(object)          # AssetItem
+    double_clicked = Signal(object)   # AssetItem
 
-    _TILE_W, _TILE_H = 80, 90
-    _ICON_SIZE       = 48
+    _TILE_W, _TILE_H = 90, 100
+    _ICON_SIZE       = 56
 
     def __init__(self, asset: AssetItem, icon_color: str, parent=None):
         super().__init__(parent)
@@ -232,13 +235,80 @@ class AssetTileWidget(QWidget):
             f"Type: {asset.asset_type}<br>"
             f"Category: {asset.category} / {asset.subcategory}"
         )
-        self._icon_pix = _make_asset_icon(
-            ASSET_CATEGORIES.get(asset.category, {}).get("letter", "?"),
+        # For texture assets with a known file path, try to load a thumbnail.
+        # Falls back to the generated letter icon if loading fails or no path.
+        self._icon_pix = self._load_texture_thumbnail(
+            asset, self._ICON_SIZE
+        ) or _make_asset_icon(
+            ASSET_CATEGORIES.get(asset.category, {}).get(
+                "letter", "T" if asset.asset_type == "texture" else "?"),
             icon_color,
             self._ICON_SIZE
         )
         # Star overlay
         self._star_pix = _make_star_icon(16)
+
+    @staticmethod
+    def _load_texture_thumbnail(asset: "AssetItem", size: int) -> "Optional[QPixmap]":
+        """
+        Attempt to load a TGA/TPC thumbnail for a texture or room asset.
+
+        For texture assets: loads the actual texture image.
+        For room assets: generates a coloured schematic placeholder.
+
+        Returns a QPixmap scaled to *size* x *size* on success, or None.
+        """
+        # ── Texture assets: load actual texture image ──────────────────────
+        if asset.asset_type == "texture" and getattr(asset, "file_path", ""):
+            fpath = asset.file_path
+            if os.path.isfile(fpath):
+                try:
+                    if fpath.lower().endswith('.tga'):
+                        return _tga_to_pixmap(fpath, size)
+                    if fpath.lower().endswith('.tpc'):
+                        return _tpc_to_pixmap(fpath, size)
+                except Exception:
+                    pass
+
+        # ── Room model assets: generate colored MDL schematic ─────────────
+        if asset.asset_type == "room" and _HAS_QT:
+            try:
+                # Create a distinctive room floor-plan style thumbnail
+                px = QPixmap(size, size)
+                px.fill(QColor(0, 0, 0, 0))
+                p = QPainter(px)
+                p.setRenderHint(QPainter.Antialiasing)
+                # Dark background
+                p.fillRect(0, 0, size, size, QColor("#0d1117"))
+                # Room outline (schematic style)
+                margin = int(size * 0.12)
+                room_rect_size = size - 2 * margin
+                p.setPen(QPen(QColor("#3b8beb"), 1.5))
+                p.setBrush(QBrush(QColor("#1c2a3a")))
+                p.drawRect(margin, margin, room_rect_size, room_rect_size)
+                # Grid lines inside
+                p.setPen(QPen(QColor("#1e3a5a"), 0.8))
+                step = room_rect_size // 4
+                for i in range(1, 4):
+                    x = margin + i * step
+                    y = margin + i * step
+                    p.drawLine(x, margin, x, margin + room_rect_size)
+                    p.drawLine(margin, y, margin + room_rect_size, y)
+                # Door markers
+                p.setPen(QPen(QColor("#f0a030"), 1.5))
+                mid = size // 2
+                # Bottom center door
+                p.drawLine(mid - 4, size - margin, mid + 4, size - margin)
+                # Center dot
+                p.setBrush(QBrush(QColor("#3b8beb")))
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(mid - 2, mid - 2, 4, 4)
+                p.end()
+                return px
+            except Exception:
+                pass
+
+        return None
 
     def setSelected(self, selected: bool):
         self._selected = selected
@@ -298,7 +368,7 @@ class AssetTileWidget(QWidget):
             border    = QColor("#252d3d")
             bw        = 1.0
 
-        from PyQt5.QtGui import QLinearGradient
+        from qtpy.QtGui import QLinearGradient
         grad = QLinearGradient(0, 0, 0, H)
         grad.setColorAt(0.0, bg_top)
         grad.setColorAt(1.0, bg_bot)
@@ -348,6 +418,90 @@ class AssetTileWidget(QWidget):
         p.end()
 
 
+def _tga_to_pixmap(path: str, size: int) -> "Optional[QPixmap]":
+    """
+    Load an uncompressed TGA file (24-bit or 32-bit) and return a
+    QPixmap scaled to *size* × *size*.
+    Returns None on any error.
+    """
+    import struct
+    try:
+        data = open(path, 'rb').read()
+        if len(data) < 18:
+            return None
+        id_len   = data[0]
+        img_type = data[2]
+        w = struct.unpack_from('<H', data, 12)[0]
+        h = struct.unpack_from('<H', data, 14)[0]
+        bpp = data[16]
+        descriptor = data[17]          # bit 5 = top-left origin
+        if img_type not in (2, 3) or bpp not in (24, 32) or w == 0 or h == 0:
+            return None
+        off    = 18 + id_len
+        stride = bpp // 8
+        raw    = data[off: off + w * h * stride]
+
+        # Try numpy fast path first
+        try:
+            import numpy as np
+            arr  = np.frombuffer(raw, dtype=np.uint8).reshape(h * w, stride).copy()
+            rgba = np.empty((h * w, 4), dtype=np.uint8)
+            rgba[:, 0] = arr[:, 2]   # R ← B
+            rgba[:, 1] = arr[:, 1]   # G
+            rgba[:, 2] = arr[:, 0]   # B ← R
+            rgba[:, 3] = arr[:, 3] if bpp == 32 else 255
+            # Flip rows if bottom-origin (bit-5 of descriptor = 0)
+            if not (descriptor & 0x20):
+                rgba = rgba.reshape(h, w, 4)[::-1].reshape(h * w, 4)
+            img_bytes = rgba.tobytes()
+        except ImportError:
+            # Pure-Python fallback
+            px_count = w * h
+            buf = bytearray(px_count * 4)
+            for i in range(px_count):
+                b, g, r = raw[i*stride], raw[i*stride+1], raw[i*stride+2]
+                a = raw[i*stride+3] if bpp == 32 else 255
+                buf[i*4:i*4+4] = bytes([r, g, b, a])
+            if not (descriptor & 0x20):
+                row_bytes = w * 4
+                flipped = bytearray(px_count * 4)
+                for row in range(h):
+                    src = (h - 1 - row) * row_bytes
+                    dst = row * row_bytes
+                    flipped[dst:dst+row_bytes] = buf[src:src+row_bytes]
+                buf = flipped
+            img_bytes = bytes(buf)
+
+        qi = QImage(img_bytes, w, h, w * 4, QImage.Format_RGBA8888)
+        if qi.isNull():
+            return None
+        px = QPixmap.fromImage(qi)
+        return px.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    except Exception:
+        return None
+
+
+def _tpc_to_pixmap(path: str, size: int) -> "Optional[QPixmap]":
+    """
+    Load a KotOR TPC file and return a QPixmap scaled to *size* × *size*.
+    Uses the GModular TPCReader; returns None on any error.
+    """
+    try:
+        from ..formats.tpc_reader import TPCReader
+        tpc  = TPCReader.from_bytes(open(path, 'rb').read())
+        rgba = tpc.to_rgba()            # bytes: width × height × 4 RGBA8
+        w, h = tpc.width, tpc.height
+        if w == 0 or h == 0:
+            return None
+        qi = QImage(rgba, w, h, w * 4, QImage.Format_RGBA8888)
+        if qi.isNull():
+            return None
+        px = QPixmap.fromImage(qi)
+        return px.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    except Exception:
+        return None
+
+
 def _make_star_icon(size: int) -> "QPixmap":
     px = QPixmap(size, size)
     px.fill(QColor(0, 0, 0, 0))
@@ -363,7 +517,7 @@ def _make_star_icon(size: int) -> "QPixmap":
         r = r_out if i % 2 == 0 else r_in
         pts.append(QPoint(int(cx + r * math.cos(angle)),
                            int(cy + r * math.sin(angle))))
-    from PyQt5.QtGui import QPolygon
+    from qtpy.QtGui import QPolygon
     p.drawPolygon(QPolygon(pts))
     p.end()
     return px
@@ -382,7 +536,7 @@ class ContentBrowser(QWidget):
     Bottom     — path bar + status + view controls
     """
 
-    place_asset = pyqtSignal(object)    # AssetItem — user wants to place this
+    place_asset = Signal(object)    # AssetItem — user wants to place this
 
     # ── View modes ──────────────────────────────────────────────────────────
     VIEW_TILES = "tiles"
@@ -394,7 +548,7 @@ class ContentBrowser(QWidget):
         self._all_assets: List[AssetItem] = []
         self._filtered: List[AssetItem]   = []
         self._selected_asset: Optional[AssetItem] = None
-        self._tile_size        = 80   # adjustable via slider
+        self._tile_size        = 90   # adjustable via buttons (sm=72, md=90, lg=112)
         self._current_category = ""
         self._current_subcat   = ""
         self._starred_refs: Set[str] = set()
@@ -667,9 +821,9 @@ class ContentBrowser(QWidget):
         sm_btn = self._mini_btn("S", "Small tiles")
         md_btn = self._mini_btn("M", "Medium tiles")
         lg_btn = self._mini_btn("L", "Large tiles")
-        sm_btn.clicked.connect(lambda: self._set_tile_size(64))
-        md_btn.clicked.connect(lambda: self._set_tile_size(88))
-        lg_btn.clicked.connect(lambda: self._set_tile_size(112))
+        sm_btn.clicked.connect(lambda: self._set_tile_size(72))
+        md_btn.clicked.connect(lambda: self._set_tile_size(90))
+        lg_btn.clicked.connect(lambda: self._set_tile_size(114))
         layout.addWidget(sm_btn)
         layout.addWidget(md_btn)
         layout.addWidget(lg_btn)
@@ -1049,6 +1203,199 @@ class ContentBrowser(QWidget):
 
     def get_selected(self) -> Optional[AssetItem]:
         return self._selected_asset
+
+    def populate_from_module(self, extract_dir: str = "", git=None, are=None):
+        """
+        Populate the content browser from a loaded module.
+
+        Scans the extract directory for textures, MDL room models, and other
+        resources, and populates them as browsable assets.  Also loads GIT
+        objects (placeables, creatures, doors, waypoints) as placeable assets.
+
+        Args:
+            extract_dir: Path to the extracted module directory.
+            git:         GITData object (optional) for GIT object population.
+            are:         AREData object (optional) for area metadata.
+        """
+        # ── Populate GIT objects ────────────────────────────────────────────
+        if git is not None:
+            self._populate_from_git(git)
+
+        # ── Scan extract_dir for textures and MDL assets ────────────────────
+        if extract_dir and os.path.isdir(extract_dir):
+            self._populate_from_extract_dir(extract_dir)
+
+        self._refresh_content()
+        n = len(self._all_assets)
+        self._status(f"Module loaded — {n} assets")
+
+    def _populate_from_git(self, git):
+        """Add GIT objects (in-module instances) to the content browser."""
+        type_map = {
+            "placeables": ("placeable", "Placeables", "Module Instances"),
+            "creatures":  ("creature",  "Creatures",  "Module Instances"),
+            "doors":      ("door",      "Doors",      "Module Instances"),
+            "waypoints":  ("waypoint",  "Waypoints",  "Module Instances"),
+            "triggers":   ("trigger",   "Triggers",   "Module Instances"),
+            "sounds":     ("sound",     "Sounds",     "Module Instances"),
+            "stores":     ("store",     "Stores",     "Module Instances"),
+        }
+        existing = {a.resref.lower() for a in self._all_assets}
+        added = 0
+        for attr, (asset_type, cat_name, sub_name) in type_map.items():
+            objects = getattr(git, attr, []) or []
+            for obj in objects:
+                # Use tag or template_resref as identifier
+                resref = (getattr(obj, 'template_resref', '') or
+                          getattr(obj, 'tag', '') or
+                          getattr(obj, 'resref', '') or f'{asset_type}_instance').strip().lower()
+                if not resref or resref in existing:
+                    continue
+                display = resref.replace('_', ' ').title()
+                # Append position info if available
+                pos = getattr(obj, 'position', None)
+                if pos:
+                    display = f"{display}  ({pos.x:.1f}, {pos.y:.1f})"
+                a = AssetItem(
+                    display_name=display,
+                    resref=resref,
+                    template_resref=resref,
+                    asset_type=asset_type,
+                    category=cat_name,
+                    subcategory=sub_name,
+                    description=f"From module GIT ({attr})",
+                )
+                self._all_assets.append(a)
+                existing.add(resref)
+                added += 1
+
+        if added:
+            log.debug("ContentBrowser: added %d GIT objects", added)
+
+    def _populate_from_extract_dir(self, extract_dir: str):
+        """
+        Scan the extract directory for MDL/TGA/TPC assets and add them.
+
+        - .mdl files → added as "Room Models" (category: Rooms)
+        - .tga / .tpc files → added as "Textures" (category: Textures)
+        - .uto / .utc / .utp / .utd files → blueprint templates
+        """
+        existing = {a.resref.lower() for a in self._all_assets}
+        added = 0
+        try:
+            files = os.listdir(extract_dir)
+        except OSError:
+            return
+
+        for fn in sorted(files):
+            fn_lo = fn.lower()
+            stem = os.path.splitext(fn_lo)[0]
+            ext  = os.path.splitext(fn_lo)[1]
+
+            if stem in existing:
+                continue
+
+            if ext == '.mdl':
+                a = AssetItem(
+                    display_name=stem.replace('_', ' ').title(),
+                    resref=stem,
+                    template_resref=stem,
+                    asset_type="room",
+                    category="Rooms",
+                    subcategory="Module Rooms",
+                    description=f"Room model from module: {fn}",
+                    file_path=os.path.join(extract_dir, fn),
+                )
+                self._all_assets.append(a)
+                existing.add(stem)
+                added += 1
+
+            elif ext in ('.tga', '.tpc'):
+                # Only add if not already in existing (avoids duplicates for aliases)
+                a = AssetItem(
+                    display_name=stem.replace('_', ' ').title(),
+                    resref=stem,
+                    template_resref=stem,
+                    asset_type="texture",
+                    category="Textures",
+                    subcategory="Module Textures",
+                    description=f"Texture from module: {fn}",
+                    file_path=os.path.join(extract_dir, fn),
+                )
+                self._all_assets.append(a)
+                existing.add(stem)
+                added += 1
+
+            elif ext in ('.uto', '.utc', '.utp', '.utd', '.dft'):
+                asset_type_map = {
+                    '.uto': ('store', 'Stores'),
+                    '.utc': ('creature', 'Creatures'),
+                    '.utp': ('placeable', 'Placeables'),
+                    '.utd': ('door', 'Doors'),
+                    '.dft': ('placeable', 'Placeables'),
+                }
+                asset_type, cat_name = asset_type_map.get(ext, ('placeable', 'Placeables'))
+                a = AssetItem(
+                    display_name=stem.replace('_', ' ').title(),
+                    resref=stem,
+                    template_resref=stem,
+                    asset_type=asset_type,
+                    category=cat_name,
+                    subcategory="Module Blueprints",
+                    description=f"Blueprint from module: {fn}",
+                )
+                self._all_assets.append(a)
+                existing.add(stem)
+                added += 1
+
+        if added:
+            log.debug("ContentBrowser: added %d assets from %s", added, extract_dir)
+
+        # Ensure Rooms and Textures categories are in the tree
+        self._refresh_category_tree()
+
+    def _refresh_category_tree(self):
+        """Update the category tree to include dynamically added categories."""
+        existing_cats = set()
+        root = self._cat_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            data = item.data(0, Qt.UserRole)
+            if data:
+                existing_cats.add(data[0])
+
+        # Dynamic categories from loaded assets
+        dynamic_cats = {}
+        for a in self._all_assets:
+            cat = a.category
+            sub = a.subcategory
+            if cat not in ASSET_CATEGORIES and cat not in ('All', '_starred', '_recent'):
+                if cat not in dynamic_cats:
+                    dynamic_cats[cat] = set()
+                if sub:
+                    dynamic_cats[cat].add(sub)
+
+        for cat_name, subcats in dynamic_cats.items():
+            if cat_name in existing_cats:
+                continue
+            # Color by type
+            color_map = {
+                "Rooms":    "#44ddaa",
+                "Textures": "#ddaa44",
+            }
+            color = color_map.get(cat_name, "#aaaaaa")
+            cat_item = QTreeWidgetItem(self._cat_tree)
+            cat_item.setText(0, f"  ◈  {cat_name}")
+            cat_item.setData(0, Qt.UserRole, (cat_name, ""))
+            cat_item.setForeground(0, QBrush(QColor(color)))
+            cat_item.setFont(0, QFont("Segoe UI", 8, QFont.Bold))
+            # Auto-expand Rooms and Textures so users see them immediately
+            cat_item.setExpanded(cat_name in ("Rooms", "Textures"))
+            for sub in sorted(subcats):
+                sub_item = QTreeWidgetItem(cat_item)
+                sub_item.setText(0, f"      {sub}")
+                sub_item.setData(0, Qt.UserRole, (cat_name, sub))
+                sub_item.setForeground(0, QBrush(QColor("#8b949e")))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

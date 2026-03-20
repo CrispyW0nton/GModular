@@ -813,10 +813,10 @@ class TestResourceManagerTPC:
         assert 'tga' in EXT_TO_TYPE
 
     def test_res_type_map_includes_tpc(self):
-        """archives.RES_TYPE_MAP includes TPC type 2056."""
+        """archives.RES_TYPE_MAP includes TPC type 3007 (PyKotor-verified)."""
         from gmodular.formats.archives import RES_TYPE_MAP
-        assert 2056 in RES_TYPE_MAP
-        assert RES_TYPE_MAP[2056] == 'tpc'
+        assert 3007 in RES_TYPE_MAP
+        assert RES_TYPE_MAP[3007] == 'tpc'
 
 
 class TestResourceManagerWOK:
@@ -828,10 +828,10 @@ class TestResourceManagerWOK:
         assert 'wok' in EXT_TO_TYPE
 
     def test_res_type_map_includes_wok(self):
-        """archives.RES_TYPE_MAP includes WOK type 2021."""
+        """archives.RES_TYPE_MAP includes WOK type 2016 (PyKotor-verified)."""
         from gmodular.formats.archives import RES_TYPE_MAP
-        assert 2021 in RES_TYPE_MAP
-        assert RES_TYPE_MAP[2021] == 'wok'
+        assert 2016 in RES_TYPE_MAP
+        assert RES_TYPE_MAP[2016] == 'wok'
 
 
 class TestResourceManagerLYT:
@@ -844,12 +844,12 @@ class TestResourceManagerLYT:
         assert 'vis' in EXT_TO_TYPE
 
     def test_res_type_map_includes_lyt(self):
-        """archives.RES_TYPE_MAP includes LYT type 3006."""
+        """archives.RES_TYPE_MAP includes LYT type 3000 and VIS type 3001 (PyKotor-verified)."""
         from gmodular.formats.archives import RES_TYPE_MAP
-        assert 3006 in RES_TYPE_MAP
-        assert RES_TYPE_MAP[3006] == 'lyt'
-        assert 3007 in RES_TYPE_MAP
-        assert RES_TYPE_MAP[3007] == 'vis'
+        assert 3000 in RES_TYPE_MAP
+        assert RES_TYPE_MAP[3000] == 'lyt'
+        assert 3001 in RES_TYPE_MAP
+        assert RES_TYPE_MAP[3001] == 'vis'
 
 
 # ═════════════════════════════════════════════════════════════════════════════

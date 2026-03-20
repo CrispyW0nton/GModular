@@ -632,8 +632,8 @@ class MDLRenderer:
             if obj is not None:
                 try:
                     obj.release()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("mdl_renderer: VAO release failed: %s", exc)
 
     # ── Render ────────────────────────────────────────────────────────────────
 

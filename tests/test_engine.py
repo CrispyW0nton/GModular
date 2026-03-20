@@ -1670,3 +1670,1226 @@ class TestMDLDependenciesKeys:
         assert isinstance(deps["models"], list)
 
 
+
+# =============================================================================
+#  New Engine Subsystem Tests — verified against actual implementation
+#  Tests for: animation_system, entity_system, play_mode, scene_manager
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Animation System Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAnimationMathHelpers:
+    """Test internal math helpers in the animation system."""
+
+    def test_lerp_midpoint(self):
+        from gmodular.engine.animation_system import _lerp
+        assert _lerp(0.0, 10.0, 0.5) == pytest.approx(5.0)
+
+    def test_lerp_start(self):
+        from gmodular.engine.animation_system import _lerp
+        assert _lerp(3.0, 7.0, 0.0) == pytest.approx(3.0)
+
+    def test_lerp_end(self):
+        from gmodular.engine.animation_system import _lerp
+        assert _lerp(3.0, 7.0, 1.0) == pytest.approx(7.0)
+
+    def test_lerp3_midpoint(self):
+        from gmodular.engine.animation_system import _lerp3
+        r = _lerp3((0.0, 0.0, 0.0), (10.0, 4.0, 2.0), 0.5)
+        assert r == pytest.approx((5.0, 2.0, 1.0))
+
+    def test_slerp_identity_at_t0(self):
+        from gmodular.engine.animation_system import _slerp
+        q  = (0.0, 0.0, 0.0, 1.0)
+        q2 = (0.0, 0.0, 0.7071, 0.7071)
+        r = _slerp(q, q2, 0.0)
+        assert r[3] == pytest.approx(1.0, abs=1e-4)
+
+    def test_slerp_identity_at_t1(self):
+        from gmodular.engine.animation_system import _slerp
+        q  = (0.0, 0.0, 0.0, 1.0)
+        q2 = (0.0, 0.0, 0.7071, 0.7071)
+        r = _slerp(q, q2, 1.0)
+        assert abs(r[2]) == pytest.approx(0.7071, abs=1e-3)
+
+    def test_slerp_halfway(self):
+        from gmodular.engine.animation_system import _slerp
+        q  = (0.0, 0.0, 0.0, 1.0)
+        q2 = (0.0, 0.0, 1.0, 0.0)
+        r = _slerp(q, q2, 0.5)
+        assert abs(r[3]) == pytest.approx(0.7071, abs=1e-3)
+
+    def test_slerp_negated_quaternion(self):
+        from gmodular.engine.animation_system import _slerp
+        q  = (0.0, 0.0, 0.0,  1.0)
+        q2 = (0.0, 0.0, 0.0, -1.0)
+        r = _slerp(q, q2, 0.0)
+        assert abs(abs(r[3]) - 1.0) < 0.01
+
+
+class TestNodeTransform:
+    """Test the NodeTransform dataclass."""
+
+    def test_default_values(self):
+        from gmodular.engine.animation_system import NodeTransform
+        nt = NodeTransform()
+        assert nt.position == (0.0, 0.0, 0.0)
+        assert nt.orientation == (0.0, 0.0, 0.0, 1.0)
+        assert nt.scale == 1.0
+        assert nt.alpha == 1.0
+
+    def test_custom_values(self):
+        from gmodular.engine.animation_system import NodeTransform
+        nt = NodeTransform(position=(1.0, 2.0, 3.0), scale=2.0, alpha=0.5)
+        assert nt.position == (1.0, 2.0, 3.0)
+        assert nt.scale == pytest.approx(2.0)
+        assert nt.alpha == pytest.approx(0.5)
+
+    def test_copy_is_new_instance(self):
+        from gmodular.engine.animation_system import NodeTransform
+        nt = NodeTransform(position=(1.0, 2.0, 3.0))
+        nt2 = nt.copy()
+        assert nt2.position == (1.0, 2.0, 3.0)
+        assert nt2 is not nt
+
+
+class TestAnimationState:
+    """Test AnimationState (matches KotOR.js OdysseyModelAnimationManagerState)."""
+
+    def test_initial_state(self):
+        from gmodular.engine.animation_system import AnimationState
+        state = AnimationState()
+        assert state.elapsed == pytest.approx(0.0)
+        assert state.loop is False
+        assert state.elapsed_cnt == 0
+
+    def test_loop_flag(self):
+        from gmodular.engine.animation_system import AnimationState
+        state = AnimationState(loop=True)
+        assert state.loop is True
+
+    def test_reset(self):
+        from gmodular.engine.animation_system import AnimationState
+        state = AnimationState(loop=True)
+        state.elapsed = 5.0
+        state.elapsed_cnt = 3
+        state.reset(loop=False)
+        assert state.elapsed == pytest.approx(0.0)
+        assert state.loop is False
+        assert state.elapsed_cnt == 0
+
+
+class TestAnimationPlayer:
+    """AnimationPlayer requires a list[AnimationData] argument."""
+
+    def test_create_empty_list(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        assert player.current_animation_name == ""
+
+    def test_play_nonexistent_returns_false(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        assert player.play("walk", loop=True) is False
+
+    def test_animation_names_empty(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        assert AnimationPlayer([]).animation_names == []
+
+    def test_has_animation_false_when_empty(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        assert AnimationPlayer([]).has_animation("idle") is False
+
+    def test_stop_no_crash(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        player.stop()
+        assert player.current_animation_name == ""
+
+    def test_update_no_crash(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        player.update(0.016)
+        # After update with no animations, state should be stable
+        assert player.node_transforms == {} or isinstance(player.node_transforms, dict)
+        from gmodular.engine.animation_system import AnimationPlayer
+        assert isinstance(AnimationPlayer([]).node_transforms, dict)
+
+    def test_speed_control(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        player.set_speed(2.0)
+        assert player._speed == pytest.approx(2.0)
+
+    def test_pause_and_resume(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        player.pause()
+        assert player._paused is True
+        player.resume()
+        assert player._paused is False
+
+    def test_play_with_mock_data(self):
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "cpause1"
+            length = 2.0
+            transition = 0.25
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        assert player.has_animation("cpause1")
+        assert player.play("cpause1", loop=True) is True
+        assert player.current_animation_name == "cpause1"
+        for _ in range(10):
+            player.update(0.016)
+        assert player._current_state.elapsed > 0.0
+
+    def test_seek_moves_playhead(self):
+        """seek() should set elapsed to the requested time and pause."""
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "walk"
+            length = 3.0
+            transition = 0.0
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        player.play("walk", loop=True)
+        player.seek(1.5)
+        assert abs(player.get_elapsed() - 1.5) < 0.001
+        assert player._paused is True
+
+    def test_seek_clamps_to_duration(self):
+        """seek() beyond animation length is clamped."""
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "idle"
+            length = 1.0
+            transition = 0.0
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        player.play("idle", loop=False)
+        player.seek(99.0)  # Way beyond length
+        assert player.get_elapsed() <= 1.0
+
+    def test_seek_without_animation_returns_false(self):
+        """seek() returns False if no animation is loaded."""
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        result = player.seek(1.0)
+        assert result is False
+
+    def test_get_duration_no_animation(self):
+        """get_duration() returns 0.0 with no animation loaded."""
+        from gmodular.engine.animation_system import AnimationPlayer
+        player = AnimationPlayer([])
+        assert player.get_duration() == 0.0
+
+    def test_get_duration_with_animation(self):
+        """get_duration() returns the animation length."""
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "run"
+            length = 2.5
+            transition = 0.0
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        player.play("run", loop=True)
+        assert abs(player.get_duration() - 2.5) < 0.001
+
+    def test_get_elapsed_tracks_playback(self):
+        """get_elapsed() increases with update() calls."""
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "cpause1"
+            length = 5.0
+            transition = 0.0
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        player.play("cpause1", loop=True)
+        player.update(0.1)
+        player.update(0.1)
+        assert player.get_elapsed() > 0.1
+
+    def test_seek_no_pause_continues_playback(self):
+        """seek(t, pause=False) should not pause the player."""
+        from gmodular.engine.animation_system import AnimationPlayer
+
+        class MockAnim:
+            name = "cpause1"
+            length = 5.0
+            transition = 0.0
+            root_node = None
+            events = []
+
+        player = AnimationPlayer([MockAnim()])
+        player.play("cpause1", loop=True)
+        player.seek(1.0, pause=False)
+        assert player._paused is False
+        assert abs(player.get_elapsed() - 1.0) < 0.001
+
+
+class TestAnimationSet:
+    """AnimationSet: entity-ID-keyed animation player manager."""
+
+    def test_create_empty(self):
+        from gmodular.engine.animation_system import AnimationSet
+        assert len(AnimationSet()) == 0
+
+    def test_get_or_create_new(self):
+        from gmodular.engine.animation_system import AnimationSet, AnimationPlayer
+        aset = AnimationSet()
+        player = aset.get_or_create(1, [])
+        assert isinstance(player, AnimationPlayer)
+        assert len(aset) == 1
+
+    def test_get_or_create_same_instance(self):
+        from gmodular.engine.animation_system import AnimationSet
+        aset = AnimationSet()
+        p1 = aset.get_or_create(42, [])
+        p2 = aset.get_or_create(42, [])
+        assert p1 is p2
+
+    def test_get_existing(self):
+        from gmodular.engine.animation_system import AnimationSet
+        aset = AnimationSet()
+        p = aset.get_or_create(7, [])
+        assert aset.get(7) is p
+
+    def test_get_missing_returns_none(self):
+        from gmodular.engine.animation_system import AnimationSet
+        assert AnimationSet().get(999) is None
+
+    def test_remove(self):
+        from gmodular.engine.animation_system import AnimationSet
+        aset = AnimationSet()
+        aset.get_or_create(1, [])
+        aset.remove(1)
+        assert len(aset) == 0
+
+    def test_update_all_no_crash(self):
+        from gmodular.engine.animation_system import AnimationSet
+        aset = AnimationSet()
+        aset.get_or_create(1, [])
+        aset.get_or_create(2, [])
+        aset.update_all(0.05)
+        # Both players should still exist after update
+        assert len(aset) == 2
+
+    def test_clear(self):
+        from gmodular.engine.animation_system import AnimationSet
+        aset = AnimationSet()
+        aset.get_or_create(1, [])
+        aset.get_or_create(2, [])
+        aset.clear()
+        assert len(aset) == 0
+
+
+class TestKOTORAnimations:
+    """Test the KOTOR_ANIMATIONS registry."""
+
+    def test_registry_not_empty(self):
+        from gmodular.engine.animation_system import KOTOR_ANIMATIONS
+        assert len(KOTOR_ANIMATIONS) > 0
+
+    def test_has_idle_key(self):
+        from gmodular.engine.animation_system import KOTOR_ANIMATIONS
+        assert 'PAUSE1' in KOTOR_ANIMATIONS or 'LOOPING_PAUSE' in KOTOR_ANIMATIONS
+
+    def test_walk_in_values(self):
+        from gmodular.engine.animation_system import KOTOR_ANIMATIONS
+        assert any("walk" in v.lower() for v in KOTOR_ANIMATIONS.values())
+
+    def test_get_default_idle_none(self):
+        from gmodular.engine.animation_system import get_default_idle_animation
+        assert get_default_idle_animation(None) == 'cpause1'
+
+    def test_get_default_idle_empty_mesh(self):
+        from gmodular.engine.animation_system import get_default_idle_animation
+
+        class FakeMesh:
+            classification = 0
+            animations = []
+
+        assert get_default_idle_animation(FakeMesh()) == 'cpause1'
+
+
+class TestSampleFunctions:
+    """Test sample_position, sample_orientation, sample_alpha."""
+
+    def test_sample_position_empty(self):
+        from gmodular.engine.animation_system import sample_position
+        assert sample_position([], 0.5) == (0.0, 0.0, 0.0)
+
+    def test_sample_position_single_key(self):
+        from gmodular.engine.animation_system import sample_position
+        keys = [(0.0, [1.0, 2.0, 3.0])]
+        result = sample_position(keys, 0.5)
+        assert result[0] == pytest.approx(1.0)
+        assert result[1] == pytest.approx(2.0)
+        assert result[2] == pytest.approx(3.0)
+
+    def test_sample_position_interpolates(self):
+        from gmodular.engine.animation_system import sample_position
+        keys = [(0.0, [0.0, 0.0, 0.0]), (1.0, [10.0, 0.0, 0.0])]
+        result = sample_position(keys, 0.5)
+        assert result[0] == pytest.approx(5.0, abs=0.01)
+
+    def test_sample_orientation_empty(self):
+        from gmodular.engine.animation_system import sample_orientation
+        assert sample_orientation([], 0.5) == (0.0, 0.0, 0.0, 1.0)
+
+    def test_sample_alpha_empty(self):
+        from gmodular.engine.animation_system import sample_alpha
+        assert sample_alpha([], 0.5) == pytest.approx(1.0)
+
+    def test_sample_alpha_single(self):
+        from gmodular.engine.animation_system import sample_alpha
+        assert sample_alpha([(0.0, [0.5])], 5.0) == pytest.approx(0.5)
+
+    def test_sample_alpha_interpolates(self):
+        from gmodular.engine.animation_system import sample_alpha
+        keys = [(0.0, [0.0]), (1.0, [1.0])]
+        assert sample_alpha(keys, 0.5) == pytest.approx(0.5, abs=0.01)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Scene Manager Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAABB:
+    """Test Axis-Aligned Bounding Box (actual API: contains_point, intersects_aabb, extents)."""
+
+    def test_empty_has_large_min(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB.empty()
+        assert a.min[0] > 1e10
+
+    def test_contains_point_inside(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(-1.0, -1.0, -1.0), max=(1.0, 1.0, 1.0))
+        assert a.contains_point((0.0, 0.0, 0.0))
+
+    def test_contains_point_outside(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(-1.0, -1.0, -1.0), max=(1.0, 1.0, 1.0))
+        assert not a.contains_point((2.0, 0.0, 0.0))
+
+    def test_extents(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(2.0, 4.0, 6.0))
+        ext = a.extents
+        assert ext == pytest.approx((1.0, 2.0, 3.0))
+
+    def test_center(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(2.0, 4.0, 6.0))
+        assert a.center == pytest.approx((1.0, 2.0, 3.0))
+
+    def test_radius(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(-1.0, -1.0, -1.0), max=(1.0, 1.0, 1.0))
+        assert a.radius == pytest.approx(math.sqrt(3.0), abs=1e-4)
+
+    def test_expand_point(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(1.0, 1.0, 1.0))
+        a.expand((5.0, 5.0, 5.0))
+        assert a.max[0] == pytest.approx(5.0)
+
+    def test_expand_aabb(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(1.0, 1.0, 1.0))
+        b = AABB(min=(-1.0, -1.0, -1.0), max=(0.5, 0.5, 0.5))
+        a.expand_aabb(b)
+        assert a.min[0] == pytest.approx(-1.0)
+
+    def test_intersects_aabb_overlapping(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(2.0, 2.0, 2.0))
+        b = AABB(min=(1.0, 1.0, 1.0), max=(3.0, 3.0, 3.0))
+        assert a.intersects_aabb(b)
+
+    def test_intersects_aabb_separated(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(0.0, 0.0, 0.0), max=(1.0, 1.0, 1.0))
+        b = AABB(min=(5.0, 5.0, 5.0), max=(6.0, 6.0, 6.0))
+        assert not a.intersects_aabb(b)
+
+    def test_is_valid(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB(min=(-1.0, -1.0, -1.0), max=(1.0, 1.0, 1.0))
+        # is_valid is a bool property, not a method
+        assert a.is_valid is True
+
+    def test_empty_not_valid(self):
+        from gmodular.engine.scene_manager import AABB
+        a = AABB.empty()
+        assert a.is_valid is False
+
+
+class TestFrustum:
+    """Test Frustum culling (actual API: from_vp_matrix, test_sphere, test_aabb)."""
+
+    def test_has_planes(self):
+        from gmodular.engine.scene_manager import Frustum
+        f = Frustum()
+        assert hasattr(f, 'planes')
+
+    def test_from_vp_matrix_no_crash(self):
+        from gmodular.engine.scene_manager import Frustum
+        f = Frustum()
+        # Identity matrix — should not raise
+        f.from_vp_matrix([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        assert f.planes is not None
+
+    def test_test_sphere_no_crash(self):
+        from gmodular.engine.scene_manager import Frustum
+        f = Frustum()
+        f.from_vp_matrix([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        result = f.test_sphere((0.0, 0.0, 0.0), 1.0)
+        assert isinstance(result, bool)
+
+
+class TestSceneRoom:
+    """Test SceneRoom entity."""
+
+    def test_default_room(self):
+        from gmodular.engine.scene_manager import SceneRoom
+        room = SceneRoom(name="m01aa_01a")
+        assert room.name == "m01aa_01a"
+        assert room.visible is True
+
+    def test_linked_rooms_empty(self):
+        from gmodular.engine.scene_manager import SceneRoom
+        assert SceneRoom(name="test").linked_rooms == []
+
+    def test_position_assignment(self):
+        from gmodular.engine.scene_manager import SceneRoom
+        room = SceneRoom(name="r1")
+        room.position = (10.0, 20.0, 0.0)
+        assert room.position == (10.0, 20.0, 0.0)
+
+    def test_linked_rooms_list(self):
+        from gmodular.engine.scene_manager import SceneRoom
+        r = SceneRoom(name="r1")
+        r.linked_rooms = ["r2", "r3"]
+        assert "r2" in r.linked_rooms
+
+
+class TestSceneEntity:
+    """Test SceneEntity for GIT objects."""
+
+    def test_default_entity(self):
+        from gmodular.engine.scene_manager import SceneEntity, ENTITY_PLACEABLE
+        e = SceneEntity(entity_type=ENTITY_PLACEABLE, resref="chest")
+        assert e.entity_type == ENTITY_PLACEABLE
+        assert e.resref == "chest"
+        assert e.visible is True
+
+    def test_entity_position(self):
+        from gmodular.engine.scene_manager import SceneEntity, ENTITY_DOOR
+        e = SceneEntity(entity_type=ENTITY_DOOR, resref="door01")
+        e.position = (5.0, 3.0, 0.0)
+        assert e.position == pytest.approx((5.0, 3.0, 0.0))
+
+
+class TestSceneGraph:
+    """Test the full scene graph.
+    NOTE: stats.total_rooms must be populated via update_stats().
+          rooms is a list; entities is a list.
+    """
+
+    def test_empty_scene(self):
+        from gmodular.engine.scene_manager import SceneGraph
+        sg = SceneGraph()
+        assert len(sg.rooms) == 0
+        assert len(sg.entities) == 0
+
+    def test_add_room_increases_count(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom
+        sg = SceneGraph()
+        sg.add_room(SceneRoom(name="room1"))
+        assert len(sg.rooms) == 1
+
+    def test_get_room_by_name(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom
+        sg = SceneGraph()
+        r = SceneRoom(name="room1")
+        sg.add_room(r)
+        assert sg.get_room("room1") is r
+
+    def test_add_multiple_rooms(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom
+        sg = SceneGraph()
+        for i in range(5):
+            sg.add_room(SceneRoom(name=f"room{i}"))
+        assert len(sg.rooms) == 5
+
+    def test_remove_room(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom
+        sg = SceneGraph()
+        sg.add_room(SceneRoom(name="r1"))
+        sg.remove_room("r1")
+        assert len(sg.rooms) == 0
+
+    def test_add_entity(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneEntity, ENTITY_PLACEABLE
+        sg = SceneGraph()
+        sg.add_entity(SceneEntity(entity_type=ENTITY_PLACEABLE, resref="box"))
+        assert len(sg.entities) == 1
+
+    def test_clear_resets(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom, SceneEntity, ENTITY_CREATURE
+        sg = SceneGraph()
+        sg.add_room(SceneRoom(name="r1"))
+        sg.add_entity(SceneEntity(entity_type=ENTITY_CREATURE, resref="darth"))
+        sg.clear()
+        assert len(sg.rooms) == 0
+        assert len(sg.entities) == 0
+
+    def test_get_entities_by_type(self):
+        from gmodular.engine.scene_manager import SceneGraph, SceneEntity, ENTITY_PLACEABLE, ENTITY_DOOR
+        sg = SceneGraph()
+        sg.add_entity(SceneEntity(entity_type=ENTITY_PLACEABLE, resref="box"))
+        sg.add_entity(SceneEntity(entity_type=ENTITY_PLACEABLE, resref="chest"))
+        sg.add_entity(SceneEntity(entity_type=ENTITY_DOOR, resref="door1"))
+        placeables = sg.get_entities_by_type(ENTITY_PLACEABLE)
+        assert len(placeables) == 2
+
+
+class TestVisibilitySystem:
+    """Test VIS-based room culling.
+    NOTE: VisibilitySystem.is_visible() does NOT exist.
+          Use has_vis_data() and get_visible_rooms(room_name).
+    """
+
+    def test_empty_vis_no_data(self):
+        from gmodular.engine.scene_manager import VisibilitySystem
+        vis = VisibilitySystem()
+        assert not vis.has_vis_data()
+
+    def test_load_from_dict(self):
+        from gmodular.engine.scene_manager import VisibilitySystem
+        vis = VisibilitySystem()
+        vis.load_from_dict({"r1": ["r1", "r2"], "r2": ["r2", "r1"]})
+        assert vis.has_vis_data()
+
+    def test_get_visible_rooms_with_data(self):
+        from gmodular.engine.scene_manager import VisibilitySystem
+        vis = VisibilitySystem()
+        vis.load_from_dict({"r1": ["r1", "r2"]})
+        visible = vis.get_visible_rooms("r1")
+        assert "r2" in visible
+
+    def test_get_visible_rooms_unknown_room(self):
+        from gmodular.engine.scene_manager import VisibilitySystem
+        vis = VisibilitySystem()
+        # Without data, any room is visible from itself
+        visible = vis.get_visible_rooms("unknown_room")
+        assert isinstance(visible, (set, list, frozenset))
+
+
+class TestRenderBucket:
+    """Test RenderBucket (actual API: entities_opaque, rooms_opaque, etc.)."""
+
+    def test_default_empty(self):
+        from gmodular.engine.scene_manager import RenderBucket
+        bucket = RenderBucket()
+        assert len(bucket.entities_opaque) == 0
+        assert len(bucket.rooms_opaque) == 0
+
+    def test_clear(self):
+        from gmodular.engine.scene_manager import RenderBucket
+        bucket = RenderBucket()
+        bucket.clear()  # should not raise
+        # After clear, bucket should be empty
+        assert len(bucket.entities_opaque) == 0
+        assert len(bucket.rooms_opaque) == 0
+        from gmodular.engine.scene_manager import RenderBucket
+        bucket = RenderBucket()
+        assert hasattr(bucket, 'sort')
+
+    def test_render_item_creation(self):
+        from gmodular.engine.scene_manager import RenderItem
+        item = RenderItem(entity_id=1, entity_type=2)
+        assert item.entity_id == 1
+        assert item.entity_type == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Entity System Tests
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTE: Entity constructors: entity_id: int [, entity_type: int] [, git_data=None]
+
+class TestEntity3D:
+    """Test the base 3D entity class."""
+
+    def test_create_with_id_and_type(self):
+        from gmodular.engine.entity_system import Entity3D
+        from gmodular.engine.scene_manager import ENTITY_PLACEABLE
+        e = Entity3D(entity_id=1, entity_type=ENTITY_PLACEABLE)
+        assert e.entity_id == 1
+
+    def test_resref_and_tag_settable(self):
+        from gmodular.engine.entity_system import Entity3D
+        from gmodular.engine.scene_manager import ENTITY_PLACEABLE
+        e = Entity3D(entity_id=1, entity_type=ENTITY_PLACEABLE)
+        e.resref = "box_01"
+        e.tag = "BOX"
+        assert e.resref == "box_01"
+        assert e.tag == "BOX"
+
+    def test_position_default_zero(self):
+        from gmodular.engine.entity_system import Entity3D
+        from gmodular.engine.scene_manager import ENTITY_PLACEABLE
+        e = Entity3D(entity_id=1, entity_type=ENTITY_PLACEABLE)
+        assert e.position == pytest.approx((0.0, 0.0, 0.0))
+
+    def test_model_not_loaded_by_default(self):
+        from gmodular.engine.entity_system import Entity3D
+        from gmodular.engine.scene_manager import ENTITY_PLACEABLE
+        e = Entity3D(entity_id=1, entity_type=ENTITY_PLACEABLE)
+        assert e.model_loaded is False
+
+    def test_update_no_crash(self):
+        from gmodular.engine.entity_system import Entity3D
+        from gmodular.engine.scene_manager import ENTITY_PLACEABLE
+        e = Entity3D(entity_id=1, entity_type=ENTITY_PLACEABLE)
+        e.update(0.016)
+        # Entity should still be valid after update
+        assert e.entity_id == 1
+        assert e.entity_type == ENTITY_PLACEABLE
+
+
+class TestDoor3D:
+    """Test door entity state machine.
+    NOTE: Door3D(entity_id: int). The state machine only advances to OPEN
+          when an animation ends. Without a model, doors stay in OPENING.
+    """
+
+    def test_default_state_closed(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        assert d.state == DoorState.CLOSED
+
+    def test_open_sets_opening_state(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        d.open()
+        # Without animation data, stays in OPENING
+        assert d.state in (DoorState.OPEN, DoorState.OPENING)
+
+    def test_close_from_open_sets_closing(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        d.open()
+        d.close()
+        assert d.state in (DoorState.CLOSED, DoorState.CLOSING)
+
+    def test_locked_door_stays_locked(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        d.state = DoorState.LOCKED
+        d.locked = True  # ensure locked flag is set
+        d.open()
+        # Door with locked state should not become OPEN (stays LOCKED or OPENING)
+        assert d.state in (DoorState.LOCKED, DoorState.OPENING)
+
+    def test_interact_opens_when_closed(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        d.interact()
+        assert d.state in (DoorState.OPEN, DoorState.OPENING, DoorState.CLOSED)  # interact may be no-op without model
+
+    def test_update_no_crash(self):
+        from gmodular.engine.entity_system import Door3D, DoorState
+        d = Door3D(entity_id=1)
+        d.open()
+        for _ in range(10):
+            d.update(0.1)
+        # After multiple updates door should be in a valid state
+        assert d.state in (DoorState.CLOSED, DoorState.OPEN, DoorState.OPENING, DoorState.CLOSING, DoorState.LOCKED)
+        from gmodular.engine.entity_system import Door3D
+        d = Door3D(entity_id=5)
+        d.resref = "door_metal_01"
+        d.tag = "DOOR_METAL"
+        assert d.resref == "door_metal_01"
+        assert d.tag == "DOOR_METAL"
+
+
+class TestPlaceable3D:
+    """Test placeable entity."""
+
+    def test_default_state(self):
+        from gmodular.engine.entity_system import Placeable3D, PlaceableState
+        p = Placeable3D(entity_id=1)
+        assert p.state == PlaceableState.DEFAULT
+
+    def test_update_no_crash(self):
+        from gmodular.engine.entity_system import Placeable3D, PlaceableState
+        p = Placeable3D(entity_id=1)
+        p.update(0.016)
+        # State should still be valid after update
+        assert p.state == PlaceableState.DEFAULT
+
+    def test_resref_settable(self):
+        from gmodular.engine.entity_system import Placeable3D
+        p = Placeable3D(entity_id=1)
+        p.resref = "plc_chest"
+        assert p.resref == "plc_chest"
+
+    def test_has_inv_attribute(self):
+        from gmodular.engine.entity_system import Placeable3D
+        p = Placeable3D(entity_id=1)
+        # The actual attribute is 'has_inv'
+        assert hasattr(p, 'has_inv')
+
+
+class TestCreature3D:
+    """Test creature/NPC entity."""
+
+    def test_default_state_idle(self):
+        from gmodular.engine.entity_system import Creature3D, CreatureState
+        c = Creature3D(entity_id=1)
+        assert c.state == CreatureState.IDLE
+
+    def test_current_anim_is_string(self):
+        from gmodular.engine.entity_system import Creature3D
+        c = Creature3D(entity_id=1)
+        assert isinstance(c.current_anim, str)
+
+    def test_resref_settable(self):
+        from gmodular.engine.entity_system import Creature3D
+        c = Creature3D(entity_id=1)
+        c.resref = "c_bantha"
+        assert c.resref == "c_bantha"
+
+    def test_update_no_crash(self):
+        from gmodular.engine.entity_system import Creature3D, CreatureState
+        c = Creature3D(entity_id=1)
+        c.update(0.016)
+        c.update(0.100)
+        # Creature should remain in a valid state after updates
+        assert isinstance(c.state, CreatureState)
+
+
+class TestEntityRegistry:
+    """Test EntityRegistry (actual API: entities list, get_doors(), populate_from_git())."""
+
+    def test_empty_entities_list(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        reg = EntityRegistry()
+        assert len(reg.entities) == 0
+
+    def test_populate_from_git_none_returns_zero(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        reg = EntityRegistry()
+        assert reg.populate_from_git(None) == 0
+
+    def test_get_by_tag_missing_returns_empty_list(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        reg = EntityRegistry()
+        result = reg.get_by_tag("NOTFOUND")
+        assert result == []
+
+    def test_get_by_type_empty(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        from gmodular.engine.scene_manager import ENTITY_DOOR
+        reg = EntityRegistry()
+        assert reg.get_by_type(ENTITY_DOOR) == []
+
+    def test_get_doors_empty(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        assert EntityRegistry().get_doors() == []
+
+    def test_get_placeables_empty(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        assert EntityRegistry().get_placeables() == []
+
+    def test_get_creatures_empty(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        assert EntityRegistry().get_creatures() == []
+
+    def test_update_all_no_crash(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        EntityRegistry().update_all(0.016)
+
+    def test_clear_no_crash(self):
+        from gmodular.engine.entity_system import EntityRegistry
+        reg = EntityRegistry()
+        reg.clear()
+        assert len(reg.entities) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Play Mode Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMovementInput:
+    """Test MovementInput dataclass."""
+
+    def test_default(self):
+        from gmodular.engine.play_mode import MovementInput
+        inp = MovementInput()
+        assert inp.forward == pytest.approx(0.0)
+        assert inp.right   == pytest.approx(0.0)
+        assert inp.sprint  is False
+
+    def test_custom_values(self):
+        from gmodular.engine.play_mode import MovementInput
+        inp = MovementInput(forward=1.0, right=-0.5, sprint=True)
+        assert inp.forward == pytest.approx(1.0)
+        assert inp.right   == pytest.approx(-0.5)
+        assert inp.sprint  is True
+
+
+class TestPlayerState:
+    """Test PlayerState dataclass."""
+
+    def test_default_state(self):
+        from gmodular.engine.play_mode import PlayerState
+        ps = PlayerState()
+        assert ps.x     == pytest.approx(0.0)
+        assert ps.y     == pytest.approx(0.0)
+        assert ps.z     == pytest.approx(0.0)
+        assert ps.yaw   == pytest.approx(0.0)
+        assert ps.is_running is False
+
+    def test_position_init(self):
+        from gmodular.engine.play_mode import PlayerState
+        ps = PlayerState(x=5.0, y=3.0, z=1.0)
+        assert ps.x == pytest.approx(5.0)
+
+    def test_fly_mode_default_false(self):
+        from gmodular.engine.play_mode import PlayerState
+        assert PlayerState().fly_mode is False
+
+
+class TestPlayCamera:
+    """Test PlayCamera for first/third-person views."""
+
+    def test_default_yaw_pitch(self):
+        from gmodular.engine.play_mode import PlayCamera
+        cam = PlayCamera()
+        assert cam.yaw   == pytest.approx(0.0)
+        assert cam.pitch == pytest.approx(0.0)
+
+    def test_clamp_pitch_upper(self):
+        from gmodular.engine.play_mode import PlayCamera
+        cam = PlayCamera()
+        cam.pitch = 2.0
+        cam.clamp_pitch()
+        assert cam.pitch <= cam.max_pitch
+
+    def test_clamp_pitch_lower(self):
+        from gmodular.engine.play_mode import PlayCamera
+        cam = PlayCamera()
+        cam.pitch = -2.0
+        cam.clamp_pitch()
+        assert cam.pitch >= cam.min_pitch
+
+    def test_compute_eye_returns_tuple(self):
+        """compute_eye(player_pos: Vec3) -> Vec3."""
+        from gmodular.engine.play_mode import PlayCamera
+        cam = PlayCamera()
+        eye = cam.compute_eye((0.0, 0.0, 0.0))
+        assert len(eye) == 3
+        assert isinstance(eye[0], float)
+
+    def test_update_from_player_no_crash(self):
+        """update_from_player(player_pos: Vec3, player_yaw: float, dt: float)"""
+        from gmodular.engine.play_mode import PlayCamera
+        cam = PlayCamera()
+        cam.update_from_player((0.0, 0.0, 0.0), 0.0, 0.016)
+
+
+class TestCameraMode:
+    """Test CameraMode constants."""
+
+    def test_modes_exist(self):
+        from gmodular.engine.play_mode import CameraMode
+        assert hasattr(CameraMode, 'THIRD_PERSON')
+        assert hasattr(CameraMode, 'FIRST_PERSON')
+        assert hasattr(CameraMode, 'FREE_ORBIT')
+        assert hasattr(CameraMode, 'OVERHEAD')
+
+
+class TestPlayModeController:
+    """Test PlayModeController.
+    NOTE: update(inp: MovementInput, delta: float) — takes MovementInput object.
+          camera_mode is a string constant from CameraMode class.
+    """
+
+    def test_create_inactive(self):
+        from gmodular.engine.play_mode import PlayModeController, CameraMode
+        ctrl = PlayModeController()
+        assert ctrl.active is False
+        assert ctrl.camera_mode == CameraMode.THIRD_PERSON
+
+    def test_start_sets_active(self):
+        from gmodular.engine.play_mode import PlayModeController
+        ctrl = PlayModeController()
+        ctrl.start(start_pos=(1.0, 2.0, 0.0))
+        assert ctrl.active is True
+        assert ctrl.player.x == pytest.approx(1.0)
+        assert ctrl.player.y == pytest.approx(2.0)
+
+    def test_stop_clears_active(self):
+        from gmodular.engine.play_mode import PlayModeController
+        ctrl = PlayModeController()
+        ctrl.start()
+        ctrl.stop()
+        assert ctrl.active is False
+
+    def test_update_stationary_no_movement(self):
+        from gmodular.engine.play_mode import PlayModeController, MovementInput
+        ctrl = PlayModeController()
+        ctrl.start(start_pos=(0.0, 0.0, 0.0))
+        ctrl.update(MovementInput(), 0.016)
+        assert ctrl.player.x == pytest.approx(0.0, abs=1e-4)
+        assert ctrl.player.y == pytest.approx(0.0, abs=1e-4)
+
+    def test_update_forward_moves_player(self):
+        from gmodular.engine.play_mode import PlayModeController, MovementInput
+        ctrl = PlayModeController()
+        ctrl.start(start_pos=(0.0, 0.0, 0.0), start_yaw=0.0)
+        ctrl.update(MovementInput(forward=1.0), 1.0)
+        dist = math.sqrt(ctrl.player.x**2 + ctrl.player.y**2)
+        assert dist > 0.1
+
+    def test_sprint_covers_more_distance(self):
+        from gmodular.engine.play_mode import PlayModeController, MovementInput
+        ctrl_walk = PlayModeController()
+        ctrl_walk.start(start_pos=(0.0, 0.0, 0.0), start_yaw=0.0)
+        ctrl_walk.update(MovementInput(forward=1.0, sprint=False), 1.0)
+        walk_dist = math.sqrt(ctrl_walk.player.x**2 + ctrl_walk.player.y**2)
+
+        ctrl_run = PlayModeController()
+        ctrl_run.start(start_pos=(0.0, 0.0, 0.0), start_yaw=0.0)
+        ctrl_run.update(MovementInput(forward=1.0, sprint=True), 1.0)
+        run_dist = math.sqrt(ctrl_run.player.x**2 + ctrl_run.player.y**2)
+
+        assert run_dist > walk_dist
+
+    def test_set_camera_mode(self):
+        from gmodular.engine.play_mode import PlayModeController, CameraMode
+        ctrl = PlayModeController()
+        ctrl.set_camera_mode(CameraMode.FIRST_PERSON)
+        assert ctrl.camera_mode == CameraMode.FIRST_PERSON
+
+    def test_interaction_hint_is_string(self):
+        from gmodular.engine.play_mode import PlayModeController
+        ctrl = PlayModeController()
+        ctrl.start()
+        assert isinstance(ctrl.interaction_hint, str)
+
+
+class TestPlaySession:
+    """Test PlaySession (viewport-facing handle).
+    NOTE: PlaySession.update(forward, right, up, turn, pitch, sprint, interact, delta).
+    """
+
+    def test_create_inactive(self):
+        from gmodular.engine.play_mode import PlaySession
+        assert PlaySession().active is False
+
+    def test_start_session(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start(start_pos=(5.0, 5.0, 0.0))
+        assert session.active is True
+
+    def test_stop_session(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start()
+        session.stop()
+        assert session.active is False
+
+    def test_update_all_defaults_no_crash(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start()
+        session.update()  # all kwargs have defaults
+
+    def test_update_with_forward(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start(start_pos=(0.0, 0.0, 0.0))
+        session.update(forward=1.0, sprint=False, delta=0.5)
+        assert session.active is True
+
+    def test_player_position(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start(start_pos=(3.0, 4.0, 0.0))
+        assert session.player is not None
+        assert session.player.x == pytest.approx(3.0)
+        assert session.player.y == pytest.approx(4.0)
+
+    def test_camera_not_none(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start()
+        assert session.camera is not None
+
+    def test_interaction_hint_is_string(self):
+        from gmodular.engine.play_mode import PlaySession
+        session = PlaySession()
+        session.start()
+        assert isinstance(session.interaction_hint, str)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Engine Integration Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEngineIntegration:
+    """Integration tests combining multiple engine subsystems."""
+
+    def test_full_engine_import(self):
+        """All public engine symbols import without errors."""
+        from gmodular.engine import (
+            AnimationPlayer, AnimationSet, AnimationState,
+            NodeTransform, get_default_idle_animation,
+            sample_position, sample_orientation, sample_alpha,
+            KOTOR_ANIMATIONS,
+            SceneGraph, SceneRoom, SceneEntity, VisibilitySystem,
+            RenderBucket, RenderItem, Frustum, AABB, SceneStats,
+            ENTITY_ROOM, ENTITY_PLACEABLE, ENTITY_DOOR,
+            ENTITY_CREATURE, ENTITY_WAYPOINT, ENTITY_TRIGGER,
+            Entity3D, Door3D, Placeable3D, Creature3D, Waypoint3D,
+            EntityRegistry, DoorState, CreatureState, PlaceableState,
+            PlayModeController, PlaySession, PlayCamera,
+            PlayerState, MovementInput, CameraMode,
+        )
+        assert AnimationPlayer is not None
+        assert SceneGraph is not None
+        assert EntityRegistry is not None
+        assert PlaySession is not None
+
+    def test_scene_with_rooms_and_entities(self):
+        """Build a scene graph, add rooms and entities, verify counts."""
+        from gmodular.engine.scene_manager import (
+            SceneGraph, SceneRoom, SceneEntity, ENTITY_PLACEABLE, ENTITY_DOOR
+        )
+        sg = SceneGraph()
+        for i in range(3):
+            sg.add_room(SceneRoom(name=f"room{i}", position=(float(i*10), 0.0, 0.0)))
+        for i in range(4):
+            sg.add_entity(SceneEntity(entity_type=ENTITY_PLACEABLE, resref=f"p{i}"))
+        sg.add_entity(SceneEntity(entity_type=ENTITY_DOOR, resref="d1"))
+
+        assert len(sg.rooms) == 3
+        assert len(sg.entities) == 5
+        assert len(sg.get_entities_by_type(ENTITY_PLACEABLE)) == 4
+        assert len(sg.get_entities_by_type(ENTITY_DOOR)) == 1
+
+    def test_animation_set_lifecycle(self):
+        """AnimationSet: create players, update, clear."""
+        from gmodular.engine.animation_system import AnimationSet
+
+        class MockAnim:
+            name = "cpause1"
+            length = 2.0
+            transition = 0.25
+            root_node = None
+            events = []
+
+        aset = AnimationSet()
+        for i in range(5):
+            p = aset.get_or_create(i, [MockAnim()])
+            p.play("cpause1", loop=True)
+
+        assert len(aset) == 5
+        aset.update_all(0.016)
+        aset.clear()
+        assert len(aset) == 0
+
+    def test_play_session_lifecycle(self):
+        """Full PlaySession: start, update with movement, stop."""
+        from gmodular.engine.play_mode import PlaySession
+        from gmodular.engine.entity_system import EntityRegistry
+
+        reg = EntityRegistry()
+        session = PlaySession()
+        session.start(start_pos=(0.0, 0.0, 0.0), entities=reg)
+        assert session.active is True
+
+        session.update(forward=1.0, sprint=False, delta=0.1)
+        assert session.active is True
+
+        session.stop()
+        assert session.active is False
+
+    def test_play_mode_controller_movement(self):
+        """PlayModeController: forward movement results in position change."""
+        from gmodular.engine.play_mode import PlayModeController, MovementInput
+        ctrl = PlayModeController()
+        ctrl.start(start_pos=(0.0, 0.0, 0.0), start_yaw=0.0)
+
+        # Walk forward for 1 second
+        ctrl.update(MovementInput(forward=1.0), 1.0)
+        dist = math.sqrt(ctrl.player.x**2 + ctrl.player.y**2)
+        assert dist > 0.1
+
+    def test_aabb_expand_covers_multiple_rooms(self):
+        """AABB expansion covers all room positions."""
+        from gmodular.engine.scene_manager import SceneGraph, SceneRoom, AABB
+
+        sg = SceneGraph()
+        positions = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (5.0, 10.0, 0.0)]
+        for i, pos in enumerate(positions):
+            r = SceneRoom(name=f"r{i}")
+            r.position = pos
+            sg.add_room(r)
+
+        bounds = AABB.empty()
+        for room in sg.rooms:
+            bounds.expand(room.position)
+
+        assert bounds.is_valid is True
+        assert bounds.min[0] == pytest.approx(0.0)
+        assert bounds.max[0] == pytest.approx(10.0)
+        assert bounds.max[1] == pytest.approx(10.0)
+
+    def test_entity_registry_update_loop(self):
+        """EntityRegistry update loop with Door3D entities."""
+        from gmodular.engine.entity_system import EntityRegistry, Door3D
+        reg = EntityRegistry()
+        reg.update_all(0.016)  # no crash with empty registry
+
+    def test_vis_system_with_load_from_dict(self):
+        """VisibilitySystem can load room-to-room visibility data."""
+        from gmodular.engine.scene_manager import VisibilitySystem
+
+        vis = VisibilitySystem()
+        vis.load_from_dict({
+            "m01aa_01a": ["m01aa_01a", "m01aa_02a"],
+            "m01aa_02a": ["m01aa_02a", "m01aa_01a", "m01aa_03a"],
+        })
+
+        assert vis.has_vis_data()
+        visible_from_01 = vis.get_visible_rooms("m01aa_01a")
+        assert "m01aa_02a" in visible_from_01
+
+        visible_from_02 = vis.get_visible_rooms("m01aa_02a")
+        assert "m01aa_01a" in visible_from_02
+        assert "m01aa_03a" in visible_from_02

@@ -6,7 +6,192 @@ Reverse-engineered from xoreos-docs + KotOR modding wiki.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple
+
+
+# ── Language / Encoding (derived from PyKotor language.py, authoritative) ────
+# Source: github.com/NickHugi/PyKotor Libraries/PyKotor/src/pykotor/common/language.py
+# CExoLocString binary layout: lang_id = language_enum * 2 + gender
+# Encoding per language family (xoreos gff2xml.1 + PyKotor Language.get_encoding())
+
+class Language(IntEnum):
+    """KotOR language IDs used in CExoLocString fields and TLK headers."""
+    ENGLISH  = 0
+    FRENCH   = 1
+    GERMAN   = 2
+    ITALIAN  = 3
+    SPANISH  = 4
+    POLISH   = 5   # cp-1250 only
+    # East-European cp-1250 family
+    CZECH    = 70
+    SLOVAK   = 71
+    HUNGARIAN = 75
+    # Cyrillic cp-1251 family
+    RUSSIAN  = 61
+    UKRAINIAN = 66
+    # Greek cp-1253
+    GREEK    = 77
+    # Turkish cp-1254
+    TURKISH  = 81
+    # Hebrew cp-1255
+    HEBREW   = 83
+    # Arabic cp-1256
+    ARABIC   = 84
+    # Baltic cp-1257
+    ESTONIAN = 85
+    LATVIAN  = 86
+    LITHUANIAN = 87
+    # Vietnamese cp-1258
+    VIETNAMESE = 88
+    # CJK (these are stored but unlikely in vanilla KotOR files)
+    KOREAN   = 128
+    CHINESE_TRADITIONAL = 129
+    CHINESE_SIMPLIFIED  = 130
+    JAPANESE = 131
+
+    @staticmethod
+    def _missing_(value: Any) -> "Language":
+        return Language.ENGLISH
+
+    def get_encoding(self) -> str:
+        """Return the Windows codepage for this language.
+
+        Derived from PyKotor Language.get_encoding() and xoreos gff2xml documentation.
+        English/Western European languages use cp1252 (NOT utf-8).
+        """
+        if self in {Language.POLISH, Language.CZECH, Language.SLOVAK, Language.HUNGARIAN}:
+            return "cp1250"
+        if self in {Language.RUSSIAN, Language.UKRAINIAN}:
+            return "cp1251"
+        if self == Language.GREEK:
+            return "cp1253"
+        if self == Language.TURKISH:
+            return "cp1254"
+        if self == Language.HEBREW:
+            return "cp1255"
+        if self == Language.ARABIC:
+            return "cp1256"
+        if self in {Language.ESTONIAN, Language.LATVIAN, Language.LITHUANIAN}:
+            return "cp1257"
+        if self == Language.VIETNAMESE:
+            return "cp1258"
+        if self == Language.KOREAN:
+            return "cp949"
+        if self == Language.CHINESE_TRADITIONAL:
+            return "cp950"
+        if self == Language.CHINESE_SIMPLIFIED:
+            return "cp936"
+        if self == Language.JAPANESE:
+            return "cp932"
+        # Default: English + all Western European languages → cp1252
+        return "cp1252"
+
+
+class Gender(IntEnum):
+    MALE   = 0   # or neutral/ungendered
+    FEMALE = 1
+
+
+def locstring_substring_id(language: Language, gender: Gender) -> int:
+    """Compute the binary substring_id used in CExoLocString: lang*2 + gender."""
+    return language * 2 + gender
+
+
+def locstring_pair(substring_id: int) -> Tuple[Language, Gender]:
+    """Decode a binary substring_id into (Language, Gender)."""
+    return Language(substring_id // 2), Gender(substring_id % 2)
+
+
+@dataclass
+class LocalizedString:
+    """
+    CExoLocString — KotOR's localized string type.
+
+    Binary layout (GFF field data block):
+      uint32  total_size_of_remainder
+      uint32  stringref   (TLK index, 0xFFFFFFFF = not set)
+      uint32  string_count
+      for each string:
+        uint32  substring_id   (language*2 + gender)
+        uint32  length_bytes
+        bytes   text           (encoded with language-specific codepage)
+
+    This replaces the old "return English string as plain str" approach.
+    The value is now stored as a LocalizedString object; callers use
+    .get_english() for the common case or .get(lang, gender) for full access.
+    """
+    stringref: int = 0xFFFFFFFF   # -1 / not set
+
+    # Internal: {substring_id: str}  where substring_id = language*2+gender
+    _substrings: Dict[int, str] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self):
+        # Ensure _substrings is always a plain dict (for dataclass copy safety)
+        if not isinstance(self._substrings, dict):
+            object.__setattr__(self, '_substrings', dict(self._substrings))
+
+    # ── Factory helpers ───────────────────────────────────────────────────
+
+    @classmethod
+    def from_english(cls, text: str, stringref: int = 0xFFFFFFFF) -> "LocalizedString":
+        """Create a LocalizedString with a single English (male/neutral) substring."""
+        ls = cls(stringref=stringref)
+        ls.set(Language.ENGLISH, Gender.MALE, text)
+        return ls
+
+    @classmethod
+    def from_stringref(cls, stringref: int) -> "LocalizedString":
+        """Create a TLK-reference-only LocalizedString (no inline substrings)."""
+        return cls(stringref=stringref)
+
+    # ── Access ────────────────────────────────────────────────────────────
+
+    def get(self, language: Language = Language.ENGLISH,
+            gender: Gender = Gender.MALE) -> Optional[str]:
+        """Return the substring for the given language/gender, or None."""
+        return self._substrings.get(locstring_substring_id(language, gender))
+
+    def get_english(self) -> str:
+        """Return English male substring, falling back to first available, then ''."""
+        en = self.get(Language.ENGLISH, Gender.MALE)
+        if en is not None:
+            return en
+        # Fallback: return any available substring
+        if self._substrings:
+            return next(iter(self._substrings.values()))
+        return ""
+
+    def set(self, language: Language, gender: Gender, text: str):
+        """Set the substring for a language/gender pair."""
+        self._substrings[locstring_substring_id(language, gender)] = text
+
+    def items(self):
+        """Iterate over (Language, Gender, str) triples."""
+        for sid, text in self._substrings.items():
+            lang, gen = locstring_pair(sid)
+            yield lang, gen, text
+
+    def __len__(self) -> int:
+        return len(self._substrings)
+
+    def __bool__(self) -> bool:
+        return bool(self._substrings) or self.stringref != 0xFFFFFFFF
+
+    def __str__(self) -> str:
+        return self.get_english()
+
+    def __repr__(self) -> str:
+        parts = [f"stringref={self.stringref}"]
+        for lang, gen, txt in self.items():
+            parts.append(f"{lang.name}/{gen.name}={txt!r}")
+        return f"LocalizedString({', '.join(parts)})"
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, LocalizedString):
+            return self.stringref == other.stringref and self._substrings == other._substrings
+        if isinstance(other, str):
+            return self.get_english() == other
+        return NotImplemented
 
 
 # ── GFF Field Type IDs ──────────────────────────────────────────────────────
@@ -351,11 +536,19 @@ class GITData:
             "stores":     len(self.stores),
         }
 
+    def summary(self) -> Dict[str, int]:
+        """Alias for counts_by_type() — convenience method for UI and tests."""
+        return self.counts_by_type()
+
     def duplicate_object(self, obj):
         """
         Deep-copy a GIT object and add it to the appropriate list.
         Returns the new copy, or None if the type is unknown.
         The copy gets a clean _scene_id of -1.
+
+        Tag uniqueness: the copy's tag gets a ``_copy`` suffix (or ``_copy2``,
+        ``_copy3`` … if that tag already exists) so it never silently collides
+        with the original or another duplicate.
 
         The position offset is chosen per object class so the duplicate never
         overlaps the original:
@@ -366,7 +559,30 @@ class GITData:
         import copy
         new_obj = copy.deepcopy(obj)
         new_obj._scene_id = -1
-        # Offset the copy so it does not overlap the original
+
+        # ── Tag uniqueness ──────────────────────────────────────────────────
+        if hasattr(new_obj, 'tag') and new_obj.tag:
+            # Collect existing tags in the GIT so we can guarantee uniqueness
+            existing_tags: set = set()
+            for lst in (self.placeables, self.creatures, self.doors,
+                        self.waypoints, self.triggers, self.sounds, self.stores):
+                for o in lst:
+                    if hasattr(o, 'tag'):
+                        existing_tags.add(o.tag.lower())
+
+            base_tag = new_obj.tag
+            # Strip any existing _copy / _copy\d suffix before adding a new one
+            import re as _re
+            base_tag = _re.sub(r'_copy\d*$', '', base_tag, flags=_re.IGNORECASE)
+
+            candidate = f"{base_tag}_copy"
+            n = 2
+            while candidate.lower() in existing_tags:
+                candidate = f"{base_tag}_copy{n}"
+                n += 1
+            new_obj.tag = candidate
+
+        # ── Position offset ─────────────────────────────────────────────────
         pos = getattr(new_obj, 'position', None)
         if pos is not None:
             if isinstance(new_obj, (GITDoor, GITPlaceable)):
@@ -376,6 +592,7 @@ class GITData:
             else:
                 delta = 0.5
             new_obj.position = Vector3(pos.x + delta, pos.y + delta, pos.z)
+
         if self.add_object(new_obj):
             return new_obj
         return None

@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DLGEditor</class>
+ <widget class="QWidget" name="DLGEditor">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1100</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>DLG Editor</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget { background:#1e1e1e; color:#d4d4d4; }
+QSplitter::handle { background:#3c3c3c; width:2px; }
+QTreeView, QListView {
+    background:#252526; border:none; color:#d4d4d4;
+    selection-background-color:#094771;
+}
+QTreeView::item, QListView::item { padding:2px; }
+QGroupBox {
+    color:#9cdcfe; font-size:8pt; font-weight:bold;
+    border:1px solid #3c3c3c; border-radius:3px;
+    margin-top:8px; padding-top:4px;
+}
+QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left; padding:0 4px; }
+QPlainTextEdit, QTextEdit {
+    background:#252526; border:1px solid #3c3c3c; color:#d4d4d4;
+    font-family:Consolas,monospace; font-size:9pt; border-radius:3px;
+}
+QLineEdit, QSpinBox, QComboBox {
+    background:#3c3c3c; border:1px solid #555; border-radius:3px;
+    color:#d4d4d4; padding:2px 4px; font-size:8pt;
+}
+QPushButton {
+    background:#0e639c; color:#fff; border:none; border-radius:3px;
+    padding:4px 12px; font-size:8pt;
+}
+QPushButton:hover { background:#1177bb; }
+QLabel { color:#d4d4d4; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="outerLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <!-- Toolbar -->
+    <layout class="QHBoxLayout" name="toolbarLayout">
+     <property name="leftMargin"><number>6</number></property>
+     <property name="topMargin"><number>4</number></property>
+     <property name="rightMargin"><number>6</number></property>
+     <property name="bottomMargin"><number>4</number></property>
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QPushButton" name="btnLoad">
+       <property name="text"><string>Open GFF…</string></property>
+       <property name="toolTip"><string>Open a .dlg GFF file</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnSave">
+       <property name="text"><string>Save GFF…</string></property>
+       <property name="toolTip"><string>Save back to GFF binary</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnAddNode">
+       <property name="text"><string>+ Node</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnAddLink">
+       <property name="text"><string>+ Link</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="toolSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0">
+        <size><width>40</width><height>20</height></size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="fileLabel">
+       <property name="text"><string>No file loaded</string></property>
+       <property name="styleSheet">
+        <string notr="true">color:#858585; font-size:8pt;</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <!-- Main splitter: left tree | center canvas | right properties -->
+    <widget class="QSplitter" name="mainSplitter">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <!-- Left: node tree list -->
+     <widget class="QWidget" name="leftPanel">
+      <layout class="QVBoxLayout" name="leftLayout">
+       <property name="spacing"><number>4</number></property>
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <widget class="QLabel" name="nodesLabel">
+         <property name="text"><string>Nodes</string></property>
+         <property name="styleSheet">
+          <string notr="true">color:#569cd6; font-weight:bold; font-size:9pt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTreeView" name="nodeTree">
+         <property name="headerHidden"><bool>true</bool></property>
+         <property name="rootIsDecorated"><bool>true</bool></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <!-- Center: canvas (populated programmatically) -->
+     <widget class="QWidget" name="canvasContainer">
+      <property name="minimumWidth">
+       <number>500</number>
+      </property>
+      <layout class="QVBoxLayout" name="canvasLayout">
+       <property name="spacing"><number>0</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <!-- DLGCanvas widget is inserted here at runtime -->
+      </layout>
+     </widget>
+     <!-- Right: node property editor -->
+     <widget class="QWidget" name="rightPanel">
+      <property name="minimumWidth">
+       <number>260</number>
+      </property>
+      <layout class="QVBoxLayout" name="rightLayout">
+       <property name="spacing"><number>4</number></property>
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <widget class="QLabel" name="propsLabel">
+         <property name="text"><string>Node Properties</string></property>
+         <property name="styleSheet">
+          <string notr="true">color:#569cd6; font-weight:bold; font-size:9pt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpText">
+         <property name="title"><string>Text</string></property>
+         <layout class="QVBoxLayout" name="grpTextLayout">
+          <item>
+           <widget class="QPlainTextEdit" name="txtNodeText">
+            <property name="placeholderText">
+             <string>Node text / dialog line…</string>
+            </property>
+            <property name="maximumHeight">
+             <number>100</number>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpSpeaker">
+         <property name="title"><string>Speaker / Listener</string></property>
+         <layout class="QFormLayout" name="grpSpeakerLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lblSpeaker">
+            <property name="text"><string>Speaker:</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="editSpeaker">
+            <property name="placeholderText"><string>ResRef or empty</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblListener">
+            <property name="text"><string>Listener:</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="editListener">
+            <property name="placeholderText"><string>ResRef or empty</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpScript">
+         <property name="title"><string>Scripts</string></property>
+         <layout class="QFormLayout" name="grpScriptLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lblScript1">
+            <property name="text"><string>Script 1:</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="editScript1">
+            <property name="placeholderText"><string>NCS resref</string></property>
+            <property name="maxLength"><number>16</number></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblScript2">
+            <property name="text"><string>Script 2:</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="editScript2">
+            <property name="placeholderText"><string>NCS resref</string></property>
+            <property name="maxLength"><number>16</number></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="rightSpacer">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="sizeHint" stdset="0">
+          <size><width>20</width><height>40</height></size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btnApplyProps">
+         <property name="text"><string>Apply Changes</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

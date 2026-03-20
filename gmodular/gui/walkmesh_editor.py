@@ -17,21 +17,29 @@ from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 from dataclasses import dataclass, field
 
+# Shared MDL/WOK header reader — avoids duplicating struct offsets
 try:
-    from PyQt5.QtWidgets import (
+    from ..formats.mdl_parser import read_mdl_base_header as _read_mdl_header
+    _HAS_MDL_HELPER = True
+except ImportError:
+    _HAS_MDL_HELPER = False
+    _read_mdl_header = None
+
+try:
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
         QPushButton, QTableWidget, QTableWidgetItem, QFrame,
         QGroupBox, QFormLayout, QComboBox, QFileDialog,
         QScrollArea, QSplitter, QAbstractItemView, QCheckBox,
         QDoubleSpinBox, QMessageBox,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal
-    from PyQt5.QtGui import QFont, QColor
+    from qtpy.QtCore import Qt, Signal
+    from qtpy.QtGui import QFont, QColor
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QWidget = object  # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -232,21 +240,43 @@ class WOKParser:
             self._synthetic_demo_geometry(wok)
             return wok
 
-        # Extract model name
-        try:
-            name_raw = data[mdl_data_off: mdl_data_off + 32]
-            wok.model_name = name_raw.rstrip(b"\x00").decode("ascii", errors="replace").strip()
-        except Exception:
-            pass
-
-        # Extract model bounding box from model-data header
-        try:
-            bmin = struct.unpack_from("<fff", data, mdl_data_off + 120)
-            bmax = struct.unpack_from("<fff", data, mdl_data_off + 132)
-            wok.aabb_min = bmin
-            wok.aabb_max = bmax
-        except Exception:
-            pass
+        # Use shared MDL/WOK header reader when available — avoids duplicated
+        # struct offsets between walkmesh_editor and mdl_parser.
+        if _HAS_MDL_HELPER and _read_mdl_header is not None:
+            try:
+                hdr = _read_mdl_header(data, base=mdl_data_off)
+                wok.model_name = hdr["name"]
+                wok.aabb_min   = hdr["bb_min"]
+                wok.aabb_max   = hdr["bb_max"]
+            except Exception as e:
+                log.debug(f"WOK header fallback: {e}")
+                # Fallback: manual reads
+                try:
+                    name_raw = data[mdl_data_off: mdl_data_off + 32]
+                    wok.model_name = name_raw.rstrip(b"\x00").decode("ascii", errors="replace").strip()
+                except Exception:
+                    pass
+                try:
+                    bmin = struct.unpack_from("<fff", data, mdl_data_off + 120)
+                    bmax = struct.unpack_from("<fff", data, mdl_data_off + 132)
+                    wok.aabb_min = bmin
+                    wok.aabb_max = bmax
+                except Exception:
+                    pass
+        else:
+            # No shared helper: manual reads (legacy path)
+            try:
+                name_raw = data[mdl_data_off: mdl_data_off + 32]
+                wok.model_name = name_raw.rstrip(b"\x00").decode("ascii", errors="replace").strip()
+            except Exception:
+                pass
+            try:
+                bmin = struct.unpack_from("<fff", data, mdl_data_off + 120)
+                bmax = struct.unpack_from("<fff", data, mdl_data_off + 132)
+                wok.aabb_min = bmin
+                wok.aabb_max = bmax
+            except Exception:
+                pass
 
         self._parse_geometry(wok, mdl_data_off)
 
@@ -768,8 +798,8 @@ class WalkmeshPanel(QWidget):
     Displays WOK faces, walk types, and tools for editing/exporting.
     """
 
-    wok_loaded   = pyqtSignal(object)    # WOKData
-    wok_modified = pyqtSignal(object)    # WOKData
+    wok_loaded   = Signal(object)    # WOKData
+    wok_modified = Signal(object)    # WOKData
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1016,20 +1046,43 @@ class WalkmeshPanel(QWidget):
     def _export_wok(self):
         if not self._wok:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export WOK", "",
-            "KotOR Walkmesh (*.wok)"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Export Walkmesh", "",
+            "KotOR Native Walkmesh (*.wok);;"
+            "GhostRigger Interchange (*.gwok)"
         )
         if not path:
             return
         try:
-            self._write_wok(path)
+            # Determine format from selected filter or extension
+            use_native = path.lower().endswith(".wok") and "gwok" not in selected_filter.lower()
+            if use_native:
+                self._write_native_wok(path)
+            else:
+                self._write_wok(path)
             QMessageBox.information(self, "Export Complete",
-                                    f"WOK exported to:\n{path}")
-            log.info(f"WOK exported: {path}")
+                                    f"Walkmesh exported to:\n{path}")
+            log.info(f"WOK exported ({('native' if use_native else 'GWOK')}): {path}")
         except Exception as e:
             QMessageBox.warning(self, "Export Error",
                                 f"Failed to export:\n{e}")
+
+    def _write_native_wok(self, path: str) -> None:
+        """
+        Write a KotOR-native BWM V1.0 walkmesh binary using WOKWriter.
+
+        This output is byte-compatible with what kotorblender generates and can
+        be loaded directly by the KotOR engine (place in Modules/ alongside the
+        module's MDL).
+        """
+        try:
+            from ..formats.wok_parser import WOKWriter
+        except ImportError:
+            from gmodular.formats.wok_parser import WOKWriter
+
+        writer = WOKWriter(self._wok)
+        writer.to_file(path)
+        log.debug(f"_write_native_wok: {len(self._wok.faces)} faces → {path}")
 
     def _write_wok(self, path: str):
         """

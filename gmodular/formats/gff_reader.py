@@ -28,7 +28,8 @@ from .gff_types import (
     GFFFieldType, GFFField, GFFStruct, GFFRoot,
     GITData, GITPlaceable, GITCreature, GITDoor,
     GITTrigger, GITSoundObject, GITWaypoint, GITStoreObject,
-    AREData, IFOData, Vector3, Quaternion
+    AREData, IFOData, Vector3, Quaternion,
+    LocalizedString, Language, Gender, locstring_pair,
 )
 
 log = logging.getLogger(__name__)
@@ -130,21 +131,43 @@ class GFFReader:
                 raw = struct.pack("<I", data_or_inline)
                 return raw.decode("ascii", errors="replace").rstrip("\x00")
 
-        def read_cexolocstring(data_offset: int) -> str:
+        def read_cexolocstring(data_offset: int) -> LocalizedString:
+            """Read a CExoLocString field, decoding each substring with the
+            correct Windows codepage for its language ID.
+
+            Binary layout:
+              uint32  total_size
+              uint32  stringref   (TLK index; 0xFFFFFFFF = not set)
+              uint32  string_count
+              for each string:
+                uint32  substring_id  (language*2 + gender)
+                uint32  length_bytes
+                bytes   text          (encoded with language-specific codepage)
+
+            References:
+              xoreos src/aurora/locstring.cpp
+              PyKotor Libraries/PyKotor/src/pykotor/common/language.py
+            """
             off = fdata_off + data_offset
-            total_size = struct.unpack_from("<I", d, off)[0]
-            str_ref    = struct.unpack_from("<I", d, off + 4)[0]
-            count      = struct.unpack_from("<I", d, off + 8)[0]
+            str_ref = struct.unpack_from("<I", d, off + 4)[0]
+            count   = struct.unpack_from("<I", d, off + 8)[0]
             pos = off + 12
-            result = ""
+            ls = LocalizedString(stringref=str_ref)
             for _ in range(count):
-                lang_id, str_len = struct.unpack_from("<II", d, pos)
+                if pos + 8 > len(d):
+                    break
+                substring_id, str_len = struct.unpack_from("<II", d, pos)
                 pos += 8
-                txt = d[pos:pos + str_len].decode("utf-8", errors="replace")
+                raw = d[pos:pos + str_len]
                 pos += str_len
-                if lang_id == 0:  # English
-                    result = txt
-            return result
+                try:
+                    lang, gender = locstring_pair(substring_id)
+                    encoding = lang.get_encoding()
+                    txt = raw.decode(encoding, errors="replace")
+                except Exception:
+                    txt = raw.decode("cp1252", errors="replace")
+                ls._substrings[substring_id] = txt
+            return ls
 
         def read_void_data(data_offset: int) -> bytes:
             off = fdata_off + data_offset
@@ -263,9 +286,28 @@ class GFFReader:
 #  High-Level GIT Deserialiser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_locstr(root_or_struct: Any, label: str, default: str = "") -> str:
+    """Get a string from either a LocalizedString or a plain str field."""
+    if hasattr(root_or_struct, 'fields'):
+        fld = root_or_struct.fields.get(label)
+        v = fld.value if fld is not None else None
+    else:
+        v = root_or_struct.get(label)
+    if v is None:
+        return default
+    if isinstance(v, LocalizedString):
+        result = v.get_english()
+        return result if result else default
+    return str(v)
+
+
 def _get_s(struct: GFFStruct, label: str, default: str = "") -> str:
     v = struct.get(label, default)
-    return str(v) if v is not None else default
+    if v is None:
+        return default
+    if isinstance(v, LocalizedString):
+        return v.get_english()
+    return str(v)
 
 def _get_f(struct: GFFStruct, label: str, default: float = 0.0) -> float:
     v = struct.get(label, default)
@@ -483,7 +525,7 @@ def load_are(path: str) -> AREData:
     root   = reader.parse()
     are    = AREData()
     are.tag  = root.get("Tag", "")
-    are.name = root.get("Name", "")
+    are.name = _get_locstr(root, "Name", "")
     # Room list
     rooms_list = root.fields.get("Rooms")
     if rooms_list and isinstance(rooms_list.value, list):
@@ -511,8 +553,8 @@ def load_ifo(path: str) -> IFOData:
     reader = GFFReader.from_file(path)
     root   = reader.parse()
     ifo    = IFOData()
-    ifo.mod_name        = root.get("Mod_Name", "New Module")
-    ifo.mod_description = root.get("Mod_Description", "")
+    ifo.mod_name        = _get_locstr(root, "Mod_Name", "New Module")
+    ifo.mod_description = _get_locstr(root, "Mod_Description", "")
     ifo.entry_area      = root.get("Mod_Entry_Area", "")
     x = root.get("Mod_Entry_X", 0.0)
     y = root.get("Mod_Entry_Y", 0.0)

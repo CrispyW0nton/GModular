@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtWidgets import (
+from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QPushButton, QStatusBar, QMenuBar, QMenu, QAction,
     QFileDialog, QMessageBox, QToolBar, QPlainTextEdit, QFrame,
@@ -28,8 +28,8 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QScrollArea,
     QStackedWidget,
 )
-from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSlot
-from PyQt5.QtGui import QIcon, QFont, QKeySequence
+from qtpy.QtCore import Qt, QSize, QTimer, Slot
+from qtpy.QtGui import QIcon, QFont, QKeySequence
 
 from .viewport        import ViewportWidget
 from .inspector       import InspectorPanel
@@ -49,6 +49,7 @@ try:
     _HAS_CALLBACK_SERVER = True
 except ImportError:
     _HAS_CALLBACK_SERVER = False
+from .app_controller import AppController
 
 log = logging.getLogger(__name__)
 
@@ -235,9 +236,13 @@ class MainWindow(QMainWindow):
         self._state = get_module_state()
         self._rm    = get_resource_manager()
         self._game_dir: Optional[Path] = None
+        self._extract_dir: str = ""   # last successful mod extract dir (for 2D↔3D sync)
         self._placement_active = False
         self._recent_files: list = []   # populated by _load_settings
         self._room_panel = None         # set by _build_bottom_tabs
+
+        # Use-case coordinator (no Qt dependency — pure business logic)
+        self._app_ctrl = AppController(self._state, self._rm)
 
         # IPC
         self._gs_bridge = GhostScripterBridge(self)
@@ -367,8 +372,15 @@ class MainWindow(QMainWindow):
         self._center_stack.addWidget(self._viewport)         # index 1
         self._center_stack.setCurrentIndex(0)
 
-        # Bottom tabs (Room Grid / Output / Walkmesh / Area / IFO)
+        # Bottom tabs (Room Grid / Output / Walkmesh / Animation / Area / IFO)
         self._bottom_tabs = self._build_bottom_tabs()
+
+        # Wire animation panel to viewport after both are constructed
+        if getattr(self, '_anim_panel', None) is not None:
+            try:
+                self._anim_panel.set_viewport(self._viewport)
+            except Exception as e:
+                log.debug(f"Anim panel viewport wiring: {e}")
 
         self._center_vsplitter = QSplitter(Qt.Vertical)
         self._center_vsplitter.setHandleWidth(3)
@@ -676,6 +688,16 @@ class MainWindow(QMainWindow):
         self._walkmesh_panel = WalkmeshPanel()
         self._walkmesh_panel.wok_loaded.connect(self._on_wok_loaded)
         tabs.addTab(self._walkmesh_panel, "Walkmesh (WOK)")
+
+        # ── Animation Timeline tab ─────────────────────────────────────────
+        try:
+            from .animation_panel import AnimationTimelinePanel
+            self._anim_panel = AnimationTimelinePanel()
+            tabs.addTab(self._anim_panel, "🎬 Animation")
+        except Exception as e:
+            log.warning(f"Animation panel unavailable: {e}")
+            self._anim_panel = None
+            tabs.addTab(QLabel("Animation panel unavailable"), "🎬 Animation")
 
         # ── Area Properties tab ────────────────────────────────────────────
         area_widget = self._build_area_props_tab()
@@ -1258,6 +1280,9 @@ class MainWindow(QMainWindow):
         lyt_text    = summary.get("lyt_text")
         errors      = summary.get("errors", [])
         extract_dir = summary.get("extract_dir", "")
+        # Persist extract_dir so Room Grid 2D↔3D sync can find textures and MDLs
+        if extract_dir:
+            self._extract_dir = extract_dir
 
         # ── Update UI ────────────────────────────────────────────────────
         self._update_title()
@@ -1299,6 +1324,16 @@ class MainWindow(QMainWindow):
         if extract_dir and os.path.isdir(extract_dir):
             self._auto_load_walkmesh_from_dir(extract_dir, lyt_rooms)
 
+        # ── Populate content browser from loaded module ────────────────────
+        try:
+            self._content_browser.populate_from_module(
+                extract_dir=extract_dir,
+                git=self._state.git,
+                are=self._state.are,
+            )
+        except Exception as e:
+            log.debug(f"ContentBrowser populate_from_module: {e}")
+
         # ── Switch to viewport / Module Editor mode ──────────────────────
         self._center_stack.setCurrentIndex(1)
         # Switch mode combo to Module Editor if not already there
@@ -1307,9 +1342,16 @@ class MainWindow(QMainWindow):
                 if self._mode_combo.currentIndex() != i:
                     self._mode_combo.setCurrentIndex(i)
                 break
-        # Force a full rebuild of object VAOs
+        # ── Force a full rebuild of object VAOs
         self._viewport._on_module_changed()
         self._viewport.update()
+
+        # ── Refresh animation panel entities ─────────────────────────────
+        if getattr(self, '_anim_panel', None) is not None:
+            try:
+                self._anim_panel.refresh_entities()
+            except Exception as e:
+                log.debug(f"anim_panel refresh: {e}")
 
         # ── Update IPC ───────────────────────────────────────────────────
         if self._ipc_server and self._state.git:
@@ -1364,12 +1406,11 @@ class MainWindow(QMainWindow):
             if not os.path.exists(wok_path):
                 continue
             try:
-                parser = WOKParser.from_file(wok_path)
-                wok    = parser.parse()
-                verts  = wok.vertices
+                # WOKParser.from_file() returns a WalkMesh directly (no .parse() step)
+                wok = WOKParser.from_file(wok_path)
 
-                if not verts or not wok.faces:
-                    log.debug(f"WOK {fname}: no geometry (verts={len(verts)}, faces={len(wok.faces)})")
+                if not wok.faces:
+                    log.debug(f"WOK {fname}: no geometry (faces={len(wok.faces)})")
                     continue
 
                 # Find matching room for translation offset
@@ -1397,7 +1438,7 @@ class MainWindow(QMainWindow):
                         )
                     except (TypeError, IndexError):
                         continue
-                    if face.is_walkable:
+                    if face.walkable:
                         walk_tris.append(tri)
                     else:
                         nowalk_tris.append(tri)
@@ -1473,14 +1514,13 @@ class MainWindow(QMainWindow):
         self.log(f"✓ Opened project: {project.name}")
 
     def _save_module(self):
-        if not self._state.is_open:
-            self.log("⚠ No module open")
-            return
-        if self._state.project:
-            self._state.save()
-            self.log(f"✓ Saved: {self._state.project.git_path}")
-        else:
+        ok, msg = self._app_ctrl.save_module()
+        if ok:
+            self.log(f"✓ {msg}")
+        elif msg == "save_as_needed":
             self._save_as()
+        else:
+            self.log(f"⚠ {msg}")
 
     def _save_as(self):
         if not self._state.is_open:
@@ -1489,23 +1529,15 @@ class MainWindow(QMainWindow):
             self, "Save GIT As", "", "KotOR GIT Files (*.git)"
         )
         if path:
-            self._state.save(git_path=path)
-            # Also save IFO alongside the GIT when using Save As
-            if self._state.ifo:
-                ifo_path = path.replace(".git", ".ifo").replace(".GIT", ".ifo")
-                try:
-                    from ..formats.gff_writer import save_ifo
-                    save_ifo(self._state.ifo, ifo_path)
-                    self.log(f"✓ IFO saved to: {ifo_path}")
-                except Exception as e:
-                    self.log(f"⚠ IFO save failed: {e}")
-            self.log(f"✓ Saved to: {path}")
-            self._add_recent_file(path)
+            ok, msg = self._app_ctrl.save_module(git_path=path)
+            self.log(f"{'✓' if ok else '⚠'} {msg}")
+            if ok:
+                self._add_recent_file(path)
 
     # ── Edit Actions ──────────────────────────────────────────────────────────
 
     def _undo(self):
-        desc = self._state.undo()
+        desc = self._app_ctrl.undo()
         if desc:
             self.log(f"↩ Undo: {desc}")
             self._update_object_count()
@@ -1513,7 +1545,7 @@ class MainWindow(QMainWindow):
             self.log("⚠ Nothing to undo")
 
     def _redo(self):
-        desc = self._state.redo()
+        desc = self._app_ctrl.redo()
         if desc:
             self.log(f"↪ Redo: {desc}")
             self._update_object_count()
@@ -1529,70 +1561,54 @@ class MainWindow(QMainWindow):
         )
         if not d:
             return
-        key = Path(d) / "chitin.key"
-        if not key.exists():
-            QMessageBox.warning(self, "Invalid",
-                                f"chitin.key not found in:\n{d}")
-            return
-        self._game_dir = Path(d)
-        self._save_settings()
-        self.log(f"✓ Game directory: {d}")
-        self._status_main.setText(f"Game: {Path(d).name}")
-        QMessageBox.information(self, "Game Directory Set",
-            f"KotOR directory set:\n{d}\n\nClick 'Load Assets' to populate the palette.")
+        ok, msg = self._app_ctrl.set_game_dir(d)
+        if ok:
+            self._game_dir = self._app_ctrl.game_dir
+            self._save_settings()
+            self.log(f"✓ {msg}")
+            self._status_main.setText(f"Game: {Path(d).name}")
+            QMessageBox.information(self, "Game Directory Set",
+                f"KotOR directory set:\n{d}\n\nClick 'Load Assets' to populate the palette.")
+        else:
+            QMessageBox.warning(self, "Invalid", msg)
 
     def _load_game_assets(self):
         if not self._game_dir or not self._game_dir.exists():
             self._set_game_dir()
             return
-        # Determine game tag (K1 vs K2)
         tag = "K2" if (self._game_dir / "swkotor2.exe").exists() else "K1"
-        self._rm.set_game(str(self._game_dir), tag)
         self.log(f"Scanning {tag} game assets…")
 
-        # List placeables (UTP files), creatures (UTC), etc.
-        try:
-            from ..formats.archives import EXT_TO_TYPE
-            placeables = self._rm.list_resources(EXT_TO_TYPE.get("utp", 2043))
-            creatures  = self._rm.list_resources(EXT_TO_TYPE.get("utc", 2030))
-            doors      = self._rm.list_resources(EXT_TO_TYPE.get("utd", 2041))
+        ok, result = self._app_ctrl.load_game_assets()
+        if not ok and not any(result.values()):
+            self.log("✗ Asset load error — no resources found")
+            return
 
-            if placeables:
-                self._palette.populate_from_game(placeables, "placeable")
-                self._content_browser.populate_from_game(placeables, "placeable")
-                self.log(f"  Loaded {len(placeables)} placeables")
-            if creatures:
-                self._palette.populate_from_game(creatures, "creature")
-                self._content_browser.populate_from_game(creatures, "creature")
-                self.log(f"  Loaded {len(creatures)} creatures")
-            if doors:
-                self._palette.populate_from_game(doors, "door")
-                self._content_browser.populate_from_game(doors, "door")
-                self.log(f"  Loaded {len(doors)} doors")
-        except Exception as e:
-            self.log(f"✗ Asset load error: {e}")
+        placeables = result.get("placeables", [])
+        creatures  = result.get("creatures",  [])
+        doors      = result.get("doors",      [])
+        rooms      = result.get("rooms",      [])
 
-        # Refresh Room Assembly palette with MDL room names from game
-        try:
-            mdl_type = EXT_TO_TYPE.get("mdl", 2002)
-            room_mdls = self._rm.list_resources(mdl_type)
-            # Filter to environment/room meshes (not creature/placeable models)
-            rooms = [r for r in room_mdls
-                     if len(r) > 4
-                     and not r.startswith("c_")
-                     and not r.startswith("p_")
-                     and not r.startswith("w_")
-                     and not r.startswith("i_")]
-            if rooms and self._room_panel:
-                self._room_panel.set_available_rooms(rooms[:400])
-                self.log(f"  Loaded {len(rooms)} room MDLs into Room Grid palette")
-        except Exception:
-            pass  # Room palette update is non-critical
+        if placeables:
+            self._palette.populate_from_game(placeables, "placeable")
+            self._content_browser.populate_from_game(placeables, "placeable")
+            self.log(f"  Loaded {len(placeables)} placeables")
+        if creatures:
+            self._palette.populate_from_game(creatures, "creature")
+            self._content_browser.populate_from_game(creatures, "creature")
+            self.log(f"  Loaded {len(creatures)} creatures")
+        if doors:
+            self._palette.populate_from_game(doors, "door")
+            self._content_browser.populate_from_game(doors, "door")
+            self.log(f"  Loaded {len(doors)} doors")
+        if rooms and self._room_panel:
+            self._room_panel.set_available_rooms(rooms)
+            self.log(f"  Loaded {len(rooms)} room MDLs into Room Grid palette")
 
     # ── Validation ────────────────────────────────────────────────────────────
 
     def _validate_module(self):
-        issues = self._state.validate()
+        issues = self._app_ctrl.validate_module()
         if not issues:
             self.log("✓ Validation passed — no issues found")
             QMessageBox.information(self, "Validation", "Module is valid. No issues found.")
@@ -1723,6 +1739,21 @@ class MainWindow(QMainWindow):
             resref = getattr(obj, "resref", "")
             self._status_main.setText(f"Selected: {kind}  {tag!r}  ({resref})")
 
+        # Sync animation panel to selected entity
+        if getattr(self, '_anim_panel', None) is not None and obj is not None:
+            try:
+                reg = getattr(self._viewport, '_entity_registry', None)
+                if reg:
+                    tag_s = str(getattr(obj, 'tag', '') or '')
+                    matches = reg.get_by_tag(tag_s) if tag_s else []
+                    if not matches:
+                        resref_s = str(getattr(obj, 'resref', '') or '')
+                        matches = reg.get_by_resref(resref_s) if resref_s else []
+                    if matches:
+                        self._anim_panel.set_selected_entity(matches[0].entity_id)
+            except Exception as e:
+                log.debug(f"anim_panel set_selected: {e}")
+
     def _on_object_placed(self, obj):
         """Called when an object is successfully placed."""
         # P4: If in patrol placement mode, route the position to inspector
@@ -1768,9 +1799,19 @@ class MainWindow(QMainWindow):
         Fired whenever rooms are added / removed / moved in the Room Grid tab.
         Passes the current room list to the viewport so it can rebuild its
         3-D VAOs and frame the camera.
+
+        Also ensures the extract_dir / game_dir is set so MDL geometry and
+        textures are found (Kotor.NET-quality rendering on every room change).
         """
         try:
+            # Pass extract_dir so viewport can resolve MDL paths and textures
+            if self._extract_dir:
+                self._viewport.set_game_dir(self._extract_dir)
+            elif self._game_dir:
+                self._viewport.set_game_dir(str(self._game_dir))
+
             self._viewport.load_rooms(rooms)
+
             # Also register MDL file paths so the viewport can find geometry
             if self._room_panel and hasattr(self._room_panel, 'get_mdl_paths'):
                 for name, path in self._room_panel.get_mdl_paths().items():
@@ -1779,6 +1820,15 @@ class MainWindow(QMainWindow):
                         n = getattr(ri, 'model_name', None) or getattr(ri, 'name', '')
                         if n.lower() == name.lower():
                             ri.mdl_path = path
+
+            # Reload textures whenever room layout changes
+            texture_dir = self._extract_dir or (str(self._game_dir) if self._game_dir else "")
+            if texture_dir and self._viewport._renderer.ready:
+                try:
+                    self._viewport.load_textures_for_rooms(texture_dir)
+                except Exception:
+                    pass
+
             self.log(f"Room Grid → Viewport: {len(rooms)} room(s) loaded")
         except Exception as e:
             log.debug(f"_on_rooms_changed_in_grid error: {e}")
@@ -1862,7 +1912,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Room Assembly unavailable: {e}")
             return
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+        from qtpy.QtWidgets import QDialog, QVBoxLayout
         dlg = QDialog(self)
         dlg.setWindowTitle("Room Assembly Grid")
         dlg.setMinimumSize(960, 600)

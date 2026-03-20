@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ModImportDialog</class>
+ <widget class="QDialog" name="ModImportDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>580</width>
+    <height>420</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Import Module Archive</string>
+  </property>
+  <property name="modal">
+   <bool>true</bool>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QDialog { background:#252526; color:#d4d4d4; }
+QLabel { color:#d4d4d4; }
+QLineEdit, QComboBox, QSpinBox {
+    background:#3c3c3c; border:1px solid #555; border-radius:3px;
+    color:#d4d4d4; padding:3px 6px; font-size:9pt;
+}
+QListWidget {
+    background:#1e1e1e; border:1px solid #3c3c3c; color:#d4d4d4;
+    font-family:Consolas,monospace; font-size:9pt;
+}
+QListWidget::item { padding:2px 4px; }
+QListWidget::item:selected { background:#094771; }
+QPushButton {
+    background:#0e639c; color:#fff; border:none; border-radius:3px;
+    padding:5px 14px; font-size:9pt;
+}
+QPushButton:hover { background:#1177bb; }
+QPushButton#btnBrowse { background:#3a3a3a; border:1px solid #555; color:#d4d4d4; }
+QPushButton#btnBrowse:hover { background:#4a4a4a; }
+QGroupBox {
+    color:#9cdcfe; font-size:8pt; font-weight:bold;
+    border:1px solid #3c3c3c; border-radius:3px;
+    margin-top:8px; padding-top:6px;
+}
+QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left; padding:0 4px; }
+QDialogButtonBox QPushButton { min-width:80px; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>8</number></property>
+   <property name="leftMargin"><number>12</number></property>
+   <property name="topMargin"><number>12</number></property>
+   <property name="rightMargin"><number>12</number></property>
+   <property name="bottomMargin"><number>12</number></property>
+   <!-- File selection row -->
+   <item>
+    <layout class="QHBoxLayout" name="fileRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLabel" name="lblFile">
+       <property name="text"><string>Archive file:</string></property>
+       <property name="minimumWidth"><number>90</number></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="editFilePath">
+       <property name="placeholderText">
+        <string>Path to .mod / .erf / .rim …</string>
+       </property>
+       <property name="readOnly"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnBrowse">
+       <property name="text"><string>Browse…</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- Import options group -->
+   <item>
+    <widget class="QGroupBox" name="grpOptions">
+     <property name="title"><string>Import Options</string></property>
+     <layout class="QFormLayout" name="optionsLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lblGame">
+        <property name="text"><string>Game:</string></property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cmbGame">
+        <item><property name="text"><string>KotOR 1</string></property></item>
+        <item><property name="text"><string>KotOR 2 (TSL)</string></property></item>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lblResref">
+        <property name="text"><string>Module ResRef:</string></property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="editResRef">
+        <property name="placeholderText"><string>Auto-detected from filename</string></property>
+        <property name="maxLength"><number>16</number></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <!-- Resource list -->
+   <item>
+    <widget class="QGroupBox" name="grpResources">
+     <property name="title"><string>Resources in Archive</string></property>
+     <layout class="QVBoxLayout" name="resourcesLayout">
+      <property name="spacing"><number>4</number></property>
+      <item>
+       <widget class="QListWidget" name="lstResources">
+        <property name="toolTip">
+         <string>List of resources that will be imported</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="lblResourceCount">
+        <property name="text"><string>0 resources</string></property>
+        <property name="styleSheet">
+         <string notr="true">color:#858585; font-size:8pt;</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <!-- Dialog buttons -->
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Ok|QDialogButtonBox::Cancel</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>ModImportDialog</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel"><x>289</x><y>400</y></hint>
+    <hint type="destinationlabel"><x>289</x><y>210</y></hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>ModImportDialog</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel"><x>289</x><y>400</y></hint>
+    <hint type="destinationlabel"><x>289</x><y>210</y></hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>

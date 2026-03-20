@@ -4,7 +4,171 @@ This file tracks major development iterations. For the full technical spec and I
 
 ---
 
-## Iteration 21 (2026-03-17) — Repository Audit & v2.0 Release
+## Iteration 25 (2026-03-18) — Resource Type Map Audit, 1,933 Tests Passing
+
+### PyKotor/Kotor.NET Format Deep-Scan Findings
+
+Continued the cross-reference audit of `gmodular/formats/archives.py` RES_TYPE_MAP against
+the authoritative **PyKotor** `ResourceType` enum and **Kotor.NET** `KotorResourceType` enum.
+
+**Confirmed Correct (no change needed):**
+
+| ID   | Ext   | Source |
+|------|-------|--------|
+| 2016 | `wok` | PyKotor WOK = 2016 ✅ |
+| 2023 | `git` | PyKotor GIT = 2023 ✅ |
+| 2044 | `utp` | PyKotor UTP = 2044 ✅ |
+| 3007 | `tpc` | PyKotor TPC = 3007 ✅ |
+| 3000 | `lyt` | PyKotor LYT = 3000 ✅ |
+| 3001 | `vis` | PyKotor VIS = 3001 ✅ |
+
+**Stale Test Assertions Fixed:**
+- `tests/test_archives.py`: assertions `git == 2026`, `wok == 2021` were incorrect legacy values
+  carried over from the NWN2 era — corrected to `git == 2023`, `wok == 2016`
+- `tests/test_formats.py`, `tests/test_mod_import.py`: assertions `lyt == 3006`, `vis == 3007`
+  corrected to `lyt == 3000`, `vis == 3001`; `tpc == 2056` corrected to `tpc == 3007`
+- `tests/test_mcp.py`: `test_build_index_module_entries` generator expression bug fixed
+  (was using outer `entries` variable, now correctly uses per-iteration binding)
+
+### SSF Slot Count Verified
+- Kotor.NET `SSFBinaryStructure.cs` has a 40-entry table (padded for TSL future use);
+  PyKotor confirms the **game format uses exactly 28 slots** (V1.1 spec) — our implementation
+  is correct.
+
+### NCS Opcode Verification
+- Compared our `NCSOpcode` table against PyKotor `NCSByteCode` enum — 100% match for all
+  0x01–0x2D opcodes; our `T (0x42)` and `WRITEARRAY (0xff)` extensions are also present
+  in PyKotor as extended type qualifiers.
+
+### LYT/VIS Implementation Note
+- Kotor.NET `LYTReader.cs` currently throws `NotImplementedException` — our Python
+  LYT implementation is **ahead** of the C# reference.
+
+### Tests
+- **Total: 1,933 tests, 100% pass rate** (0 regressions from all test fixes)
+
+---
+
+## Iteration 24 (2026-03-18) — Qt Designer .ui Files, main.py qtpy, Docstring Hygiene
+
+### Honest Assessment of the Suggestions
+
+The community suggestion to adopt **qtpy** first, then **Qt Designer files**, is the right order and we've now completed both steps:
+
+1. **qtpy (done in iteration 23)**: costs ~1 hour, saves days when Qt6 migration becomes necessary. PyQt5 is feature-frozen; PyQt6 has better Wayland + ARM64 support. The `QT_API` env-var pattern lets users switch backends without touching any source code.
+
+2. **Qt Designer .ui files (this iteration)**: the payoff is largest on the complex panels that accumulate hundreds of lines of manual layout code. `inspector.py` is a good first target — its content is dynamically populated anyway, but the outer chrome (scroll area, title, separator) is fixed and belongs in a `.ui` file. The `twoda_editor.py` and `dlg_editor.py` are also good candidates. The `ui_loader.py` fallback mechanism means migrating gradually is safe.
+
+### Qt Designer Infrastructure
+- Created `gmodular/gui/ui/` directory with four initial Designer files:
+  - `inspector.ui` — Inspector sidebar (QScrollArea, dark VS Code style)
+  - `twoda_editor.ui` — 2DA table editor (QTableView, toolbar, searchBox)
+  - `dlg_editor.ui` — DLG node-graph (3-panel QSplitter, nodeTree QTreeView, canvas, properties)
+  - `mod_import_dialog.ui` — Module import dialog (QDialogButtonBox, lstResources QListWidget)
+- Created `gmodular/gui/ui/__init__.py` (package marker + file inventory)
+- Created `gmodular/gui/ui_loader.py` utility:
+  - `load_ui(filename, widget)` — loads `.ui` into an existing widget in-place; returns `False` gracefully on failure so Python fallback layouts still work
+  - `load_ui_type(filename)` — returns `(Form, Base)` pair like `uic.loadUiType`
+  - `list_ui_files()` — list all available `.ui` files in `ui/`
+  - `ui_file(filename)` — absolute string path for a named `.ui` file
+  - Falls back gracefully when `qtpy.uic` is unavailable
+
+### main.py qtpy Migration
+- `main.py` now imports Qt exclusively via `qtpy` — no bare `from PyQt5` anywhere in the runnable entry point
+- Qt5-only attributes (`AA_EnableHighDpiScaling`, `AA_UseHighDpiPixmaps`, `QFont.PreferFullHinting`) guarded with `try/except AttributeError` for Qt6 compatibility
+- Version string updated: `v1.0.0` → `v2.0.0`
+- Install hint updated: mentions `qtpy`, not just `PyQt5`
+
+### GModular.spec Updated
+- Reads `QT_API` env var at spec-evaluation time to detect Qt backend
+- Bundles `gmodular/gui/ui/` directory (reports count of `.ui` files)
+- Adds `gmodular.gui.ui_loader` and `gmodular.gui.ui` to `hidden_imports`
+- Adds `qtpy.uic` to `hidden_imports` (needed for runtime `.ui` loading)
+
+### Docstring / Comment Hygiene
+- `gmodular/gui/__init__.py`: "PyQt5 widgets" → "Qt widgets (via qtpy; works with PyQt5, PyQt6, PySide2, PySide6)"
+- `gmodular/ipc/ghidra_bridge.py`: "If PyQt5 is available" → "If qtpy/Qt is available"
+- `gmodular/formats/tpc_reader.py`: "if PyQt5 available" → "requires qtpy + Qt backend"
+
+### Tests
+- Added **33 new tests** in `tests/test_qtdesigner_uiloading.py`:
+  - `TestUILoader` (8 tests) — import, `list_ui_files`, `load_ui` fallback, `load_ui_type` error
+  - `TestUIFileXML` (12 tests) — XML validity, widget presence (`QScrollArea`, `QTableView`, `QSplitter`, `QDialogButtonBox`, etc.)
+  - `TestMainPyQtpyMigration` (6 tests) — no bare PyQt5, Qt6 guards, version string, QT_API doc
+  - `TestSpecUIBundling` (3 tests) — ui/ dir, `ui_loader`, `qtpy.uic` in hidden_imports
+  - `TestDocstringHygiene` (4 tests) — all three updated docstrings validated
+- **Total: 1,933 tests, 100% pass rate** (up from 1,900)
+
+---
+
+## Iteration 23 (2026-03-18) — qtpy Migration, LTR/NCS Formats, 79 MCP Tools
+
+### Qt Compatibility Layer (qtpy)
+- Migrated **all 21 files** with raw `from PyQt5…` imports to `from qtpy…`
+- Replaced `pyqtSignal` / `pyqtSlot` with `qtpy.QtCore.Signal` / `Slot` throughout
+- **`requirements.txt`**: added `qtpy>=2.4.0`
+- **`setup.py`**: added `qtpy>=2.4.0` to `install_requires`
+- **`GModular.spec`** (PyInstaller): `collect_all("PyQt5")` → `collect_all(_qt_backend)` where `_qt_backend` is determined by `$QT_API`; also collects the `qtpy` shim itself
+
+### New Format Support (based on Kotor.NET + PyKotor deep scan)
+- **LTR read/write** (`gmodular/formats/kotor_formats.py`):
+  - `LTRData` dataclass — Markov chain name-generator (single/double/triple tables)
+  - `read_ltr(data)` — parse "LTR V1.0" header + letter_count + three probability tables
+  - `write_ltr(ltr)` — serialise back to binary; handles 26- and 28-letter variants
+- **NCS write** (`write_ncs(ncs)`):
+  - Re-assembler for patching disassembled scripts
+  - Correctly sets the big-endian `total_size` field validated by the KotOR engine
+
+### New MCP Tools (79 total)
+| Tool | Description |
+|------|-------------|
+| `kotor_read_ltr` | Parse LTR file → letter count + start/mid/end probabilities |
+| `kotor_write_ltr` | Build LTR binary from probability arrays |
+| `kotor_write_ncs` | Re-assemble NCS from instruction list |
+
+### Tests
+- Added 22 new tests (LTR, NCS write, MCP tool registry)
+- **Total: 1,900 tests, 100% pass rate**
+
+---
+
+
+
+### Qt Migration (Phase 1 — compatibility layer)
+- Migrated 68 raw `from PyQt5…` imports to `from qtpy…` across 21 files
+- Replaced `pyqtSignal` / `pyqtSlot` with `Signal` / `Slot`
+- All GUI modules now Qt5/Qt6 agnostic at the import level
+
+### New Modules
+- **`gmodular/gui/dlg_editor.py`** — DLG visual node-graph editor
+  - `DLGGraphData` / `DLGNodeData` pure-Python data model (mirrors PyKotor GFF structure)
+  - `DLGCanvas` — qtpy widget with drag-to-connect node graph
+  - `DLGEditorPanel` — toolbar (new/import/export), I/O bridges
+  - MCP tools: `kotor_describe_dlg`, `kotor_dlg_parse`, `kotor_dlg_add_node`,
+    `kotor_dlg_link_nodes`, `kotor_dlg_summarize`
+- **`gmodular/ipc/nwscript_bridge.py`** — NWScript compile/decompile/check/format IPC bridge
+  - Supports `nwnnsscomp`, DeNCS, PyKotor compiler, disasm fallback
+  - MCP tools: `kotor_compile_nss`, `kotor_nss_check`, `kotor_nss_format`
+
+### Format Library
+- `TwoDAData.from_bytes()` — fixed magic check (`b"2DA "` + `b"V2.b"` properly detected)
+- `_read_2da_binary_to_twoda()` — full binary 2DA reader
+- `TwoDAData.headers` alias property for `columns`
+- `TwoDALoader.from_bytes()` classmethod
+- `TwoDAData` constructor `headers=` keyword alias
+- All three `asyncio.get_event_loop()` calls in tests replaced with `asyncio.run()`
+
+### Bug Fixes
+- Architecture test `test_mcp_does_not_import_gui`: lazy imports added to `mcp/tools/__init__.py`
+- `asyncio.get_event_loop()` → `asyncio.new_event_loop()` for Python 3.12 compat
+- 2DA diff tools and roundtrip test failures resolved
+
+### Tests
+- **Total: 1,878 tests, 100% pass rate**
+
+---
+
+
 
 ### Documentation
 - Updated README.md, DEVELOPMENT.md, and PIPELINE_SPEC.md to accurately reflect

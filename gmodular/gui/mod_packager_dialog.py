@@ -8,14 +8,14 @@ import logging
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt5.QtWidgets import (
+from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTreeWidget, QTreeWidgetItem, QProgressBar, QFileDialog,
     QLineEdit, QGroupBox, QFormLayout, QSplitter, QTextEdit,
     QMessageBox, QFrame, QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor, QIcon
+from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtGui import QFont, QColor, QIcon
 
 from ..formats.mod_packager import ModPackager, PackagerResult, ValidationIssue, ERROR, WARNING, INFO
 
@@ -33,7 +33,7 @@ SEV_COLOR = {
 # ── Background worker ────────────────────────────────────────────────────
 
 class _PackWorker(QThread):
-    finished = pyqtSignal(object)   # PackagerResult
+    finished = Signal(object)   # PackagerResult
 
     def __init__(self, packager: ModPackager, output_path: str):
         super().__init__()
@@ -57,7 +57,7 @@ class ValidationReportPanel(QWidget if True else object):
     pass
 
 
-from PyQt5.QtWidgets import QWidget
+from qtpy.QtWidgets import QWidget
 
 
 class ValidationReportPanel(QWidget):
@@ -161,7 +161,7 @@ class ModPackagerDialog(QDialog):
       - Progress bar + result message
     """
 
-    pack_complete = pyqtSignal(str)   # output path
+    pack_complete = Signal(str)   # output path
 
     def __init__(self, parent=None,
                  module_name: str = "",

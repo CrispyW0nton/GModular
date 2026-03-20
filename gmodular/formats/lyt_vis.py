@@ -66,6 +66,38 @@ class RoomPlacement:
 
 
 @dataclass
+class TrackEntry:
+    """A track entry in the .lyt file (animated geometry path)."""
+    model: str          # MDL ResRef
+    x:     float = 0.0
+    y:     float = 0.0
+    z:     float = 0.0
+
+    @property
+    def position(self) -> Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+    def __repr__(self) -> str:
+        return f"TrackEntry({self.model!r}, {self.x:.2f},{self.y:.2f},{self.z:.2f})"
+
+
+@dataclass
+class ObstacleEntry:
+    """An obstacle entry in the .lyt file (static blocking geometry)."""
+    model: str          # MDL ResRef
+    x:     float = 0.0
+    y:     float = 0.0
+    z:     float = 0.0
+
+    @property
+    def position(self) -> Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+    def __repr__(self) -> str:
+        return f"ObstacleEntry({self.model!r}, {self.x:.2f},{self.y:.2f},{self.z:.2f})"
+
+
+@dataclass
 class DoorHookEntry:
     """A door hook entry from the .lyt file."""
     name:     str
@@ -98,11 +130,28 @@ class LayoutData:
         tracks:     List of track entries (usually empty in custom modules).
         obstacles:  List of obstacle entries (usually empty).
     """
-    rooms:      List[RoomPlacement] = field(default_factory=list)
-    door_hooks: List[DoorHookEntry] = field(default_factory=list)
-    tracks:     List[str]           = field(default_factory=list)
-    obstacles:  List[str]           = field(default_factory=list)
+    rooms:      List[RoomPlacement]  = field(default_factory=list)
+    door_hooks: List[DoorHookEntry]  = field(default_factory=list)
+    tracks:     List[TrackEntry]     = field(default_factory=list)
+    obstacles:  List[ObstacleEntry]  = field(default_factory=list)
     source:     str                 = ""   # path or resref it was loaded from
+
+    # ── Convenience factory methods (delegate to LYTParser) ──────────────────
+
+    @classmethod
+    def from_string(cls, text: str, source: str = "") -> "LayoutData":
+        """Parse a .lyt file from a string. Delegates to LYTParser."""
+        return LYTParser.from_string(text, source)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, source: str = "") -> "LayoutData":
+        """Parse a .lyt file from bytes. Delegates to LYTParser."""
+        return LYTParser.from_bytes(data, source)
+
+    @classmethod
+    def from_file(cls, path: str) -> "LayoutData":
+        """Read and parse a .lyt file. Delegates to LYTParser."""
+        return LYTParser.from_file(path)
 
     @property
     def room_count(self) -> int:
@@ -121,6 +170,23 @@ class LayoutData:
         rlo = room.lower()
         return [dh for dh in self.door_hooks if dh.room.lower() == rlo]
 
+    # ── Convenience factory methods (delegate to LYTParser) ──────────────────
+
+    @classmethod
+    def from_string(cls, text: str, source: str = "") -> "LayoutData":
+        """Parse a .lyt file from a string."""
+        return LYTParser.from_string(text, source)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, source: str = "") -> "LayoutData":
+        """Parse a .lyt file from bytes."""
+        return LYTParser.from_bytes(data, source)
+
+    @classmethod
+    def from_file(cls, path: str) -> "LayoutData":
+        """Parse a .lyt file from disk."""
+        return LYTParser.from_file(path)
+
 
 @dataclass
 class VisibilityData:
@@ -132,6 +198,23 @@ class VisibilityData:
     visibility: Dict[str, List[str]] = field(default_factory=dict)
     source:     str = ""
 
+    # ── Convenience factory methods (delegate to VISParser) ──────────────────
+
+    @classmethod
+    def from_string(cls, text: str, source: str = "") -> "VisibilityData":
+        """Parse a .vis file from a string. Delegates to VISParser."""
+        return VISParser.from_string(text, source)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, source: str = "") -> "VisibilityData":
+        """Parse a .vis file from bytes. Delegates to VISParser."""
+        return VISParser.from_bytes(data, source)
+
+    @classmethod
+    def from_file(cls, path: str) -> "VisibilityData":
+        """Read and parse a .vis file. Delegates to VISParser."""
+        return VISParser.from_file(path)
+
     def visible_from(self, room: str) -> List[str]:
         """Return list of rooms visible from ``room``."""
         return self.visibility.get(room.lower(), [])
@@ -140,6 +223,23 @@ class VisibilityData:
         """Return True if room_b is visible from room_a (or vice versa)."""
         a, b = room_a.lower(), room_b.lower()
         return b in self.visibility.get(a, []) or a in self.visibility.get(b, [])
+
+    # ── Convenience factory methods (delegate to VISParser) ──────────────────
+
+    @classmethod
+    def from_string(cls, text: str, source: str = "") -> "VisibilityData":
+        """Parse a .vis file from a string."""
+        return VISParser.from_string(text, source)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, source: str = "") -> "VisibilityData":
+        """Parse a .vis file from bytes."""
+        return VISParser.from_bytes(data, source)
+
+    @classmethod
+    def from_file(cls, path: str) -> "VisibilityData":
+        """Parse a .vis file from disk."""
+        return VISParser.from_file(path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -239,7 +339,9 @@ class LYTParser:
                         break
                     row = lines[i].strip(); i += 1
                     if row and not row.startswith('#'):
-                        layout.tracks.append(row)
+                        te = LYTParser._parse_track_obstacle_line(row, TrackEntry)
+                        if te:
+                            layout.tracks.append(te)
 
             # ── obstaclecount <N> ────────────────────────────────────────────
             elif keyword == 'obstaclecount':
@@ -249,7 +351,9 @@ class LYTParser:
                         break
                     row = lines[i].strip(); i += 1
                     if row and not row.startswith('#'):
-                        layout.obstacles.append(row)
+                        oe = LYTParser._parse_track_obstacle_line(row, ObstacleEntry)
+                        if oe:
+                            layout.obstacles.append(oe)
 
             # Ignore unknown keywords
             else:
@@ -275,6 +379,24 @@ class LYTParser:
             )
         except ValueError as e:
             log.debug(f"LYT: room parse error {row!r}: {e}")
+            return None
+
+    @staticmethod
+    def _parse_track_obstacle_line(row: str, cls):
+        """Parse a track or obstacle line: <model> <x> <y> <z>"""
+        parts = row.split()
+        if len(parts) < 4:
+            log.debug(f"LYT: malformed track/obstacle line: {row!r}")
+            return None
+        try:
+            return cls(
+                model=parts[0].lower(),
+                x=float(parts[1]),
+                y=float(parts[2]),
+                z=float(parts[3]),
+            )
+        except ValueError as e:
+            log.debug(f"LYT: track/obstacle parse error {row!r}: {e}")
             return None
 
     @staticmethod
@@ -348,37 +470,80 @@ class VISParser:
     def _parse(lines: List[str], source: str) -> VisibilityData:
         vis = VisibilityData(source=source)
 
-        current_room: Optional[str] = None
+        # KotOR .vis format: alternating pairs of lines
+        #   Line 1: room resref
+        #   Line 2: space-separated list of rooms visible from Line 1's room
+        # Each room may see multiple others listed on one or more continuation lines.
+        # Blank lines separate room blocks.
 
+        # First pass: collect non-empty, non-comment lines
+        content_lines: List[str] = []
         for raw in lines:
             line = raw.strip()
-            if not line or line.startswith('#'):
-                # A blank line ends the current room's visible list
-                # but we continue — some .vis files have no blank separators
-                continue
+            if line and not line.startswith('#'):
+                content_lines.append(line.lower())
 
-            parts = line.lower().split()
-            # If there is exactly one token and it looks like a room resref,
-            # it could be the start of a new room block.
-            # Heuristic: if line has one word and it's a simple identifier,
-            # treat it as a new room declaration.
+        # Second pass: parse alternating room/visibility pairs
+        # Strategy: each room block starts with a single resref token.
+        # The following line(s) until the next single-token room are visibility lists.
+        i = 0
+        n = len(content_lines)
+        while i < n:
+            line = content_lines[i]
+            parts = line.split()
+
             if len(parts) == 1 and _is_resref(parts[0]):
+                # This is a room declaration
                 current_room = parts[0]
                 if current_room not in vis.visibility:
                     vis.visibility[current_room] = []
-            elif current_room is not None:
-                # These are the rooms visible from current_room
-                for p in parts:
-                    rlo = p.lower()
-                    if rlo not in vis.visibility[current_room]:
-                        vis.visibility[current_room].append(rlo)
+                i += 1
+                # Next line(s) are visibility lists for this room
+                while i < n:
+                    next_line = content_lines[i]
+                    next_parts = next_line.split()
+                    # If next line is a single resref, it could be:
+                    # (a) a new room declaration, OR
+                    # (b) a single-room visibility list
+                    # KotOR vis format: visibility list follows immediately,
+                    # so we treat the very next line as a visibility list
+                    # regardless of token count.
+                    if len(next_parts) == 1 and _is_resref(next_parts[0]):
+                        # Check if the line after THIS one is also a single resref
+                        # (indicating the next room starts here) or a multi-token list.
+                        # Heuristic: if i+1 < n and next line is single token,
+                        # peek ahead – if line i+1 looks like a vis list (multiple tokens
+                        # or doesn't start a room pattern), treat i as vis list.
+                        # Simplest correct approach: treat the first line after a room
+                        # as its visibility list unconditionally.
+                        for p in next_parts:
+                            rlo = p.lower()
+                            if rlo not in vis.visibility[current_room]:
+                                vis.visibility[current_room].append(rlo)
+                        i += 1
+                        break   # one visibility line per room in standard format
+                    elif len(next_parts) > 1:
+                        # Multi-token line: definitely a visibility list
+                        for p in next_parts:
+                            rlo = p.lower()
+                            if rlo not in vis.visibility[current_room]:
+                                vis.visibility[current_room].append(rlo)
+                        i += 1
+                        # Keep reading continuation lines for this room
+                    else:
+                        # Empty or unrecognised
+                        i += 1
+                        break
             else:
-                # Could be a room name on the first line without prior context
+                # Multi-token line without a preceding room (shouldn't happen in well-formed vis)
+                # Try treating as a new room with inline visibility
                 if parts:
                     current_room = parts[0]
-                    vis.visibility[current_room] = []
+                    if current_room not in vis.visibility:
+                        vis.visibility[current_room] = []
                     for p in parts[1:]:
                         vis.visibility[current_room].append(p.lower())
+                i += 1
 
         log.debug(f"VIS '{source}': {len(vis.visibility)} rooms")
         return vis
@@ -408,7 +573,22 @@ def _is_resref(s: str) -> bool:
 
 class LYTWriter:
     """
-    Writes a LayoutData object to a .lyt file string.
+    Writes a LayoutData object to a canonical KotOR .lyt file string.
+
+    The canonical format (LoadLayout @ 0x005de900 in swkotor.exe) uses
+    ``beginlayout`` / ``donelayout`` bookmarks and tab-indented sections.
+
+    Follows the same write order as PyKotor's LYTAsciiWriter:
+      beginlayout
+        roomcount N
+          model x y z  (one per room)
+        trackcount N
+          model x y z
+        obstaclecount N
+          model x y z
+        doorhookcount N
+          room door 0 x y z qx qy qz qw
+      donelayout
 
     Usage::
         layout = LayoutData()
@@ -418,42 +598,50 @@ class LYTWriter:
             f.write(text)
     """
 
+    _SEP = "\r\n"   # KotOR uses CRLF line endings
+    _I1  = "   "    # one level of indentation (3 spaces, matching PyKotor)
+    _I2  = "      " # two levels
+
     @staticmethod
     def to_string(layout: LayoutData) -> str:
-        lines = []
+        sep = LYTWriter._SEP
+        i1  = LYTWriter._I1
+        i2  = LYTWriter._I2
+        lines = [f"beginlayout{sep}"]
 
         # Rooms
-        lines.append(f"roomcount {len(layout.rooms)}")
+        lines.append(f"{i1}roomcount {len(layout.rooms)}{sep}")
         for r in layout.rooms:
-            lines.append(f"  {r.resref} {r.x:.4f} {r.y:.4f} {r.z:.4f}")
-        lines.append("")
+            lines.append(f"{i2}{r.resref} {r.x:.6f} {r.y:.6f} {r.z:.6f}{sep}")
 
-        # Door hooks
-        lines.append(f"doorhookcount {len(layout.door_hooks)}")
+        # Tracks
+        lines.append(f"{i1}trackcount {len(layout.tracks)}{sep}")
+        for t in layout.tracks:
+            model = getattr(t, 'model', getattr(t, 'resref', str(t)))
+            x = getattr(t, 'x', 0.0); y = getattr(t, 'y', 0.0); z = getattr(t, 'z', 0.0)
+            lines.append(f"{i2}{model} {x:.6f} {y:.6f} {z:.6f}{sep}")
+
+        # Obstacles
+        lines.append(f"{i1}obstaclecount {len(layout.obstacles)}{sep}")
+        for o in layout.obstacles:
+            model = getattr(o, 'model', getattr(o, 'resref', str(o)))
+            x = getattr(o, 'x', 0.0); y = getattr(o, 'y', 0.0); z = getattr(o, 'z', 0.0)
+            lines.append(f"{i2}{model} {x:.6f} {y:.6f} {z:.6f}{sep}")
+
+        # Door hooks — canonical format: room door 0 x y z qx qy qz qw
+        lines.append(f"{i1}doorhookcount {len(layout.door_hooks)}{sep}")
         for dh in layout.door_hooks:
             lines.append(
-                f"  {dh.name} {dh.room} "
-                f"{dh.x:.4f} {dh.y:.4f} {dh.z:.4f} "
-                f"{dh.qx:.4f} {dh.qy:.4f} {dh.qz:.4f} {dh.qw:.4f}"
+                f"{i2}{dh.room} {dh.name} 0 "
+                f"{dh.x:.6f} {dh.y:.6f} {dh.z:.6f} "
+                f"{dh.qx:.6f} {dh.qy:.6f} {dh.qz:.6f} {dh.qw:.6f}{sep}"
             )
-        lines.append("")
 
-        # Tracks (usually empty)
-        lines.append(f"trackcount {len(layout.tracks)}")
-        for t in layout.tracks:
-            lines.append(f"  {t}")
-        lines.append("")
-
-        # Obstacles (usually empty)
-        lines.append(f"obstaclecount {len(layout.obstacles)}")
-        for o in layout.obstacles:
-            lines.append(f"  {o}")
-        lines.append("")
-
-        return "\n".join(lines)
+        lines.append(f"donelayout{sep}")
+        return "".join(lines)
 
     @staticmethod
     def to_file(layout: LayoutData, path: str):
         text = LYTWriter.to_string(layout)
-        with open(path, 'w', encoding='ascii') as f:
+        with open(path, 'w', encoding='ascii', newline='') as f:
             f.write(text)

@@ -28,12 +28,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional, Dict, Any
 
 try:
-    from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+    from qtpy.QtCore import QObject, Signal, QTimer
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QObject = object   # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -190,14 +190,14 @@ class GModularIPCServer(QObject):
         server.stop()
     """
 
-    compile_result = pyqtSignal(bool, str, str)    # success, script, message
-    model_ready    = pyqtSignal(str, str, str)      # model_name, mdl_path, mdx_path
-    script_opened  = pyqtSignal(str)               # script name
-    git_updated    = pyqtSignal(str, int)           # git path, object count
-    ping_received  = pyqtSignal()
-    error          = pyqtSignal(str)
-    server_started = pyqtSignal(int)               # port
-    server_stopped = pyqtSignal()
+    compile_result = Signal(bool, str, str)    # success, script, message
+    model_ready    = Signal(str, str, str)      # model_name, mdl_path, mdx_path
+    script_opened  = Signal(str)               # script name
+    git_updated    = Signal(str, int)           # git path, object count
+    ping_received  = Signal()
+    error          = Signal(str)
+    server_started = Signal(int)               # port
+    server_stopped = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
