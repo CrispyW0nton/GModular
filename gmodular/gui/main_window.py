@@ -1305,13 +1305,27 @@ class MainWindow(QMainWindow):
         if lyt_text:
             try:
                 from .room_assembly import LYTData
-                lyt = LYTData.from_text(lyt_text)
-                if lyt.rooms:
+                from ..formats.lyt_vis import LYTParser as _LYTParser
+                # Try robust parser first (handles all LYT format variants)
+                layout = _LYTParser.from_string(lyt_text)
+                if layout.rooms:
+                    from .room_assembly import RoomInstance as _RI
+                    lyt_rooms = [
+                        _RI(mdl_name=rp.resref, grid_x=0, grid_y=0,
+                            world_x=rp.x, world_y=rp.y, world_z=rp.z)
+                        for rp in layout.rooms
+                    ]
+                else:
+                    # Fallback to LYTData.from_text (handles legacy formats)
+                    lyt = LYTData.from_text(lyt_text)
                     lyt_rooms = lyt.rooms
+                if lyt_rooms:
                     self.log(f"  LYT: {len(lyt_rooms)} rooms")
                     # Push into room panel if available
                     try:
-                        self._room_panel.load_lyt(lyt)
+                        lyt_obj = LYTData()
+                        lyt_obj.rooms = list(lyt_rooms)
+                        self._room_panel.load_lyt(lyt_obj)
                     except AttributeError:
                         pass
                     # Push into viewport (handles MDL path resolution internally)
