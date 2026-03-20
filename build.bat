@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  GModular Build Script  v2.0.10
+echo  GModular Build Script  v2.0.11
 echo  KotOR Module Editor  ^|  Produces: dist\GModular.exe
 echo ============================================================
 echo(
@@ -216,27 +216,71 @@ echo(
 
 REM ---------------------------------------------------------------
 REM  STEP 11 -- Quick self-test  (with detailed diagnostics)
+REM  NOTE: We use a temp file to capture Python output instead of
+REM  "for /f" because nested double-quotes inside for/f break on
+REM  Windows and cause false failures / silent terminal close.
 REM ---------------------------------------------------------------
 echo [....] GModular import self-test...
 
-REM ---- Diagnostic pre-check: stale/corrupt local files ----
-%PY% -c "import pathlib; txt=pathlib.Path('gmodular/core/module_state.py').read_text(encoding='utf-8'); bad=any(x in txt for x in ['dmodular', 'from gmodular.core.events import']); good='from .events import' in txt; print('file_ok='+str(good and not bad))"
-for /f "tokens=2 delims==" %%A in ('%PY% -c "import pathlib; txt=pathlib.Path(\"gmodular/core/module_state.py\").read_text(encoding=\"utf-8\"); print(\"file_ok=\"+str(\"from .events import\" in txt and \"dmodular\" not in txt))"') do set MSOK=%%A
-if /i not "%MSOK%"=="True" (
+REM ---- Write a tiny helper script to a temp file ----
+set "CHKPY=%TEMP%\gmodular_preflight.py"
+(
+    echo import pathlib, sys
+    echo p = pathlib.Path("gmodular/core/module_state.py"^)
+    echo if not p.exists(^):
+    echo     print("MISSING"^)
+    echo     sys.exit(0^)
+    echo txt = p.read_text(encoding="utf-8", errors="replace"^)
+    echo if "dmodular" in txt:
+    echo     print("DMODULAR_TYPO"^)
+    echo elif "from .events import" not in txt:
+    echo     print("BAD_IMPORT"^)
+    echo else:
+    echo     print("OK"^)
+) > "%CHKPY%"
+
+REM ---- Run the helper and capture its output ----
+set "MSOK="
+for /f "delims=" %%R in ('%PY% "%CHKPY%" 2^>nul') do set "MSOK=%%R"
+del "%CHKPY%" >nul 2>&1
+
+if /i "%MSOK%"=="DMODULAR_TYPO" (
     echo(
-    echo [ERROR] gmodular\core\module_state.py contains a bad import (e.g. "dmodular").
+    echo [ERROR] gmodular\core\module_state.py has a bad import: "dmodular"
     echo(
-    echo  This means your local copy is out of date or was manually edited.
-    echo  Fix: re-download or git pull the latest code from:
-    echo    https://github.com/CrispyW0nton/GModular
+    echo  Your local file is out of date or was manually edited.
+    echo  The correct import is:  from .events import ...
     echo(
-    echo  Quick fix with git:
+    echo  Fix option 1 -- re-download the repo ZIP from GitHub:
+    echo    https://github.com/CrispyW0nton/GModular/archive/refs/heads/main.zip
+    echo(
+    echo  Fix option 2 -- restore just this one file with git:
     echo    git fetch origin main
     echo    git checkout origin/main -- gmodular/core/module_state.py
     echo(
     pause
     exit /b 1
 )
+if /i "%MSOK%"=="BAD_IMPORT" (
+    echo(
+    echo [ERROR] gmodular\core\module_state.py has an unexpected import pattern.
+    echo  Expected:  from .events import get_event_bus, ...
+    echo  Re-download the repo to get the correct version.
+    echo(
+    pause
+    exit /b 1
+)
+if /i "%MSOK%"=="MISSING" (
+    echo(
+    echo [ERROR] gmodular\core\module_state.py not found.
+    echo  Make sure you are running build.bat from the GModular root folder
+    echo  (the folder that contains gmodular\ and build.bat).
+    echo(
+    pause
+    exit /b 1
+)
+REM If MSOK is empty the Python check itself failed -- skip pre-check silently
+REM and let the main import test below catch any real problem.
 
 REM ---- Main import test ----
 %PY% -c "from gmodular.formats.gff_types import GITData; from gmodular.core.module_state import ModuleState; from gmodular.gui.viewport_camera import OrbitCamera; from gmodular.gui.viewport_shaders import ALL_SHADERS; from gmodular.gui.viewport_renderer import _EGLRenderer; from gmodular.formats.mdl_writer import MDLWriter, NODE_EMITTER, NODE_DANGLY; import gmodular; print('GModular', gmodular.__version__, 'OK')"
@@ -247,18 +291,19 @@ if errorlevel 1 (
     echo  Common causes and fixes:
     echo(
     echo  1. "No module named 'dmodular'" or similar typo:
-    echo       Your local gmodular\core\module_state.py is corrupted or out of date.
-    echo       Fix: git checkout origin/main -- gmodular/core/module_state.py
+    echo       Your local gmodular\core\module_state.py is out of date.
+    echo       Download the latest ZIP: https://github.com/CrispyW0nton/GModular
     echo(
     echo  2. "No module named 'qtpy'" or 'PyQt5':
     echo       Step 5 pip install failed silently.
-    echo       Fix: %PY% -m pip install "PyQt5>=5.15" "qtpy>=2.4"
+    echo       Fix: python -m pip install "PyQt5>=5.15" "qtpy>=2.4"
     echo(
     echo  3. "No module named 'moderngl'" or 'numpy':
-    echo       Fix: %PY% -m pip install moderngl numpy
+    echo       Fix: python -m pip install moderngl numpy
     echo(
     echo  4. Any other import error:
-    echo       Run:  %PY% -c "import gmodular"
+    echo       Open a command prompt, cd to this folder, and run:
+    echo         python -c "import gmodular"
     echo       to see the full traceback, then fix that specific module.
     echo(
     pause
