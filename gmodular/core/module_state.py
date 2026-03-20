@@ -2,6 +2,11 @@
 GModular — Module State
 Central data store for the currently open module.
 Manages loading, autosave, undo/redo, and dirty tracking.
+
+Refactored per Khononov "Balancing Coupling":
+- load_from_mod() delegates to ModuleIO (separate concerns).
+- EventBus wired in: _emit_change() publishes MODULE_CHANGED.
+  Subscribers (viewport, inspector) no longer call get_module_state() inline.
 """
 from __future__ import annotations
 import math
@@ -23,6 +28,8 @@ from ..formats.gff_types import (
 from ..formats.gff_reader import load_git, load_are, load_ifo
 from ..formats.gff_writer import save_git, save_ifo
 from ..formats.archives import ResourceManager, get_resource_manager
+from .events import get_event_bus, MODULE_CHANGED, MODULE_CLOSED
+from .module_io import ModuleIO, ModuleLoadResult
 
 log = logging.getLogger(__name__)
 
@@ -224,8 +231,10 @@ class ModuleState:
         self._undo_stack:  List[Command] = []
         self._redo_stack:  List[Command] = []
         self._autosave_timer: Optional[threading.Timer] = None
-        self._change_callbacks: List[Callable] = []  # Notify viewport on changes
+        self._change_callbacks: List[Callable] = []  # legacy direct callbacks
         self._selection_callbacks: List[Callable] = []
+        # EventBus integration: publish typed events instead of raw callbacks
+        self._bus = get_event_bus()
 
     # ── State queries ─────────────────────────────────────────────────────
 
@@ -252,6 +261,9 @@ class ModuleState:
         self._change_callbacks.append(callback)
 
     def _emit_change(self):
+        # Publish to the event bus first (new subscribers)
+        self._bus.publish(MODULE_CHANGED)
+        # Also call legacy direct callbacks for backward compatibility
         for cb in self._change_callbacks:
             try:
                 cb()
@@ -304,32 +316,18 @@ class ModuleState:
 
     def load_from_files(self, git_path: str, are_path: str = "",
                         ifo_path: str = "", game: str = "K1"):
-        """Load GIT (and optionally ARE/IFO) directly from file paths."""
+        """Load GIT (and optionally ARE/IFO) directly from file paths.
+
+        Delegates I/O to ``ModuleIO`` (§4.1 — Khononov refactor), keeping
+        the state object free of format-parsing details.
+        """
+        result: ModuleLoadResult = ModuleIO().load_from_files(
+            git_path, are_path, ifo_path
+        )
         self.project = None
-        try:
-            self.git = load_git(git_path)
-        except Exception as e:
-            log.error(f"GIT load error: {e}")
-            self.git = GITData()
-
-        if are_path and os.path.exists(are_path):
-            try:
-                self.are = load_are(are_path)
-            except Exception as e:
-                log.error(f"ARE load error: {e}")
-                self.are = AREData()
-        else:
-            self.are = AREData()
-
-        if ifo_path and os.path.exists(ifo_path):
-            try:
-                self.ifo = load_ifo(ifo_path)
-            except Exception as e:
-                log.error(f"IFO load error: {e}")
-                self.ifo = IFOData()
-        else:
-            self.ifo = IFOData()
-
+        self.git = result.git
+        self.are = result.are
+        self.ifo = result.ifo
         self._dirty = False
         self._undo_stack.clear()
         self._redo_stack.clear()
@@ -340,218 +338,44 @@ class ModuleState:
         """
         Load a KotOR .mod (ERF) archive as the active module.
 
-        Extracts GIT / ARE / IFO (and optionally LYT / VIS) from the archive,
-        writes them to *extract_dir* (a temp folder next to the .mod by default),
-        then populates self.git / self.are / self.ifo.
-
-        Returns a summary dict::
-
-            {
-                "mod_path":    str,
-                "extract_dir": str,
-                "resref":      str,           # guessed from IFO or filename
-                "resources":   List[str],     # all resource keys in the archive
-                "lyt_text":    str | None,    # raw .lyt content if found
-                "vis_text":    str | None,    # raw .vis content if found
-                "errors":      List[str],
-            }
+        Delegates I/O to ``ModuleIO`` (§4.1 — Khononov refactor) and applies
+        the result to the live state.  Returns a summary dict compatible with
+        the previous implementation so callers require no changes.
         """
-        from ..formats.archives import ERFReader, EXT_TO_TYPE, RES_TYPE_MAP
-        from ..formats.gff_reader import load_git, load_are, load_ifo, GFFReader
-        import tempfile
+        # ── Delegate I/O to the pure ModuleIO service ────────────────────
+        result: ModuleLoadResult = ModuleIO().load_from_mod(mod_path, extract_dir)
 
-        errors: list = []
-        summary: dict = {
-            "mod_path":    mod_path,
-            "extract_dir": "",
-            "resref":      "",
-            "resources":   [],
-            "lyt_text":    None,
-            "vis_text":    None,
-            "errors":      errors,
-        }
-
-        # ── 1. Open the archive ───────────────────────────────────────────
-        erf = ERFReader(mod_path)
-        count = erf.load()
-        if count == 0:
-            errors.append(f"No resources found in {mod_path}")
-            log.error(f"MOD load: empty archive {mod_path}")
-
-        summary["resources"] = sorted(erf.resources.keys())
-
-        # ── 2. Choose / create extraction directory ───────────────────────
-        if extract_dir is None:
-            mod_stem = Path(mod_path).stem
-            base_dir = Path(mod_path).parent
-            extract_dir = str(base_dir / f"_{mod_stem}_extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-        summary["extract_dir"] = extract_dir
-
-        def _extract(resref: str, ext: str) -> Optional[bytes]:
-            # Try exact key (resref already lowercased + stripped by ERFReader)
-            key = f"{resref.lower().strip()}.{ext}"
-            entry = erf.resources.get(key)
-            if entry is None:
-                # Fallback: search case-insensitively for any matching key
-                for k, e in erf.resources.items():
-                    if k.lower() == key.lower():
-                        entry = e
-                        break
-            if entry is None:
-                return None
-            return erf.read_resource(entry)
-
-        def _write(filename: str, data: bytes) -> str:
-            p = os.path.join(extract_dir, filename)
-            with open(p, "wb") as fh:
-                fh.write(data)
-            return p
-
-        # ── 3. Identify the module resref ─────────────────────────────────
-        # Prefer IFO entry_area; fall back to first .are resref; fall back to filename stem.
-        resref = Path(mod_path).stem.lower()
-
-        # ── Helper: find first entry by extension (type-ID agnostic fallback) ──
-        def _find_by_ext(ext: str):
-            """Return (key, entry) for first resource matching ext, or (None, None)."""
-            for k, e in erf.resources.items():
-                if k.lower().endswith(f".{ext}"):
-                    return k, e
-            return None, None
-
-        # Find the real module resref from the first .are file
-        are_resref = None
-        _are_key, _are_entry = _find_by_ext("are")
-        if _are_key:
-            # Strip the .are suffix to get the resref
-            are_resref = _are_key[:-4].strip()
-            resref = are_resref
-            log.debug(f"MOD: area resref detected as '{resref}'")
-
-        summary["resref"] = resref
-
-        # ── 4. Load GIT ───────────────────────────────────────────────────
+        # ── Apply the result to this state object ─────────────────────────
         self.project = None
-        git_data = _extract(resref, "git")
-        if git_data is None:
-            # Try any .git in the archive (type-ID agnostic)
-            _git_key, _git_entry = _find_by_ext("git")
-            if _git_entry:
-                git_data = erf.read_resource(_git_entry)
-                resref = _git_key[:-4].strip()
-                summary["resref"] = resref
-                log.debug(f"MOD: GIT found via fallback scan, resref='{resref}'")
+        self.git = result.git
+        self.are = result.are
+        self.ifo = result.ifo
 
-        if git_data:
-            git_path = _write(f"{resref}.git", git_data)
-            try:
-                self.git = load_git(git_path)
-                log.info(f"MOD: GIT loaded — {self.git.object_count} objects")
-            except Exception as e:
-                errors.append(f"GIT parse error: {e}")
-                log.error(f"MOD GIT parse error: {e}")
-                self.git = GITData()
-        else:
-            errors.append("No .git resource found in archive")
-            log.warning(f"MOD: No .git found; archive keys: {sorted(erf.resources.keys())[:10]}")
-            self.git = GITData()
-
-        # ── 5. Load ARE ───────────────────────────────────────────────────
-        are_data = _extract(resref, "are")
-        if are_data is None and _are_entry:
-            are_data = erf.read_resource(_are_entry)
-        if are_data:
-            are_path = _write(f"{resref}.are", are_data)
-            try:
-                self.are = load_are(are_path)
-            except Exception as e:
-                errors.append(f"ARE parse error: {e}")
-                self.are = AREData()
-        else:
-            self.are = AREData()
-
-        # ── 6. Load IFO ───────────────────────────────────────────────────
-        ifo_data = _extract("module", "ifo")
-        if ifo_data is None:
-            ifo_data = _extract(resref, "ifo")
-        if ifo_data is None:
-            _, _ifo_entry = _find_by_ext("ifo")
-            if _ifo_entry:
-                ifo_data = erf.read_resource(_ifo_entry)
-
-        if ifo_data:
-            ifo_path = _write("module.ifo", ifo_data)
-            try:
-                self.ifo = load_ifo(ifo_path)
-                # Prefer IFO's entry_area as the resref
-                if self.ifo and self.ifo.entry_area:
-                    summary["resref"] = self.ifo.entry_area.lower().strip()
-            except Exception as e:
-                errors.append(f"IFO parse error: {e}")
-                self.ifo = IFOData()
-        else:
-            self.ifo = IFOData()
-
-        # ── 7. Extract LYT / VIS (for room display) ───────────────────────
-        lyt_resref = summary["resref"]
-        lyt_data = _extract(lyt_resref, "lyt")
-        if lyt_data is None:
-            # Try any .lyt
-            for key in erf.resources:
-                if key.endswith(".lyt"):
-                    entry = erf.resources[key]
-                    lyt_data = erf.read_resource(entry)
-                    lyt_resref = key[:-4]
-                    break
-
-        if lyt_data:
-            lyt_text = lyt_data.decode("utf-8", errors="replace")
-            summary["lyt_text"] = lyt_text
-            _write(f"{lyt_resref}.lyt", lyt_data)
-            log.info(f"MOD: LYT extracted ({len(lyt_text)} chars)")
-
-        vis_resref = lyt_resref
-        vis_data = _extract(vis_resref, "vis")
-        if vis_data:
-            vis_text = vis_data.decode("utf-8", errors="replace")
-            summary["vis_text"] = vis_text
-            _write(f"{vis_resref}.vis", vis_data)
-
-        # ── 8. Extract remaining resources to extract_dir ─────────────────
-        for key, entry in erf.resources.items():
-            ext = key.rsplit(".", 1)[-1] if "." in key else "bin"
-            # Skip what we already wrote
-            dest = os.path.join(extract_dir, key)
-            if not os.path.exists(dest):
-                try:
-                    raw = erf.read_resource(entry)
-                    if raw:
-                        with open(dest, "wb") as fh:
-                            fh.write(raw)
-                except Exception as e:
-                    log.debug(f"MOD extract {key}: {e}")
-
-        # Store extraction dir as a light-weight "project" so Save As works
-        # We create a minimal ModuleProject pointing at extract_dir
+        # Build a minimal ModuleProject so Save As works
         try:
-            project = ModuleProject(
+            self.project = ModuleProject(
                 name=self.ifo.mod_name if (self.ifo and self.ifo.mod_name) else Path(mod_path).stem,
                 game="K1",
-                module_resref=summary["resref"],
-                project_dir=extract_dir,
+                module_resref=result.resref,
+                project_dir=result.extract_dir,
             )
-            self.project = project
-        except Exception as e:
-            log.warning(f"Could not create project from MOD: {e}")
+        except Exception as exc:
+            log.warning("Could not create project from MOD: %s", exc)
 
         self._dirty = False
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._emit_change()
-        log.info(f"MOD loaded: {mod_path} → {self.git.object_count} objects, "
-                 f"{len(summary['resources'])} resources")
-        return summary
+
+        return {
+            "mod_path":    result.mod_path,
+            "extract_dir": result.extract_dir,
+            "resref":      result.resref,
+            "resources":   result.resources,
+            "lyt_text":    result.lyt_text,
+            "vis_text":    result.vis_text,
+            "errors":      result.errors,
+        }
 
     def new_module(self, project: ModuleProject):
         """Create a brand-new empty module."""
@@ -587,6 +411,10 @@ class ModuleState:
         self._dirty = False
         log.info(f"Saved: {target}")
 
+    def save_git(self, git_path: Optional[str] = None):
+        """Alias for save() — convenience for explicit .git path saves."""
+        self.save(git_path)
+
     def autosave(self):
         """Write an autosave backup."""
         if self.git is None or not self.project:
@@ -606,9 +434,13 @@ class ModuleState:
         self._autosave_timer.daemon = True
         self._autosave_timer.start()
 
+    def _is_saveable(self) -> bool:
+        """Return True when there is loaded, project-backed data to save."""
+        return self.git is not None and self.project is not None
+
     def _autosave_tick(self):
         # Stop and don't reschedule if module has been closed since timer was armed
-        if self.git is None or self.project is None:
+        if not self._is_saveable():
             return
         if self._dirty:
             self.autosave()
@@ -628,6 +460,7 @@ class ModuleState:
         self._dirty = False
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._bus.publish(MODULE_CLOSED)
         self._emit_change()
 
     # ── Command Execution ────────────────────────────────────────────────

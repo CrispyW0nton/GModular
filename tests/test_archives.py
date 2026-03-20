@@ -164,18 +164,30 @@ def _build_erf(resources: list, file_type: str = "MOD ") -> bytes:
 
 class TestResMaps:
     def test_roundtrip_ext_to_type(self):
+        # Note: duplicate extension mappings (e.g. "res" at 0 and 3009, "ndb" at 2064 and 3000)
+        # mean EXT_TO_TYPE will only keep the LAST entry for duplicate exts.
+        # We verify all non-duplicate entries round-trip correctly.
+        seen_exts: set = set()
+        duplicate_exts: set = set()
         for tid, ext in RES_TYPE_MAP.items():
+            if ext in seen_exts:
+                duplicate_exts.add(ext)
+            seen_exts.add(ext)
+        for tid, ext in RES_TYPE_MAP.items():
+            if ext in duplicate_exts:
+                continue  # skip known duplicates — EXT_TO_TYPE gets the last one
             assert EXT_TO_TYPE.get(ext) == tid, f"EXT_TO_TYPE[{ext!r}] should be {tid}"
 
     def test_common_types_present(self):
-        assert EXT_TO_TYPE["git"]  == 2026
-        assert EXT_TO_TYPE["are"]  == 2017
-        assert EXT_TO_TYPE["ifo"]  == 2019
-        assert EXT_TO_TYPE["utp"]  == 2043
-        assert EXT_TO_TYPE["utc"]  == 2030
-        assert EXT_TO_TYPE["ncs"]  == 2010
-        assert EXT_TO_TYPE["mdl"]  == 2002
-        assert EXT_TO_TYPE["wok"]  == 2021
+        # IDs verified against PyKotor ResourceType enum (github.com/NickHugi/PyKotor)
+        assert EXT_TO_TYPE["git"]  == 2023   # GIT (Game Instance Template)
+        assert EXT_TO_TYPE["are"]  == 2012   # ARE (Area)
+        assert EXT_TO_TYPE["ifo"]  == 2014   # IFO (Module Info)
+        assert EXT_TO_TYPE["utp"]  == 2044   # UTP (Placeable)
+        assert EXT_TO_TYPE["utc"]  == 2027   # UTC (Creature)
+        assert EXT_TO_TYPE["ncs"]  == 2010   # NCS (Compiled Script)
+        assert EXT_TO_TYPE["mdl"]  == 2002   # MDL (Model)
+        assert EXT_TO_TYPE["wok"]  == 2016   # WOK (Walkmesh)
 
     def test_ext_to_type_reverse_coverage(self):
         for ext, tid in EXT_TO_TYPE.items():

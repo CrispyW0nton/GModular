@@ -11,15 +11,15 @@ from typing import Optional, List
 log = logging.getLogger(__name__)
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
         QTreeWidget, QTreeWidgetItem, QSplitter, QTextEdit,
         QDialogButtonBox, QProgressBar, QFrame, QFileDialog,
         QMessageBox, QLineEdit, QGroupBox, QFormLayout,
         QAbstractItemView, QHeaderView, QWidget,
     )
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-    from PyQt5.QtGui import QFont, QColor
+    from qtpy.QtCore import Qt, QThread, Signal, QSize
+    from qtpy.QtGui import QFont, QColor
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
@@ -133,7 +133,7 @@ if _HAS_QT:
         """
 
         # Emitted after successful import (summary dict)
-        module_loaded = pyqtSignal(dict)
+        module_loaded = Signal(dict)
 
         def __init__(self, parent=None, mod_path: str = ""):
             super().__init__(parent)

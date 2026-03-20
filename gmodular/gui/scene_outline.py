@@ -17,14 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Optional, Set
 
-from PyQt5.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFrame,
     QMenu, QAction, QMessageBox, QInputDialog, QAbstractItemView,
     QHeaderView, QToolButton, QSizePolicy,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer, QSize
-from PyQt5.QtGui import QFont, QColor, QBrush, QIcon, QPixmap, QPainter, QPen
+from qtpy.QtCore import Qt, Signal, QPoint, QTimer, QSize
+from qtpy.QtGui import QFont, QColor, QBrush, QIcon, QPixmap, QPainter, QPen
 
 from ..formats.gff_types import (
     GITPlaceable, GITCreature, GITDoor, GITTrigger,
@@ -100,9 +100,9 @@ class SceneOutlinePanel(QWidget):
     Emits `request_delete` when user deletes an object.
     """
 
-    object_selected  = pyqtSignal(object)
-    request_delete   = pyqtSignal(object)
-    visibility_changed = pyqtSignal(object, bool)  # (obj, visible)
+    object_selected  = Signal(object)
+    request_delete   = Signal(object)
+    visibility_changed = Signal(object, bool)  # (obj, visible)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -399,8 +399,8 @@ class SceneOutlinePanel(QWidget):
 
     def eventFilter(self, obj, event):
         """Handle Delete and F2 keys on the tree."""
-        from PyQt5.QtCore import QEvent
-        from PyQt5.QtGui import QKeyEvent
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
         if obj is self._tree and event.type() == QEvent.KeyPress:
             key = event.key()
             if key == Qt.Key_Delete:

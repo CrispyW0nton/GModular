@@ -20,12 +20,12 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
 try:
-    from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+    from qtpy.QtCore import QObject, Signal, QTimer
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QObject = object   # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -98,11 +98,11 @@ class GhostScripterBridge(QObject):
     Fetches script list, triggers compiles, and watches for .ncs changes.
     """
 
-    connected     = pyqtSignal(str)           # version
-    disconnected  = pyqtSignal()
-    scripts_updated = pyqtSignal(list)        # List[str] of script names
-    compile_done  = pyqtSignal(bool, str)     # success, message
-    status_update = pyqtSignal(str)
+    connected     = Signal(str)           # version
+    disconnected  = Signal()
+    scripts_updated = Signal(list)        # List[str] of script names
+    compile_done  = Signal(bool, str)     # success, message
+    status_update = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -281,11 +281,11 @@ class GhostRiggerBridge(QObject):
     Fetches model list, pushes rig requests, receives completed models.
     """
 
-    connected     = pyqtSignal(str)
-    disconnected  = pyqtSignal()
-    model_ready   = pyqtSignal(object)   # ModelPayload
-    rig_error     = pyqtSignal(str)
-    status_update = pyqtSignal(str)
+    connected     = Signal(str)
+    disconnected  = Signal()
+    model_ready   = Signal(object)   # ModelPayload
+    rig_error     = Signal(str)
+    status_update = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -426,6 +426,113 @@ class GhostRiggerBridge(QObject):
             pass
         return []
 
+    # ── Animation control ────────────────────────────────────────────────────
+
+    def play_animation(self, model_name: str, anim_name: str,
+                       loop: bool = True, speed: float = 1.0) -> bool:
+        """
+        Ask GhostRigger to play an animation on a specific model.
+
+        PIPELINE_SPEC endpoint:
+          POST /api/animation/play
+          Body: {"model": str, "anim": str, "loop": bool, "speed": float}
+
+        Returns True if GhostRigger acknowledged the request.
+        Falls back gracefully (returns False) when GhostRigger is offline.
+        """
+        if not self._fg:
+            log.debug("GhostRigger not connected — play_animation skipped")
+            return False
+        try:
+            r = self._fg.post(
+                f"http://localhost:{GHOSTRIGGER_PORT}/api/animation/play",
+                json={
+                    "model": model_name,
+                    "anim":  anim_name,
+                    "loop":  loop,
+                    "speed": speed,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            ok = r.status_code == 200
+            if ok:
+                log.info(f"GhostRigger: play '{anim_name}' on '{model_name}'")
+            else:
+                log.debug(f"GhostRigger: play_animation returned {r.status_code}")
+            return ok
+        except Exception as e:
+            log.debug(f"GhostRigger play_animation error: {e}")
+            return False
+
+    def stop_animation(self, model_name: str) -> bool:
+        """
+        Ask GhostRigger to stop all animations on a specific model.
+
+        PIPELINE_SPEC endpoint:
+          POST /api/animation/stop
+          Body: {"model": str}
+        """
+        if not self._fg:
+            return False
+        try:
+            r = self._fg.post(
+                f"http://localhost:{GHOSTRIGGER_PORT}/api/animation/stop",
+                json={"model": model_name},
+                timeout=REQUEST_TIMEOUT,
+            )
+            ok = r.status_code == 200
+            if ok:
+                log.info(f"GhostRigger: stop animation on '{model_name}'")
+            return ok
+        except Exception as e:
+            log.debug(f"GhostRigger stop_animation error: {e}")
+            return False
+
+    def set_animation_speed(self, model_name: str, speed: float) -> bool:
+        """
+        Adjust the playback speed multiplier for a model's current animation.
+
+        PIPELINE_SPEC endpoint:
+          POST /api/animation/speed
+          Body: {"model": str, "speed": float}
+        """
+        if not self._fg:
+            return False
+        try:
+            r = self._fg.post(
+                f"http://localhost:{GHOSTRIGGER_PORT}/api/animation/speed",
+                json={"model": model_name, "speed": max(0.0, speed)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            return r.status_code == 200
+        except Exception as e:
+            log.debug(f"GhostRigger set_animation_speed error: {e}")
+            return False
+
+    def list_animations(self, model_name: str) -> List[str]:
+        """
+        Query GhostRigger for the list of animation names available on a model.
+
+        PIPELINE_SPEC endpoint:
+          GET /api/animation/list?model=<name>
+
+        Returns list of animation name strings (empty on failure / offline).
+        """
+        if not self._fg:
+            return []
+        try:
+            r = self._fg.get(
+                f"http://localhost:{GHOSTRIGGER_PORT}/api/animation/list",
+                params={"model": model_name},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data if isinstance(data, list) else []
+        except Exception as e:
+            log.debug(f"GhostRigger list_animations error: {e}")
+        return []
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  File Watcher (auto-reload scripts/models on external change)
@@ -445,8 +552,8 @@ class ProjectFileWatcher(QObject):
     Emits signals when scripts or models are modified.
     """
 
-    script_changed = pyqtSignal(str)   # path to .ncs
-    model_changed  = pyqtSignal(str)   # path to .mdl
+    script_changed = Signal(str)   # path to .ncs
+    model_changed  = Signal(str)   # path to .mdl
 
     def __init__(self, parent=None):
         super().__init__(parent)

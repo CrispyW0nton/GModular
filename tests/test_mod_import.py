@@ -140,11 +140,11 @@ def mod_file(tmp_path):
 class TestArchiveTypeIDs:
     def test_lyt_type_registered(self):
         assert "lyt" in EXT_TO_TYPE, "lyt extension must have a registered type ID"
-        assert EXT_TO_TYPE["lyt"] == 3006
+        assert EXT_TO_TYPE["lyt"] == 3000  # PyKotor-verified: LYT=3000
 
     def test_vis_type_registered(self):
         assert "vis" in EXT_TO_TYPE, "vis extension must have a registered type ID"
-        assert EXT_TO_TYPE["vis"] == 3007
+        assert EXT_TO_TYPE["vis"] == 3001  # PyKotor-verified: VIS=3001
 
     def test_round_trip_lyt(self):
         assert RES_TYPE_MAP[EXT_TO_TYPE["lyt"]] == "lyt"

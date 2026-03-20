@@ -1,7 +1,11 @@
 # GModular — KotOR Module Editor
 # Python 3.10+ required
 
-# Core GUI
+# Core GUI — Qt compatibility layer
+# qtpy abstracts PyQt5/PyQt6/PySide2/PySide6; install at least one backend.
+# For Qt5 + Python 3.10-3.12 on all platforms, PyQt5 is the recommended backend.
+# To switch to Qt6: pip install PyQt6 and set QT_API=pyqt6 in your environment.
+qtpy>=2.4.0
 PyQt5>=5.15.0
 
 # 3D Viewport — primary backend (requires Microsoft Visual C++ Build Tools on Windows)
@@ -23,3 +27,23 @@ requests>=2.28.0
 # Build tool — generates dist/GModular.exe via build.bat
 # Run: pip install pyinstaller  OR  use build.bat which installs it automatically
 pyinstaller>=5.13.0
+
+# ── MCP server (gmodular.mcp) ─────────────────────────────────────────────
+# Required to run the Model Context Protocol server for AI agent integration.
+# Transport: stdio (Claude Desktop / Cursor) or HTTP/SSE.
+# Usage: python -m gmodular.mcp [--mode stdio|http|sse] [--port 6480]
+mcp>=1.0.0
+
+# ── PyKotor (KotOR format library) ───────────────────────────────────────
+# Core library from the PyKotor monorepo (https://github.com/OldRepublicDevs/PyKotor).
+# The MCP tools delegate all KotOR format I/O to pykotor; GModular's own
+# parsers are reserved for the GUI/engine layer (MDL renderer, walkmesh editor).
+# Install from PyPI or from the monorepo with: pip install -e /path/to/PyKotor/Libraries/PyKotor
+pykotor>=2.3.2
+
+# ── Testing ──────────────────────────────────────────────────────────────
+# pytest-asyncio enables async test functions (asyncio_mode = auto in pytest.ini)
+pytest-asyncio>=0.23.0
+
+# ── Optional: aiohttp (for HTTP/SSE transport) ───────────────────────────
+# aiohttp>=3.9  # uncomment to prefer aiohttp over the stdlib HTTP transport

@@ -3,9 +3,13 @@
 GModular — KotOR Module Editor
 Entry point.
 
+Uses the qtpy compatibility layer; works with PyQt5, PyQt6, PySide2, or PySide6.
+Set QT_API=pyqt6 (or pyside6) before launching to use a different Qt backend.
+
 Usage:
     python main.py
     python main.py --open path/to/module.git
+    QT_API=pyqt6 python main.py          # force Qt 6
 """
 from __future__ import annotations
 import sys
@@ -77,31 +81,42 @@ def main():
         logging.getLogger().handlers[0].setLevel(logging.DEBUG)
 
     log.info("=" * 60)
-    log.info("GModular — KotOR Module Editor  v1.0.0")
+    log.info("GModular — KotOR Module Editor  v2.0.0")
     log.info("=" * 60)
 
-    # Import Qt after argument parsing
+    # Import Qt via qtpy compatibility layer.
+    # qtpy transparently wraps PyQt5, PyQt6, PySide2, or PySide6.
+    # Select backend via QT_API environment variable (default: pyqt5).
     try:
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt, QCoreApplication
-        from PyQt5.QtGui import QFont
+        from qtpy.QtWidgets import QApplication, QMessageBox
+        from qtpy.QtCore import Qt, QCoreApplication, QTimer
+        from qtpy.QtGui import QFont
     except ImportError as e:
-        print(f"FATAL: PyQt5 not available: {e}")
-        print("Install with: pip install PyQt5")
+        print(f"FATAL: Qt bindings not available: {e}")
+        print("Install a Qt backend and qtpy:")
+        print("  pip install qtpy PyQt5        # Qt 5 (recommended)")
+        print("  pip install qtpy PyQt6        # Qt 6")
+        print("  pip install qtpy PySide6      # Qt 6 / PySide")
         sys.exit(1)
 
-    # High-DPI support
-    QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # High-DPI support (Qt5 only — Qt6 enables this automatically)
+    try:
+        QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    except AttributeError:
+        pass  # Qt6: these attributes no longer exist
 
     app = QApplication(sys.argv)
     app.setApplicationName("GModular")
     app.setOrganizationName("GModular")
     app.setOrganizationDomain("github.com/CrispyW0nton")
 
-    # Default font
+    # Default font — falls back gracefully on non-Windows systems
     font = QFont("Segoe UI", 9)
-    font.setHintingPreference(QFont.PreferFullHinting)
+    try:
+        font.setHintingPreference(QFont.PreferFullHinting)
+    except AttributeError:
+        pass  # Qt6 renamed some enum members
     app.setFont(font)
 
     # Import and show main window
@@ -109,12 +124,11 @@ def main():
         from gmodular.gui.main_window import MainWindow
     except Exception as e:
         log.exception(f"Failed to import MainWindow: {e}")
-        from PyQt5.QtWidgets import QMessageBox
         QMessageBox.critical(
             None, "Import Error",
             f"Failed to load GModular GUI:\n\n{e}\n\n"
             "Check that all dependencies are installed:\n"
-            "  pip install PyQt5 moderngl numpy"
+            "  pip install qtpy PyQt5 moderngl numpy"
         )
         sys.exit(1)
 
@@ -132,7 +146,6 @@ def main():
 
     # Deferred open (after event loop starts)
     if args.open:
-        from PyQt5.QtCore import QTimer
         def _open():
             p = Path(args.open)
             if p.exists():
@@ -143,7 +156,6 @@ def main():
         QTimer.singleShot(300, _open)
 
     if args.project:
-        from PyQt5.QtCore import QTimer
         def _open_proj():
             from gmodular.core.module_state import ModuleProject
             proj = ModuleProject.load_meta(args.project)

@@ -40,7 +40,7 @@ The TPC reader provides:
   - TPCReader.read_bytes(data: bytes) -> TPCImage  (parse from in-memory bytes)
   - TPCReader.read_file(path: str) -> TPCImage
   - TPCImage.to_rgba() -> bytes (raw RGBA, row-major, top-to-bottom)
-  - TPCImage.to_qimage() -> QImage (if PyQt5 available)
+  - TPCImage.to_qimage() -> QImage (requires qtpy + Qt backend)
 """
 from __future__ import annotations
 
@@ -129,11 +129,11 @@ class TPCImage:
         return mm.data if mm else b''
 
     def to_qimage(self):
-        """Convert to a PyQt5 QImage (ARGB32) if PyQt5 is available."""
+        """Convert to a QImage (ARGB32) via qtpy; requires a Qt backend to be installed."""
         if not self.is_valid:
             return None
         try:
-            from PyQt5.QtGui import QImage
+            from qtpy.QtGui import QImage
             w, h = self.width, self.height
             rgba = self.rgba_bytes
             if len(rgba) < w * h * 4:
@@ -145,7 +145,7 @@ class TPCImage:
                     o = (y * w + x) * 4
                     r, g, b, a = rgba[o], rgba[o+1], rgba[o+2], rgba[o+3]
                     img.setPixelColor(x, y,
-                        __import__('PyQt5.QtGui', fromlist=['QColor']).QColor(r, g, b, a))
+                        __import__('qtpy.QtGui', fromlist=['QColor']).QColor(r, g, b, a))
             return img
         except Exception as e:
             log.debug(f"TPCImage.to_qimage: {e}")
@@ -530,3 +530,80 @@ def load_texture(resref: str, resource_manager=None) -> Optional[TPCImage]:
             )
 
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  TPC Writer  —  TGA/raw-RGBA → .tpc
+#  Ref: Kotor.NET/Formats/KotorTPC, PyKotor/resource/formats/tpc/io_tpc.py
+# ═══════════════════════════════════════════════════════════════════════════
+
+def write_tpc_from_rgba(
+    rgba_data: bytes,
+    width: int,
+    height: int,
+    txi_text: str = "",
+    *,
+    alpha: bool = True,
+) -> bytes:
+    """Encode raw RGBA (or RGB) pixel data as a KotOR .tpc file (uncompressed).
+
+    TPC header layout (128 bytes):
+      0x00  uint32  data_size   (0 = uncompressed; else = compressed byte count)
+      0x04  float   alpha_test  (0.0 = opaque)
+      0x08  uint16  width
+      0x0A  uint16  height
+      0x0C  uint8   encoding    (1=grey, 2=RGB, 4=RGBA, 2+compressed=DXT1, 4+compressed=DXT5)
+      0x0D  uint8   mipmap_count
+      0x0E  byte[114] padding to 128 bytes
+    Pixel data starts at 0x80, optional TXI text appended after.
+
+    Parameters
+    ----------
+    rgba_data:  Raw pixel bytes (4 bpp if alpha=True, else 3 bpp).
+    width, height: Texture dimensions (powers of two recommended).
+    txi_text:   Optional TXI metadata appended after pixel data.
+    alpha:      True → RGBA encoding=4, False → RGB encoding=2.
+    """
+    import struct
+
+    encoding = 4 if alpha else 2
+    bpp      = 4 if alpha else 3
+    expected = width * height * bpp
+    if len(rgba_data) < expected:
+        raise ValueError(
+            f"write_tpc_from_rgba: need {expected} bytes for {width}x{height} "
+            f"({'RGBA' if alpha else 'RGB'}), got {len(rgba_data)}"
+        )
+
+    header = struct.pack("<IfHHBB",
+        0,          # data_size = 0 (uncompressed)
+        0.0,        # alpha_test
+        width,
+        height,
+        encoding,
+        1,          # mipmap_count = 1
+    )
+    header += b"\x00" * (128 - len(header))   # pad to 128 bytes
+
+    body      = bytes(rgba_data[:expected])
+    txi_bytes = txi_text.encode("ascii", errors="replace") if txi_text else b""
+
+    return header + body + txi_bytes
+
+
+def write_tpc_from_tga(tga_data: bytes, txi_text: str = "") -> bytes:
+    """Convert TGA bytes → KotOR .tpc binary (uncompressed RGBA).
+
+    Supports TGA type 2 (truecolour RGB/RGBA) which covers the vast majority
+    of KotOR texture sources.
+
+    References
+    ----------
+    PyKotor/resource/formats/tpc/tga2tpc.py — same algorithm (TGA→TPC).
+    Kotor.NET/Formats/KotorTPC — binary layout reference.
+    """
+    tga = read_tga(tga_data)
+    if not tga.is_valid:
+        raise ValueError("write_tpc_from_tga: cannot parse source TGA")
+    # read_tga always returns RGBA bytes
+    return write_tpc_from_rgba(tga.rgba, tga.width, tga.height, txi_text=txi_text, alpha=True)

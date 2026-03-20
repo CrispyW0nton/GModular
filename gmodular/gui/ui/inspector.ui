@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>InspectorPanel</class>
+ <widget class="QWidget" name="InspectorPanel">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>280</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Inspector</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget { background:#252526; color:#d4d4d4; }
+QLabel#sectionLabel { color:#4ec9b0; font-weight:bold; font-size:8pt; }
+QLineEdit, QDoubleSpinBox, QComboBox {
+    background:#3c3c3c; border:1px solid #555; border-radius:3px;
+    color:#d4d4d4; padding:2px 4px; font-size:8pt;
+}
+QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color:#007acc; }
+QPushButton {
+    background:#0e639c; color:#fff; border:none; border-radius:3px;
+    padding:4px 10px; font-size:8pt;
+}
+QPushButton:hover { background:#1177bb; }
+QPushButton#editBtn {
+    background:#3a3a3a; border:1px solid #555; color:#d4d4d4;
+    padding:3px 6px;
+}
+QPushButton#editBtn:hover { background:#4a4a4a; }
+QScrollArea { border:none; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <property name="leftMargin">
+    <number>4</number>
+   </property>
+   <property name="topMargin">
+    <number>4</number>
+   </property>
+   <property name="rightMargin">
+    <number>4</number>
+   </property>
+   <property name="bottomMargin">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="titleLabel">
+     <property name="text">
+      <string>Inspector</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">color:#569cd6; font-weight:bold; font-size:9pt; padding:2px;</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="separator">
+     <property name="frameShape">
+      <enum>QFrame::HLine</enum>
+     </property>
+     <property name="frameShadow">
+      <enum>QFrame::Sunken</enum>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">color:#3c3c3c;</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="scrollArea">
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
+     <widget class="QWidget" name="scrollContent">
+      <layout class="QVBoxLayout" name="contentLayout">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <!-- Dynamic content injected by InspectorPanel._populate() -->
+        <spacer name="verticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

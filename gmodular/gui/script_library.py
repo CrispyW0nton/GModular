@@ -15,13 +15,13 @@ Templates are editable and can be copied directly into .nss files.
 from __future__ import annotations
 import logging
 
-from PyQt5.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QSplitter,
     QSizePolicy, QComboBox, QLineEdit, QGroupBox,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
+from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QFont, QColor
 
 log = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ class ScriptLibraryPanel(QWidget):
     Right: editable code preview with Copy button.
     """
 
-    script_copied = pyqtSignal(str)   # emits script name when copied
+    script_copied = Signal(str)   # emits script name when copied
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -453,7 +453,7 @@ class ScriptLibraryPanel(QWidget):
         code = self._code_edit.toPlainText()
         if not code:
             return
-        from PyQt5.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.clipboard().setText(code)
         name = self._name_lbl.text()
         self._copy_btn.setText("Copied!")
@@ -461,7 +461,7 @@ class ScriptLibraryPanel(QWidget):
             "background:#16825d; color:white; font-weight:bold; "
             "padding:4px 12px; border:none;"
         )
-        from PyQt5.QtCore import QTimer
+        from qtpy.QtCore import QTimer
         QTimer.singleShot(1500, self._reset_copy_btn)
         self.script_copied.emit(name)
         log.info(f"Script template copied: {name}")

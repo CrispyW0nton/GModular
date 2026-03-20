@@ -14,21 +14,21 @@ from typing import Optional, List, Dict
 from pathlib import Path
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
         QPushButton, QListWidget, QListWidgetItem, QTabWidget,
         QComboBox, QGroupBox, QScrollArea, QFrame, QSplitter,
         QAbstractItemView, QSizePolicy, QToolTip,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal, QMimeData
-    from PyQt5.QtGui import QFont, QDrag, QColor
+    from qtpy.QtCore import Qt, Signal, QMimeData
+    from qtpy.QtGui import QFont, QDrag, QColor
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
     QWidget = object      # type: ignore[misc,assignment]
     QListWidget = object  # type: ignore[misc,assignment]
     QListWidgetItem = object  # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -136,7 +136,7 @@ class AssetPalette(QWidget):
     """
 
     # Emitted when user wants to place an asset
-    place_asset = pyqtSignal(object)   # AssetItem
+    place_asset = Signal(object)   # AssetItem
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -311,7 +311,7 @@ class AssetPalette(QWidget):
             self._status_lbl.setText(f"Placing: {asset.resref} — click in viewport")
 
     def _add_custom(self):
-        from PyQt5.QtWidgets import QInputDialog
+        from qtpy.QtWidgets import QInputDialog
         resref, ok = QInputDialog.getText(
             self, "Custom ResRef",
             "Enter ResRef to place (max 16 chars):\n"

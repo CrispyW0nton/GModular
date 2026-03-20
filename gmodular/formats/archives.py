@@ -17,66 +17,92 @@ from dataclasses import dataclass, field
 log = logging.getLogger(__name__)
 
 
-# ── Resource Type IDs (Odyssey) ────────────────────────────────────────────
+# ── Resource Type IDs (Odyssey / KotOR 1 & 2) ─────────────────────────────
+# Source: PyKotor ResourceType enum (authoritative game-verified IDs)
+# github.com/NickHugi/PyKotor  Libraries/PyKotor/src/pykotor/resource/type.py
 
 RES_TYPE_MAP: Dict[int, str] = {
+    # ── low IDs ───────────────────────────────────────────────────────────
     1:   "bmp",
     3:   "tga",
     4:   "wav",
     6:   "plt",
     7:   "ini",
+    8:   "bmu",   # obfuscated mp3
     10:  "txt",
+    # ── Odyssey 2000-series (KotOR 1 & 2) ────────────────────────────────
+    2000:"plh",
+    2001:"tex",
     2002:"mdl",
-    2009:"nss",
-    2010:"ncs",
-    2012:"mod",
-    2017:"are",
-    2018:"set",
-    2019:"ifo",
-    2020:"bic",
-    2021:"wok",
-    2022:"2da",
-    2023:"tlk",
-    2025:"txi",
-    2026:"git",
-    2027:"bti",
-    2028:"uti",
-    2029:"btc",
-    2030:"utc",
-    2032:"dlg",
-    2033:"itp",
-    2034:"utt",
-    2035:"dds",
-    2036:"uts",
-    2037:"ltr",
-    2038:"gff",
-    2039:"fac",
-    2040:"ute",
-    2041:"utd",
-    2042:"uto",
-    2043:"utp",
-    2044:"dft",
-    2045:"gic",
-    2046:"gui",
-    2047:"css",
-    2048:"ccs",
-    2049:"uty",
-    2050:"ssf",
-    2051:"hak",
-    2052:"nwm",
-    2053:"bik",
-    2056:"tpc",
-    2057:"mdx",
-    2058:"wlk",
-    2059:"xml",
-    2060:"slt",
-    3000:"ndb",
-    3001:"ptm",
-    3002:"ptt",
-    3006:"lyt",   # KotOR room layout (plain text)
-    3007:"vis",   # KotOR room visibility (plain text)
-    3008:"rev",
-    3009:"res",
+    2003:"thg",
+    2005:"fnt",
+    2007:"lua",
+    2008:"slt",
+    2009:"nss",   # NWScript source                     [canonical: NSS=2009]
+    2010:"ncs",   # NWScript compiled                  [canonical: NCS=2010]
+    2011:"mod",   # module archive (ERF variant)
+    2012:"are",   # area GFF
+    2013:"set",
+    2014:"ifo",   # module info GFF
+    2015:"bic",
+    2016:"wok",   # walkmesh
+    2017:"2da",
+    2018:"tlk",
+    2022:"txi",   # texture info
+    2023:"git",   # game instance template GFF
+    2024:"bti",
+    2025:"uti",   # item template
+    2026:"btc",
+    2027:"utc",   # creature template
+    2029:"dlg",   # dialog GFF
+    2030:"itp",   # item palette
+    2031:"btt",   # base trigger template
+    2032:"utt",   # trigger template
+    2033:"dds",
+    2035:"uts",   # sound template
+    2036:"ltr",   # name generation (letter probability)
+    2037:"gff",   # generic GFF
+    2038:"fac",   # faction GFF
+    2039:"bte",   # base encounter template    [PyKotor: BTE=2039]
+    2040:"ute",   # encounter template          [PyKotor: UTE=2040]
+    2041:"btd",   # base door template          [PyKotor: BTD=2041]
+    2042:"utd",   # door template               [PyKotor: UTD=2042]
+    2043:"btp",   # base placeable template     [PyKotor: BTP=2043]
+    2044:"utp",   # placeable template          [PyKotor: UTP=2044]
+    2045:"dft",   # defaults                    [PyKotor: DFT=2045]
+    2046:"gic",   # game instance comments GFF  [PyKotor: GIC=2046]
+    2047:"gui",   # GUI GFF                     [PyKotor: GUI=2047]
+    2048:"css",   # client side script
+    2049:"ccs",   # client side script compiled
+    2050:"btm",   # base merchant template      [PyKotor: BTM=2050]
+    2051:"utm",   # merchant template           [PyKotor: UTM=2051]
+    2052:"dwk",   # door walkmesh               [PyKotor: DWK=2052]
+    2053:"pwk",   # placeable walkmesh          [PyKotor: PWK=2053]
+    2055:"wlk",   # walkmesh (NWN)
+    2056:"jrl",   # journal GFF                 [PyKotor: JRL=2056]
+    2057:"sav",   # save ERF                    [PyKotor: SAV=2057]
+    2058:"utw",   # waypoint template           [PyKotor: UTW=2058]
+    2059:"4pc",   # 4-bit packed colour texture [PyKotor: FourPC=2059]
+    2060:"ssf",   # soundset                    [PyKotor: SSF=2060]
+    2061:"hak",   # hak module                  [PyKotor: HAK=2061]
+    2062:"nwm",   # NWN module                  [PyKotor: NWM=2062]
+    2063:"bik",   # bink video                  [PyKotor: BIK=2063]
+    2064:"ndb",   # NDB (debug)                 [PyKotor: NDB=2064]
+    2065:"ptm",   # plot manager                [PyKotor: PTM=2065]
+    2066:"ptt",   # plot wizard blueprint       [PyKotor: PTT=2066]
+    # ── KotOR-specific high IDs (verified against canonical resource type list) ─
+    # Canonical: LYT=3000, VIS=3001, RIM=3002, PTH=3003, LIP=3004, TPC=3007, MDX=3008
+    3000:"lyt",   # KotOR room layout (plain text)    [PyKotor: LYT=3000]
+    3001:"vis",   # KotOR room visibility (plain text) [PyKotor: VIS=3001]
+    3002:"rim",   # KotOR module resource image         [canonical: RIM=3002]
+    3003:"pth",   # KotOR area path/waypoints (GFF)     [canonical: PTH=3003]
+    3004:"lip",   # KotOR lip-sync animation            [canonical: LIP=3004]
+    3007:"tpc",   # KotOR TPC texture (binary)         [PyKotor: TPC=3007]
+    3008:"mdx",   # model mesh (binary)                [PyKotor: MDX=3008]
+    # ── container formats ─────────────────────────────────────────────────
+    9997:"erf",   # Encapsulated Resource Format
+    9998:"bif",   # BIF data archive
+    9999:"key",   # KEY index file
 }
 
 EXT_TO_TYPE: Dict[str, int] = {v: k for k, v in RES_TYPE_MAP.items()}
@@ -397,6 +423,166 @@ class ERFReader:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  ERF Writer — build ERF V1.0 archives from in-memory resources
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ERFWriter:
+    """
+    Build a KotOR ERF V1.0 archive from in-memory resources.
+
+    Usage::
+        w = ERFWriter()
+        w.add_resource("manm26ab", "wok", wok_bytes)
+        w.add_resource("manm26ab", "are", are_bytes)
+        erf_bytes = w.to_bytes()
+        Path("module.mod").write_bytes(erf_bytes)
+
+    ERF V1.0 layout (160-byte header):
+      [0]  4 bytes  file_type   (e.g. b"ERF ")
+      [4]  4 bytes  version     (b"V1.0")
+      [8]  uint32   lang_count
+      [12] uint32   lang_size
+      [16] uint32   entry_count
+      [20] uint32   localised_string_offset
+      [24] uint32   key_list_offset
+      [28] uint32   resource_offset
+      [32] uint32   build_year
+      [36] uint32   build_day
+      [40] uint32   description_strref
+      [44] 116 bytes reserved (zeros)
+      [160] key_list:   entry_count × 24 bytes each
+                        ResRef(16) + ResID(4) + ResType(2) + Unused(2)
+      [160+entry_count*24] resource_list: entry_count × 8 bytes each
+                        Offset(4) + Size(4)
+      [data section]  resource data, concatenated
+    """
+
+    _ERF_HEADER_SIZE = 160  # Standard ERF V1.0 header
+
+    def __init__(self, file_type: str = "ERF "):
+        self._file_type = file_type[:4].ljust(4)
+        self._entries: List[Tuple[str, int, bytes]] = []  # (resref, res_type, data)
+
+    def add_resource(self, resref: str, ext: str, data: bytes) -> None:
+        """Add a resource to the archive.
+
+        Args:
+            resref: Resource reference name (≤16 chars, no extension).
+            ext:    File extension / type name (e.g. "wok", "are", "gff").
+            data:   Raw resource bytes.
+        """
+        res_type = EXT_TO_TYPE.get(ext.lower(), 0)
+        clean = resref[:16].lower()
+        self._entries.append((clean, res_type, data))
+
+    def to_bytes(self) -> bytes:
+        """Serialise the archive to a bytes object."""
+        n = len(self._entries)
+        key_list_off = self._ERF_HEADER_SIZE
+        res_list_off = key_list_off + n * 24
+        data_off     = res_list_off + n * 8
+
+        buf = bytearray()
+
+        # ── Header (160 bytes) ────────────────────────────────────────────
+        buf += self._file_type.encode("ascii")[:4]
+        buf += b"V1.0"
+        buf += struct.pack("<IIIIIIIII",
+                           0,              # lang_count
+                           0,              # lang_size
+                           n,              # entry_count
+                           self._ERF_HEADER_SIZE,  # localised_string_offset (no strings)
+                           key_list_off,   # key_list_offset
+                           res_list_off,   # resource_offset
+                           0,              # build_year
+                           0,              # build_day
+                           0xFFFFFFFF,     # description_strref
+                           )
+        buf += b"\x00" * (self._ERF_HEADER_SIZE - len(buf))
+
+        # ── Key list ──────────────────────────────────────────────────────
+        for i, (resref, res_type, _) in enumerate(self._entries):
+            rr = resref.encode("ascii", errors="replace")[:16].ljust(16, b"\x00")
+            buf += rr
+            buf += struct.pack("<I", i)          # res_id
+            buf += struct.pack("<H", res_type)   # res_type
+            buf += b"\x00\x00"                   # unused
+
+        # ── Resource list ─────────────────────────────────────────────────
+        cur_off = data_off
+        for _, _, data in self._entries:
+            buf += struct.pack("<II", cur_off, len(data))
+            cur_off += len(data)
+
+        # ── Resource data ─────────────────────────────────────────────────
+        for _, _, data in self._entries:
+            buf += data
+
+        return bytes(buf)
+
+    def to_file(self, path: str) -> None:
+        """Write the archive to a file."""
+        Path(path).write_bytes(self.to_bytes())
+
+
+class ERFReaderMem:
+    """
+    Read a KotOR ERF V1.0 archive from an in-memory bytes object.
+
+    This is a convenience wrapper around the bytes-based ERF parsing logic,
+    complementary to the file-based ERFReader.
+
+    Usage::
+        reader = ERFReaderMem(erf_bytes)
+        wok_data = reader.get_resource("manm26ab", "wok")
+    """
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self._resources: Dict[str, Tuple[int, int]] = {}  # key → (offset, size)
+        self._load()
+
+    def _load(self) -> None:
+        data = self._data
+        if len(data) < 160:
+            return
+        try:
+            (lang_count, lang_size, entry_count,
+             loc_off, key_off, res_off,
+             build_year, build_day, desc_strref,
+             ) = struct.unpack_from("<9I", data, 8)
+
+            for i in range(entry_count):
+                koff = key_off + i * 24
+                raw_resref = (data[koff:koff + 16]
+                              .rstrip(b"\x00")
+                              .decode("ascii", errors="replace")
+                              .strip().lower())
+                res_type = struct.unpack_from("<H", data, koff + 20)[0]
+
+                roff = res_off + i * 8
+                r_offset, r_size = struct.unpack_from("<II", data, roff)
+
+                ext = RES_TYPE_MAP.get(res_type, "bin")
+                self._resources[f"{raw_resref}.{ext}"] = (r_offset, r_size)
+        except Exception as e:
+            log.debug(f"ERFReaderMem parse error: {e}")
+
+    def get_resource(self, resref: str, ext: str) -> Optional[bytes]:
+        """Return raw bytes for a resource, or None if not found."""
+        key = f"{resref.lower()}.{ext.lower()}"
+        entry = self._resources.get(key)
+        if entry is None:
+            return None
+        offset, size = entry
+        return self._data[offset:offset + size]
+
+    def list_resources(self) -> List[str]:
+        """Return list of 'resref.ext' strings for all resources in the archive."""
+        return list(self._resources.keys())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Unified Resource Manager
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -453,8 +639,8 @@ class ResourceManager:
                 try:
                     with open(p, "rb") as f:
                         return f.read()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log.debug("archives: could not read override file %s: %s", p, exc)
 
         # 2. Open ERF archives
         for er in self._erfs:

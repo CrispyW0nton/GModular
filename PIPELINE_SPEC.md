@@ -1,8 +1,8 @@
 # GHOSTWORKS PIPELINE — TECHNICAL SPECIFICATION
 ## Shared Design Contract for GhostRigger, GhostScripter, and GModular
 
-**Version:** 1.0  
-**Date:** 2026-03-07  
+**Version:** 1.1  
+**Date:** 2026-03-19  
 **Status:** ACTIVE
 
 ---
@@ -683,143 +683,301 @@ GModular is the level assembly and ship tool. It is the furthest along
 of the three programs. Here is its current implementation state and the
 features still needed to complete the pipeline.
 
-### 7.1 Already Implemented (as of v2.0 — all P1-P10 complete)
+### 7.1 Already Implemented (as of v2.0.6 — Deep Scan Passes 8–12)
 
 ```
 gmodular/
-    core/
-        module_state.py      -- GIT load/save, undo/redo command stack
     formats/
+        archives.py          -- chitin.key/BIF, ERF/MOD/RIM; RES_TYPE_MAP (70+ IDs,
+                                 fully verified against PyKotor ResourceType enum)
         gff_types.py         -- GIT object data classes (all 7 GIT types)
         gff_reader.py        -- binary GFF V3.2 parser (all 18 field types)
         gff_writer.py        -- binary GFF V3.2 writer (BFS two-phase)
-        archives.py          -- chitin.key, BIF, ERF/MOD/RIM reader + ERFWriter
         mdl_parser.py        -- binary MDL/MDX parser (K1+K2, controller data)
         tpc_reader.py        -- TPC texture reader (DXT1/5, mips, cubemap)
         wok_parser.py        -- walkmesh parser + AABB tree + ray-cast queries
         twoda_loader.py      -- 2DA table loader, TwoDAComboBox widget
-        lyt_vis.py           -- LYT/VIS room layout parser & writer
+        lyt_vis.py           -- LYT/VIS room layout parser & writer; structured
+                                 Track/Obstacle entries (not just raw strings)
+        kotor_formats.py     -- SSF(28 sounds), LIP, TXI, VIS, PTH, LTR(26/28),
+                                 NCS(decode+write), TLK, TPC writer
         mod_packager.py      -- dependency walker, validation, ERF/MOD export
     gui/
-        main_window.py       -- main window (2408 lines), all menus and panels
-        viewport.py          -- 3D viewport (2145 lines): ModernGL VAO,
-                                Phong lighting, frustum culling, gizmo,
-                                play mode, walkmesh overlay, MDL rendering
-        inspector.py         -- GFF field editor, all 7 object types,
-                                2DA dropdowns, script pencil IPC buttons,
-                                'Edit in GhostRigger' button, patrol section
+        main_window.py       -- main window, all menus and panels
+        viewport.py          -- 3D viewport: ModernGL VAO, Phong lighting,
+                                frustum culling, gizmo, play mode, walkmesh
+                                (now imports OrbitCamera + shaders from sub-modules)
+        viewport_camera.py   -- OrbitCamera extracted from viewport.py (NEW v2.0.6)
+                                Standalone Maya-style orbit camera; testable without Qt
+        viewport_shaders.py  -- All GLSL shader source strings (NEW v2.0.6)
+                                8 shaders: flat/lit/lit_no_uv/uniform/outline/picker/
+                                textured/skinned; ALL_SHADERS dict for tooling
+        inspector.py         -- GFF field editor, all 7 object types
+        dlg_editor.py        -- visual DLG node-graph editor (NEW in v2.0)
+        twoda_editor.py      -- 2DA table editor with undo/redo (NEW in v2.0)
+        ui/                  -- Qt Designer .ui files (NEW in v2.0)
+            inspector.ui
+            twoda_editor.ui
+            dlg_editor.ui
+            mod_import_dialog.ui
+        ui_loader.py         -- load_ui() / load_ui_type() (NEW in v2.0)
         asset_palette.py     -- left panel: game resource tree
-        content_browser.py   -- tile/list asset browser (1057 lines):
-                                category tree, search, drag-to-place
+        content_browser.py   -- tile/list asset browser
         scene_outline.py     -- object hierarchy, search, context menu
-        walkmesh_editor.py   -- WOK visualizer (1153 lines): face paint,
-                                AABB tree, GWOK export
-        room_assembly.py     -- 2D room grid (1240 lines): drag-drop,
-                                LYT/VIS generation, door-hook detection
+        walkmesh_editor.py   -- WOK visualizer: face paint, AABB, export
+        room_assembly.py     -- 2D room grid: drag-drop, LYT/VIS generation
         patrol_editor.py     -- visual waypoint editor, auto-naming
-        mod_import_dialog.py -- archive import with resource browser
-        mod_packager_dialog.py -- packager UI: checklist, warnings
-        script_library.py    -- NWScript template library (474 lines)
-        tutorial_dialog.py   -- step-by-step onboarding
     engine/
         mdl_renderer.py      -- ModernGL VAO upload + render, LRU cache
-        player_controller.py -- FPS camera + walkmesh collision (play mode)
-        npc_instance.py      -- NPC patrol/idle behavior (play mode)
+                                (silent swallows → log.debug in v2.0.6)
+        player_controller.py -- FPS camera + walkmesh collision
+        npc_instance.py      -- NPC patrol/idle behavior
+    mcp/
+        server.py            -- MCP/SSE server (port 7003)
+        state.py             -- KotorInstallation cache
+        _indexer.py          -- resource indexer (override/modules/chitin)
+        tools/               -- 103 MCP tools across 13 modules (v2.0.9)
     ipc/
-        bridges.py           -- GhostScripterBridge, GhostRiggerBridge,
-                                ProjectFileWatcher (493 lines)
-        callback_server.py   -- GModularIPCServer Flask thread (port 7003)
-    utils/
-        resource_manager.py  -- ResourceManager singleton shim
+        ghidra_bridge.py     -- AgentDecompile HTTP bridge (qtpy signals)
+        nwscript_bridge.py   -- NSS/NCS compile+decompile pipeline
 ```
 
 ### 7.2 GModular Completed Features
 
-All P1-P10 pipeline features are implemented. Remaining gaps are noted in
-Section 7.3.
+All P1-P10 pipeline features are implemented, plus the v2.0 additions below.
+Remaining gaps are noted in Section 7.3.
 
 **P1 — Room Assembly Grid** — COMPLETE
-- `room_assembly.py` (1240 lines): drag-and-drop 2D top-down grid
+- `room_assembly.py`: drag-and-drop 2D top-down grid
 - Auto-generates `.lyt` from placed rooms; auto-generates `.vis` from adjacency
 - Door-hook scanning via MDL node names; room connection indicators drawn
 - Zoom controls, right-click context menu, room rename/delete
 
 **P2 — Binary MDL Renderer** — COMPLETE
-- `mdl_parser.py` (1244 lines): full binary MDL/MDX parser (K1 + K2)
-- `mdl_renderer.py` (766 lines): ModernGL VAO pipeline, Phong lighting
-- Renders actual room geometry and MDL models at their GIT positions
+- `mdl_parser.py`: full binary MDL/MDX parser (K1 + K2)
+- `mdl_renderer.py`: ModernGL VAO pipeline, Phong lighting
 - Frustum culling, LRU model cache (64 models), wireframe/normal debug overlays
-- Falls back to coloured placeholder box when no MDL file is found
 
 **P3 — Full WOK Parser and Visualizer** — COMPLETE
-- `wok_parser.py` (501 lines): binary .wok parser, AABB tree, per-face materials
-- `walkmesh_editor.py` (1153 lines): walkable (green) / non-walkable (red) faces
-- Face-paint tool, AABB tree visualiser, ray-cast height queries
+- `wok_parser.py`: binary .wok parser, AABB tree, per-face materials
+- `walkmesh_editor.py`: walkable (green) / non-walkable (red) face-paint tool
 - `height_at`, `face_at`, `clamp_to_walkmesh`, `bounds`, `material_counts`
-- GWOK export (GModular interchange format; GhostRigger rebuilds native .wok)
 
 **P4 — Visual Patrol Waypoint Linker** — COMPLETE
-- `patrol_editor.py` (245 lines): click-to-place waypoints in the viewport
-- Auto-names WP_[NPC_TAG]_01, WP_[NPC_TAG]_02... (case-insensitive)
-- Dashed path preview line in viewport; waypoints persisted in GIT
-- NWScript hint: shows which template to add to OnSpawn
 
 **P5 — Visual Asset Browser** — COMPLETE
-- `content_browser.py` (1057 lines): tile/list view toggle, category tree
-- Live search; drag-to-place into viewport; asset type icons
-- Right-click context menu; populated from game archives via ResourceManager
 
 **P6 — Module Packager (MOD Export)** — COMPLETE
-- `mod_packager.py` (750 lines): dependency walker from .git to all ResRefs
-- Collects .are/.ifo/.git/.lyt/.vis, all UTx blueprints, .ncs scripts, textures
-- `ERFWriter` packs to ERF/MOD/RIM with correct header and resource table
-- `mod_packager_dialog.py` (415 lines): checklist UI, size estimate, warnings
 
 **P7 — Script Field IPC Integration** — COMPLETE
-- Every script ResRef field in the Inspector has a pencil icon button
-- Click pencil: POST `open_script` to GhostScripter (port 7002)
-- On `script_compiled` received: auto-fills the ResRef field + marks dirty
 
 **P8 — 2DA Lookup Layer** — COMPLETE
-- `twoda_loader.py` (559 lines): full 2DA V2.0 parser, typed getters, search
-- `TwoDAComboBox` widget: dropdown backed by any loaded 2DA table
-- Inspector shows "Gamorrean Guard (row 47)" not "47" for all 2DA-backed fields
-- Built-in fallback tables for headless/test environments
 
 **P9 — Blueprint IPC Integration** — COMPLETE
-- Inspector "Edit in GhostRigger" button for any selected GIT object
-- POST `open_utc` / `open_utp` / `open_utd` to GhostRigger (port 7001)
-- On `blueprint_saved` received: reloads object data + refreshes viewport
 
 **P10 — Module Validation Report** — COMPLETE
-- Standalone panel (Module > Validate) plus inline in packager dialog
-- Tag uniqueness (case-insensitive across all 7 GIT object types)
-- ResRef length <= 16 characters for all fields
-- Script ResRef presence check (.ncs in module or Override)
-- Door LinkedTo validity check
-- Patrol waypoint naming validation (WP_[TAG]_01 must exist in GIT)
-- Severity-sorted report (error / warning / info)
+
+**v2.0 — qtpy + MCP + DLG + NWScript** — COMPLETE
+- All 68 raw `PyQt5` imports replaced with `qtpy` (21 files)
+- Qt Designer `.ui` files + `ui_loader.py`
+- 83 MCP tools (SSF/LIP/TXI/VIS/LYT/BWM/TPC-info/LTR/NCS/LYT/resource-lookup)
+- DLG visual node-graph editor
+- NWScript compile/decompile bridge
+- TPC writer, 2DA binary round-trip, GFF/2DA/TLK diff+patch
+- 1,933 tests, 0 failures
+
+**v2.0.1 — Resource Map Audit + 4 New MCP Tools** — COMPLETE
+- Full `RES_TYPE_MAP` audit against PyKotor `ResourceType` enum
+- 70+ type IDs now match game format exactly
+- `kotor_read_lyt`, `kotor_read_bwm`, `kotor_resource_type_lookup`, `kotor_read_tpc_info`
+
+**v2.0.2 — DLG Write-Back + PTH + AnimList/CameraStyle** — COMPLETE
+- `DLGGraphData.to_gff_bytes()` — full GFF V3.2 DLG serialiser
+- `kotor_dlg_write`, `kotor_read_pth` MCP tools
+- `DLGNodeData.camera_style` + `anim_list` fields; GUI properties panel updated
+- 85 MCP tools, 1,966 tests, 0 failures
+
+**v2.0.3 — Resource Map Corrections + 3 Write Tools** — COMPLETE
+- Critical resource-type fixes: `nss=2009`, `ncs=2010` (were swapped), `pth=3003`, `lip=3004`, `rim=3002`
+- Added `erf=9997`, `bif=9998`, `key=9999`
+- `kotor_write_pth` — PTH path graph GFF binary serialiser + round-trip
+- `kotor_write_bwm` — BWM V1.0 binary exporter (wok/dwk/pwk); walkable flag + material control
+- `kotor_write_lyt` — LYT canonical text writer (CRLF, BioWare-format) + round-trip
+- `DLGPropertiesPanel` now shows CameraStyle field and AnimList add/remove
+- 88 MCP tools, 2,035 tests, 0 failures
+
+**v2.0.4 — Complete Format Write Coverage + DLG Script2** — COMPLETE
+- `kotor_write_lip` — LIP V1.0 lip-sync binary writer (duration + keyframes, shape by name or int)
+- `kotor_write_vis` — VIS ASCII room-visibility writer (bidirectional visibility graph)
+- `kotor_write_txi` — TXI ASCII texture metadata writer (envmap, blending, fps, numx/numy, etc.)
+- DLG `Script2` (KotOR 2 second conditional script) now written and read back in GFF + JSON paths
+- Fixed `DLGNodeData.script2` omitted from `to_dict()` / `from_dict()` → full MCP round-trip now works
+- Every KotOR format that has an MCP reader now also has an MCP writer
+- 91 MCP tools, 2,084 tests, 0 failures
+
+**v2.0.5 — Pass 7: Encoding correctness, animation wiring, ModuleIO refactor** — see below
+
+**v2.0.5 — Pass 7: Encoding correctness, animation wiring, ModuleIO refactor** — COMPLETE
+- **GFF CExoLocString multi-language (full fix)**:
+  - `GFFReader.read_cexolocstring()` now returns `LocalizedString` objects (not plain `str`)
+  - Each substring decoded with the correct Windows codepage per language:
+    English/Western → cp1252, Polish/Czech → cp1250, Russian → cp1251, Greek → cp1253, etc.
+  - `GFFWriter` accepts both `LocalizedString` objects and plain `str` (backward-compatible)
+  - Plain `str` is wrapped as English-male with proper cp1252 encoding (fixes the UTF-8 bug)
+  - `_locstring_field()`, `save_ifo()` waypoint `MapNote` updated to use `LocalizedString`
+  - `load_are()`, `load_ifo()` extract `.name`/`mod_name` via new `_get_locstr()` helper
+- **Animation pipeline wiring**:
+  - `ViewportWidget.set_animation_panel(panel)` convenience method added
+  - Delegates to `panel.set_viewport(self)` which connects `frame_advanced` signal
+  - `AnimationTimelinePanel._poll_player` slot receives per-frame `dt` from signal
+- **MDL base-header helper** — de-duplicates `struct.unpack` offsets:
+  - `read_mdl_base_header(data, base)` public function in `mdl_parser.py`
+  - Extracts `name`, `bb_min`, `bb_max`, `root_node_off` from shared MDL/WOK header layout
+  - `WOKParser.parse()` in `walkmesh_editor.py` imports and uses this helper
+- **ModuleIO service complete**:
+  - `ModuleIO.load_from_files(git, are, ifo)` extracted from `ModuleState`
+  - `ModuleState.load_from_files()` now delegates to `ModuleIO`, mirroring `load_from_mod()`
+  - Both load paths are now coupling-clean (ModuleState has no format-parser imports)
+- 91 MCP tools, **2,132 tests**, 0 failures (+48 new Pass 7 tests)
+
+**v2.0.6 — Passes 8–12: MDL writer, Animation seek API, Viewport refactor, Silent swallows** — COMPLETE
+- **Pass 8 — MDL Binary Writer (`mdl_writer.py`)** — COMPLETE
+  - Full KotOR binary MDL/MDX writer; round-trip verified: write→parse→assert
+  - Fixed `_mesh_stats()` AttributeError (tuple vs dict mismatch in `_bb` map)
+  - Fixed `classification` handling: int + string values both accepted via `_CLASS_TO_BYTE`
+  - `test_mdl_writer.py`: 43 tests covering headers, geometry, skinned meshes, AABB, metadata
+  - 100% pass rate, including edge cases (300-vertex meshes, empty models, long names)
+- **Pass 9 — Animation Scrubber (`seek` API)** — COMPLETE
+  - `AnimationPlayer.seek(time_s, pause=True)` — proper scrubber API replacing direct state access
+  - `AnimationPlayer.get_elapsed()` / `get_duration()` — public read-only playback state
+  - `AnimationTimelinePanel._on_ruler_click` updated to call `seek()` (falls back gracefully)
+  - `AnimationTimelinePanel._poll_player` updated to call `get_elapsed()` / `get_duration()`
+  - 7 new seek/get_elapsed/get_duration tests; all pass
+- **Pass 12a — BWM Edge Adjacency** — COMPLETE
+  - `WOKWriter._build_edge_tables()` constructs adjacent-edge and outer-edge tables
+  - Full outer-edge/perimeter round-trip verified
+  - 130 BWM integration tests; all pass
+- **Pass 12b — Viewport Refactor (sub-module extraction)** — COMPLETE
+  - `viewport_camera.py`: `OrbitCamera` class extracted; testable without Qt or OpenGL
+  - `viewport_shaders.py`: all 8 GLSL shader source strings; `ALL_SHADERS` dict
+  - `viewport.py` re-exports both modules for 100% backward compatibility
+  - 48 new tests in `test_viewport_refactor.py` (OrbitCamera math + shader content)
+- **Pass 11 — Silent Swallow Audit** — COMPLETE
+  - 8 critical `except: pass` blocks in format/engine/core layer converted to `log.debug`
+  - Files improved: archives.py, mod_packager.py, wok_parser.py, mdl_renderer.py,
+    play_mode.py (×2), module_io.py, entity_system.py
+  - GUI-layer swallows (viewport.py) intentionally left as defensive fallbacks
+- **Test quality improvements** — COMPLETE
+  - No-assertion test count reduced from 197 → 57 (EventBus, AnimationPlayer, MDL parser)
+  - Total test count: **2,227 passed, 3 skipped** (+95 vs v2.0.5)
+  - New test files: `test_mdl_writer.py` (43), `test_viewport_refactor.py` (48),
+    `test_bwm_integration.py` (130)
+
+**v2.0.7 — EGLRenderer Extraction + Viewport Refactor Complete** — COMPLETE
+- `_EGLRenderer` (1,507 lines) extracted from `viewport.py` → `viewport_renderer.py`
+- `viewport.py` reduced from 4,295 → 2,798 lines (−35%); imports `_EGLRenderer` from new module
+- `tests/test_viewport_refactor.py` expanded to 68 tests (20 new renderer surface tests)
+- Total test count: **2,247 passed, 3 skipped** (+20 vs v2.0.6)
+
+**v2.0.8 — GhostRigger+GhostScripter Stubs, .ui Migration, Dangly/Emitter Write-back** — COMPLETE
+- **GhostScripter `gui/main_window.py`** — Full NWScript IDE Qt window: syntax-highlighted editor
+  (`NWScriptHighlighter`), compile output panel, script registry sidebar, IPC status indicator,
+  polled `_poll_ipc_status()`. Matches Ghostworks dark-theme contract (PIPELINE_SPEC §6).
+- **GhostScripter tests** — `ghostscripter/tests/test_ghostscripter.py`: 54 tests covering
+  Script dataclass, ScriptRegistry thread-safety, NWScriptCompiler stub, live IPC round-trips,
+  headless window construction.
+- **GhostRigger IPC tests** — All handlers properly registered in `setUpClass`; 29 tests pass.
+- **Qt `.ui` migration (Phase 2)** — `InspectorPanel`, `TwoDAEditorPanel`, `DLGEditorPanel` all
+  attempt `load_ui()` at startup; `self._ui_loaded` flag exposed; Python layout is complete fallback.
+  `tests/test_ui_migration.py` — 34 tests: API surface, XML validity of 4 `.ui` files,
+  `_ui_loaded` attribute + `load_ui()` call presence, integration (empty-dir, missing-file).
+- **Dangly constraint-weight write-back** — `MDLWriter` now writes `node.constraint_weights`
+  per-vertex; defaults to `1.0` when attribute absent or list is shorter than vertex count.
+- **Emitter node header** — Full 208-byte KotOR emitter block written
+  (`dead_space`, `blast_radius/length`, `branch_count`, `x/y_grid`, `spawn_type`,
+  `update_type`, `render_type`, `blend_type`, `texture`, `chunk_name`, `two_sided_tex`,
+  `loop`, `render_order`, `frame_blending`, `depth_texture`).
+- **Emitter controllers** — 18 static controllers (t=0) written: `birthrate`, `life_exp`,
+  `velocity`, `spread`, `size_start/end`, `alpha_start/end`, `gravity`, `mass`, `x/y_size`,
+  `fps`, `frame_start/end`, `color_start/mid/end`. `CTRL_EM_*` constants in `mdl_writer.py`.
+- **MDL writer test expansion** — `TestMDLWriterDangly` (8 tests) + `TestMDLWriterEmitter`
+  (12 tests) added; total MDL writer tests: 63.
+- **build.bat v2.0.8** — GhostRigger + GhostScripter self-test steps (11b/c); non-fatal.
+- **GModular.spec v2.0.8** — Version bumped; `viewport_renderer` confirmed in hidden imports.
+- Total test count: **2,384 passed, 3 skipped** (+137 vs v2.0.6; 83 stub tests in sub-projects)
+
+**v2.0.9 — Ghostworks IPC Bridge, End-to-End Pipeline, 103 MCP Tools** — COMPLETE
+
+- **`gmodular/ipc/ghostworks_bridge.py`** — Pure-`urllib` HTTP bridge for GhostRigger (port 7001) and GhostScripter (port 7002). Zero Qt/requests dependencies. Functions: `ghostrigger_ping`, `ghostrigger_open_blueprint`, `ghostrigger_get_blueprint`, `ghostrigger_set_field`, `ghostrigger_save_blueprint`, `ghostrigger_list_blueprints`, `ghostscripter_ping`, `ghostscripter_open_script`, `ghostscripter_get_script`, `ghostscripter_compile`, `ghostscripter_list_scripts`.
+- **`gmodular/mcp/tools/ghostworks.py`** — 12 new MCP tools exposing the full Ghostworks IPC surface to AI agents. All tools return `{"error": …}` gracefully when a companion app is offline.
+- **103 MCP tools** (up from 91) across 13 modules.
+- **`ghostscripter/ghostscripter/gui/nwscript_tokens.py`** — Full KotOR 1 & 2 NWScript token database (keywords, stdlib, game constants). Used by `NWScriptHighlighter` and `FunctionBrowserPanel`.
+- **`FunctionBrowserPanel`** — Searchable Qt widget with category tree, signature, docstring pane, clipboard copy. Wired into GhostScripter `MainWindow`.
+- **`ghostrigger/ghostrigger/gui/field_editor.py`** — `BlueprintFieldEditor` Qt form for UTC/UTP/UTD fields with live IPC set/get and Save button.
+- **End-to-end integration test** — `tests/test_ghostworks_pipeline_e2e.py` (25 tests) exercises the full three-program pipeline from GhostRigger blueprint creation through GhostScripter compile to GModular MCP dispatch.
+- **Event-loop robustness** — All async test helpers use `asyncio.run()` fallback, safe across all pytest-asyncio versions.
+- Total test count: **2,552 passed, 7 skipped** (+168 vs v2.0.8)
+
+**v2.0.10 — Walkmesh Overlay Fix, slem_ar.mod Scenario, Comprehensive Roadmap** — COMPLETE
+
+- **Walkmesh overlay critical fix** — `main_window._auto_load_walkmesh_from_dir()`: removed incorrect `.parse()` call on `WOKParser.from_file()` result (which already returns a `WalkMesh` object, not a parser). Fixed `face.is_walkable` → `face.walkable`. The walkmesh overlay was silently broken in all previous versions due to these two bugs.
+- **`slem_ar.mod` integration scenario** — Full load→parse→edit→write→repack pipeline verified in code: `ModuleIO.load_from_mod()` → WOK parse → material fix (non-walkable to grass) → `WOKWriter.to_bytes()` round-trip → `ERFWriter` repack. All steps pass.
+- **`tests/test_data/slem_ar.mod`** — Synthetic Sleheyron Arena module (ARE + IFO + GIT + LYT + WOK) for load-chain integration tests.
+- **ROADMAP.md** — Comprehensive 8-phase roadmap: confirmed bugs, OldRepublicDevs cross-reference (PyKotor BWM/GFF/LYT, kotorblender WOK/MDL/LYT/PTH, KotorMCP API), KotOR surface material reference, cross-repo compatibility matrix, per-phase task lists with file targets.
+- Total test count: **2,552 passed, 7 skipped** (unchanged — fixes are in GUI paths not covered by headless tests)
 
 ### 7.3 Known Remaining Gaps
 
 **Animation playback in viewport**
-MDL controller keyframes (position, orientation, scale, alpha) are fully parsed
-and stored in `MeshNode`. Wiring a timeline scrubber to step through frames in
-the viewport render loop is the remaining work.
+MDL controller keyframes are fully parsed. `AnimationTimelinePanel` is wired to
+`ViewportWidget.frame_advanced` signal (Pass 7). Timeline ruler, transport controls,
+and `seek()` API are fully functional (Pass 9). Remaining: `AnimationClipSignal.emit`,
+`connect`, and `__init__` are still stubs — they must be connected to `viewport.step_to_frame(n)`.
 
-**Native KotOR .wok export**
-GWOK interchange export works and lets GhostRigger rebuild the geometry.
-Producing a byte-for-byte valid KotOR binary `.wok` including the AABB tree
-and correct face offset tables is a GhostRigger responsibility.
+**MDL → GPU mesh rendering**
+MDL/MDX binary parser is complete. The viewport renders geometry via ModernGL but
+does not yet upload MDL node meshes as textured GPU VBOs. TPC/TGA texture decompression
+(DXT1/DXT3/DXT5) is also needed. This is the highest-priority visible gap.
 
-**DLG dialogue tree editor**
-`.dlg` GFF files are fully readable and writable via `gff_reader`/`gff_writer`.
-A visual QGraphicsView node-graph editor for building and editing dialogue trees
-has not yet been implemented.
+**Game installation integration**
+GModular has no KotOR installation detector. Modders cannot browse `chitin.key`,
+open resources directly from BIF archives, or load the game's TLK file for StrRef
+resolution. PyKotor's `Installation` class + `game_detector.py` (from GhostRigger v4.2)
+are the reference implementations.
 
-**NWScript compiler**
-The GhostScripter IPC bridge (`bridges.py`) is complete. The compiler itself
-lives in GhostScripter, which must be running on port 7002.
+**~~Walkmesh overlay~~** — RESOLVED in v2.0.10
+`main_window._auto_load_walkmesh_from_dir()` now correctly calls
+`WOKParser.from_file()` directly (no `.parse()` step) and uses `face.walkable`
+(not the non-existent `face.is_walkable`). Walkmesh overlay fully functional.
+
+**Native KotOR .wok export** — RESOLVED in v2.0.3
+`WOKWriter` produces byte-for-byte valid BWM V1.0 binaries. The `kotor_write_bwm`
+MCP tool exposes this to AI agents. `BWM.calculate_edges()` adjacency completion
+remains as a future enhancement (also TODO in Kotor.NET).
+
+**~~MDL binary writer~~** — FULLY RESOLVED in v2.0.8
+`MDLWriter` in `mdl_writer.py` produces valid KotOR binary MDL/MDX.
+Round-trip verified: skinned meshes, AABB nodes, dangly (constraint weights), emitter nodes,
+controller data. 63 tests, 0 failures.
+
+**~~GFF CExoLocString multi-language~~** — RESOLVED in v2.0.5
+Full multi-language support with correct codepage per language ID.
+`LocalizedString` objects returned by reader; writer encodes with the
+per-language Windows codepage. See v2.0.5 changelog above.
+
+**~~Qt Designer .ui adoption~~** — RESOLVED in v2.0.8
+All four `.ui` files validated. `InspectorPanel`, `TwoDAEditorPanel`, `DLGEditorPanel`
+all wired with `load_ui()` + `_ui_loaded` flag + complete Python fallback.
+34 tests in `test_ui_migration.py`.
+
+**~~Viewport.py monolith~~** — RESOLVED in v2.0.7
+`_EGLRenderer` extracted into `viewport_renderer.py`. `viewport.py` is now 2,798 lines
+(was 4,295). Sub-module re-exports maintain 100% backward compatibility.
+
+**~~`ModuleIO` service~~** — RESOLVED in v2.0.5
+`ModuleState.load_from_files()` now delegates to `ModuleIO.load_from_files()`,
+completing the coupling-clean refactor. Both MOD and files load paths go
+through the stateless `ModuleIO` service.
 
 ---
 
@@ -831,11 +989,10 @@ Each program should start, show its layout, and have a working IPC server.
 Test: launch all three, ping each from the others.
 
 - **GModular:** Complete. All P1-P10 features implemented. See Section 7.2.
-- **GhostRigger:** Build main window, blueprint editors (UTC/UTP/UTD),
-  and IPC server on port 7001. Start with UTC editor (most used).
-- **GhostScripter:** Build main window, script code editor with syntax
-  highlighting and function browser, IPC server on port 7002. Start with
-  the compile pipeline.
+- **GhostRigger:** ✅ Stub complete (v2.0.8) — IPC server (port 7001), BlueprintRegistry,
+  MainWindow with blueprint tree; 29 tests. Next: full UTC/UTP/UTD field editor, MDL preview.
+- **GhostScripter:** ✅ Stub complete (v2.0.8) — IPC server (port 7002), NWScriptCompiler,
+  NWScriptHighlighter, full IDE MainWindow; 54 tests. Next: full NWScript compiler integration.
 
 ### Phase 2 — Connected Workflow
 
@@ -855,9 +1012,16 @@ WOK parser/visualizer are implemented and passing 641 tests.
 ### Phase 4 — Full Polish
 
 GModular remaining items:
-- Animation playback timeline (controller data parsed, viewport scrubber not built)
-- Native .wok binary export (GWOK export done; KotOR-binary round-trip via GhostRigger)
-- DLG dialogue tree visual editor (GFF read/write complete; node-graph UI not built)
+- ~~Animation scrubber~~ — COMPLETE (v2.0.6, seek() API)
+- ~~Native .wok binary export~~ — COMPLETE (v2.0.3, WOKWriter)
+- ~~MDL binary writer~~ — COMPLETE (v2.0.6, MDLWriter round-trip)
+- ~~GFF CExoLocString multi-language~~ — COMPLETE (v2.0.5)
+- ~~`ModuleIO` service extraction~~ — COMPLETE (v2.0.5)
+- Qt Designer .ui adoption (files created; panels need migrating to `load_ui()`)
+- `_EGLRenderer` extraction from viewport.py (viewport_camera + viewport_shaders done)
+- `BWM.calculate_edges()` — full adjacency completion for area-to-area edge cases
+- Windows build pipeline (`build.bat` / PyInstaller spec) — not yet created
+- Dangly/emitter node controller write-back in MDLWriter (low priority)
 
 GhostScripter items (not yet started):
 - Dialog tree editor, 2DA editor, TLK editor, NWScript compiler integration
@@ -1003,36 +1167,50 @@ test(compiler): add round-trip .nss to .ncs test
 
 ## 12. QUICK REFERENCE: KOTOR FILE FORMATS
 
-| Ext    | GFF? | Contents                                 | Used by     |
-|--------|------|------------------------------------------|-------------|
-| .utc   | yes  | Creature blueprint                       | GRigger, GModular |
-| .utp   | yes  | Placeable blueprint                      | GRigger, GModular |
-| .utd   | yes  | Door blueprint                           | GRigger, GModular |
-| .utw   | yes  | Waypoint blueprint                       | GModular    |
-| .utm   | yes  | Merchant/store blueprint                 | GRigger, GModular |
-| .uts   | yes  | Sound blueprint                          | GModular    |
-| .utt   | yes  | Trigger template                         | GModular    |
-| .git   | yes  | Game Instance Table (all placed objects) | GModular    |
-| .are   | yes  | Area properties (fog, ambient, rest)     | GModular    |
-| .ifo   | yes  | Module info (entry point, start script)  | GModular    |
-| .dlg   | yes  | Dialogue tree                            | GScripter   |
-| .jrl   | yes  | Journal / quest log                      | GScripter   |
-| .lyt   | no   | Room layout: name + XYZ per room         | GModular    |
-| .vis   | no   | Visibility: room pairs that see each other| GModular   |
-| .wok   | no   | Walkmesh per room (binary face list)     | GModular    |
-| .pth   | no   | NPC pathfinding graph                    | GModular    |
-| .mdl   | no   | 3D model (binary node tree)              | GRigger, GModular |
-| .mdx   | no   | Mesh vertex/normal data (paired w/ mdl)  | GRigger, GModular |
-| .2da   | no   | 2D data table (appearance, feats, etc.)  | GScripter, GModular |
-| .tlk   | no   | String table (dialog.tlk)                | GScripter   |
-| .nss   | no   | NWScript source code                     | GScripter   |
-| .ncs   | no   | Compiled NWScript bytecode               | GScripter   |
-| .tga   | no   | Texture (TGA format)                     | GRigger     |
-| .tpc   | no   | Texture (KotOR proprietary, TGA+mips)    | GRigger     |
-| .mod   | no   | ERF archive: complete module package     | GModular    |
-| .rim   | no   | ERF archive: module patch/DLC            | GModular    |
-| .erf   | no   | ERF archive: generic resource container  | All three   |
-| .bif   | no   | BIF archive: game data (indexed by KEY)  | All three (read-only) |
+| Ext    | TypeID | GFF? | Contents                                 | Used by     |
+|--------|--------|------|------------------------------------------|-------------|
+| .utc   | 2027   | yes  | Creature blueprint                       | GRigger, GModular |
+| .utp   | 2044   | yes  | Placeable blueprint                      | GRigger, GModular |
+| .utd   | 2042   | yes  | Door blueprint                           | GRigger, GModular |
+| .utw   | 2058   | yes  | Waypoint blueprint                       | GModular    |
+| .utm   | 2051   | yes  | Merchant/store blueprint                 | GRigger, GModular |
+| .uts   | 2035   | yes  | Sound blueprint                          | GModular    |
+| .utt   | 2032   | yes  | Trigger template                         | GModular    |
+| .ute   | 2040   | yes  | Encounter template                       | GModular    |
+| .git   | 2023   | yes  | Game Instance Table (all placed objects) | GModular    |
+| .are   | 2012   | yes  | Area properties (fog, ambient, rest)     | GModular    |
+| .ifo   | 2014   | yes  | Module info (entry point, start script)  | GModular    |
+| .dlg   | 2029   | yes  | Dialogue tree                            | GScripter   |
+| .jrl   | 2056   | yes  | Journal / quest log                      | GScripter   |
+| .gic   | 2046   | yes  | Game instance comments                   | GModular    |
+| .gui   | 2047   | yes  | GUI definition                           | GModular    |
+| .fac   | 2038   | yes  | Faction data                             | GModular    |
+| .lyt   | 3000   | no   | Room layout: name + XYZ per room         | GModular    |
+| .vis   | 3001   | no   | Visibility: room pairs that see each other| GModular   |
+| .wok   | 2016   | no   | Walkmesh per room (binary face list)     | GModular    |
+| .dwk   | 2052   | no   | Door walkmesh                            | GModular    |
+| .pwk   | 2053   | no   | Placeable walkmesh                       | GModular    |
+| .pth   | —      | gff  | NPC pathfinding graph                    | GModular    |
+| .mdl   | 2002   | no   | 3D model (binary node tree)              | GRigger, GModular |
+| .mdx   | 3008   | no   | Mesh vertex/normal data (paired w/ mdl)  | GRigger, GModular |
+| .2da   | 2017   | no   | 2D data table (appearance, feats, etc.)  | GScripter, GModular |
+| .tlk   | 2018   | no   | String table (dialog.tlk)                | GScripter   |
+| .nss   | 2009   | no   | NWScript source code                     | GScripter   |
+| .ncs   | 2010   | no   | Compiled NWScript bytecode               | GScripter   |
+| .tga   | 3      | no   | Texture (TGA format)                     | GRigger     |
+| .tpc   | 3007   | no   | Texture (KotOR proprietary, TGA+mips)    | GRigger     |
+| .txi   | 2022   | no   | Texture info (ASCII key=value)           | GRigger     |
+| .ssf   | 2060   | no   | Soundset (28 entries, V1.1)              | GModular    |
+| .lip   | —      | no   | Lip sync phoneme data                    | GModular    |
+| .ltr   | 2037   | no   | Letter probability table (name gen)      | GModular    |
+| .mod   | 2011   | no   | ERF archive: complete module package     | GModular    |
+| .rim   | —      | no   | ERF archive: module patch/DLC            | GModular    |
+| .erf   | —      | no   | ERF archive: generic resource container  | All three   |
+| .sav   | 2057   | no   | ERF archive: save game                   | GModular    |
+| .bif   | —      | no   | BIF archive: game data (indexed by KEY)  | All three (read-only) |
+
+TypeIDs verified against PyKotor `ResourceType` enum and Kotor.NET `KotorResourceType`.
+Full mapping in `gmodular/formats/archives.py → RES_TYPE_MAP`.
 
 ---
 

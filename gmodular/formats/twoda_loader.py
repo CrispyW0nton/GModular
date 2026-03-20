@@ -150,6 +150,7 @@ class TwoDATable:
             lines.append("  ".join(cells))
         return "\n".join(lines) + "\n"
 
+    @property
     def row_count(self) -> int:
         return len(self.rows)
 
@@ -365,6 +366,17 @@ class TwoDALoader:
     def loaded_tables(self) -> List[str]:
         return list(self._tables.keys())
 
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "TwoDAData_like":  # type: ignore[return]
+        """Convenience classmethod: parse *data* and return a TwoDAData.
+
+        Delegates to :meth:`TwoDAData.from_bytes
+        <gmodular.formats.kotor_formats.TwoDAData.from_bytes>`.
+        Importable as ``TwoDALoader.from_bytes(data)`` for backwards compat.
+        """
+        from gmodular.formats.kotor_formats import TwoDAData  # local import avoids circular
+        return TwoDAData.from_bytes(data)
+
 
 # ── Global singleton ──────────────────────────────────────────────────────
 
@@ -381,8 +393,8 @@ def get_2da_loader() -> TwoDALoader:
 # ── Qt ComboBox helper ────────────────────────────────────────────────────
 
 try:
-    from PyQt5.QtWidgets import QComboBox
-    from PyQt5.QtGui import QFont
+    from qtpy.QtWidgets import QComboBox
+    from qtpy.QtGui import QFont
 
     class TwoDAComboBox(QComboBox):
         """

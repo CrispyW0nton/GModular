@@ -5,20 +5,27 @@ Displays and edits properties of selected GIT objects.
 P7 — each script ResRef field has a pencil icon button (opens in GhostScripter).
 P9 — "Edit in GhostRigger" button for Creature, Placeable, Door.
 P4 — PatrolPathEditor embedded in creature inspector.
+
+Qt .ui migration (Phase 2):
+  The panel attempts to load inspector.ui at startup via load_ui(); the
+  _ui_loaded flag indicates whether the designer layout is active.  When
+  _ui_loaded is True the designer-defined widgets (titleLabel, scrollArea,
+  etc.) are available as attributes; otherwise the Python layout is built
+  normally as a complete fallback so tests and headless runs are unaffected.
 """
 from __future__ import annotations
 import logging
 from typing import Optional, Any
 
 try:
-    from PyQt5.QtWidgets import (
+    from qtpy.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
         QPushButton, QDoubleSpinBox, QGroupBox, QFormLayout,
         QComboBox, QPlainTextEdit, QScrollArea, QSizePolicy,
         QTabWidget, QFrame, QSpacerItem,
     )
-    from PyQt5.QtCore import Qt, pyqtSignal
-    from PyQt5.QtGui import QFont
+    from qtpy.QtCore import Qt, Signal
+    from qtpy.QtGui import QFont
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
@@ -26,7 +33,7 @@ except ImportError:
     QLineEdit = object     # type: ignore[misc,assignment]
     QDoubleSpinBox = object  # type: ignore[misc,assignment]
     QComboBox = object     # type: ignore[misc,assignment]
-    class pyqtSignal:  # type: ignore[no-redef]
+    class Signal:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs): pass
         def __set_name__(self, owner, name): pass
 
@@ -120,10 +127,10 @@ class InspectorPanel(QWidget):
     P4: PatrolPathEditor section for Creature.
     """
 
-    property_changed     = pyqtSignal(object, str, object, object)  # obj, attr, old, new
-    open_in_rigger       = pyqtSignal(str, str, str)     # P9: resref, ext, module_dir
-    request_patrol_click = pyqtSignal(object)            # P4: creature object
-    patrol_path_changed  = pyqtSignal(object, list)      # P4: creature, [GITWaypoint]
+    property_changed     = Signal(object, str, object, object)  # obj, attr, old, new
+    open_in_rigger       = Signal(str, str, str)     # P9: resref, ext, module_dir
+    request_patrol_click = Signal(object)            # P4: creature object
+    patrol_path_changed  = Signal(object, list)      # P4: creature, [GITWaypoint]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -133,6 +140,15 @@ class InspectorPanel(QWidget):
         self._module_dir: str = ""
         self._building = False       # suppress signals during rebuild
         self._patrol_editor = None   # current PatrolPathEditor if any
+        self._ui_loaded = False      # True when inspector.ui was loaded via load_ui()
+
+        # ── Phase 2: attempt to load Qt Designer layout ───────────────────────
+        if _HAS_QT:
+            try:
+                from .ui_loader import load_ui
+                self._ui_loaded = load_ui("inspector.ui", self)
+            except Exception as _exc:
+                log.debug("inspector.ui not loaded (%s) — using Python layout", _exc)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)

@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TwoDAEditor</class>
+ <widget class="QWidget" name="TwoDAEditor">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>2DA Editor</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget { background:#1e1e1e; color:#d4d4d4; }
+QToolBar { background:#2d2d2d; border-bottom:1px solid #3c3c3c; spacing:4px; padding:2px; }
+QTableView {
+    background:#252526; gridline-color:#3c3c3c;
+    color:#d4d4d4; selection-background-color:#094771;
+    selection-color:#ffffff; border:none;
+    font-family:Consolas,monospace; font-size:9pt;
+}
+QTableView QHeaderView::section {
+    background:#2d2d2d; color:#9cdcfe; border:1px solid #3c3c3c;
+    padding:2px 6px; font-size:8pt;
+}
+QLineEdit#searchBox {
+    background:#3c3c3c; border:1px solid #555; border-radius:3px;
+    color:#d4d4d4; padding:3px 8px; font-size:9pt;
+    min-width:200px;
+}
+QPushButton {
+    background:#0e639c; color:#fff; border:none; border-radius:3px;
+    padding:4px 12px; font-size:8pt;
+}
+QPushButton:hover { background:#1177bb; }
+QPushButton#dangerBtn { background:#a31515; }
+QPushButton#dangerBtn:hover { background:#c01a1a; }
+QStatusBar { background:#007acc; color:#fff; font-size:8pt; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <!-- Toolbar row -->
+    <layout class="QHBoxLayout" name="toolbarLayout">
+     <property name="leftMargin">
+      <number>6</number>
+     </property>
+     <property name="topMargin">
+      <number>4</number>
+     </property>
+     <property name="rightMargin">
+      <number>6</number>
+     </property>
+     <property name="bottomMargin">
+      <number>4</number>
+     </property>
+     <property name="spacing">
+      <number>6</number>
+     </property>
+     <item>
+      <widget class="QPushButton" name="btnLoadFile">
+       <property name="text">
+        <string>Open…</string>
+       </property>
+       <property name="toolTip">
+        <string>Open a .2da file from disk</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnSaveFile">
+       <property name="text">
+        <string>Save…</string>
+       </property>
+       <property name="toolTip">
+        <string>Save the current 2DA to disk</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnAddRow">
+       <property name="text">
+        <string>+ Row</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnAddCol">
+       <property name="text">
+        <string>+ Column</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnDelRow">
+       <property name="objectName">
+        <string>dangerBtn</string>
+       </property>
+       <property name="text">
+        <string>− Row</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="toolbarSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="searchLabel">
+       <property name="text">
+        <string>Search:</string>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">color:#9cdcfe; font-size:8pt;</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="searchBox">
+       <property name="placeholderText">
+        <string>Filter rows…</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <!-- Main table -->
+    <widget class="QTableView" name="tableView">
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::ExtendedSelection</enum>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectItems</enum>
+     </property>
+     <property name="showGrid">
+      <bool>true</bool>
+     </property>
+     <property name="sortingEnabled">
+      <bool>true</bool>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QTableView { alternate-background-color:#2a2a2a; }</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <!-- Status bar row -->
+    <layout class="QHBoxLayout" name="statusLayout">
+     <property name="leftMargin">
+      <number>6</number>
+     </property>
+     <property name="topMargin">
+      <number>2</number>
+     </property>
+     <property name="rightMargin">
+      <number>6</number>
+     </property>
+     <property name="bottomMargin">
+      <number>2</number>
+     </property>
+     <item>
+      <widget class="QLabel" name="statusLabel">
+       <property name="text">
+        <string>No file loaded</string>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">color:#858585; font-size:8pt;</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="statusSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="rowColLabel">
+       <property name="text">
+        <string>0 rows × 0 cols</string>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">color:#9cdcfe; font-size:8pt;</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

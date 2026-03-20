@@ -346,6 +346,11 @@ class PackagerResult:
     def warnings(self) -> List[ValidationIssue]:
         return [i for i in self.issues if i.severity == WARNING]
 
+    @property
+    def resource_count(self) -> int:
+        """Alias for resources_packed — convenience property."""
+        return self.resources_packed
+
     def summary(self) -> str:
         lines = [
             f"{'OK' if self.success else 'FAILED'}: {self.output_path}",
@@ -745,6 +750,6 @@ class ModPackager:
                 for f in directory.iterdir():
                     if f.name.lower() == target_lower:
                         return f.read_bytes()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("mod_packager: iterdir failed for %s: %s", directory, exc)
         return None

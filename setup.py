@@ -13,6 +13,9 @@ setup(
     python_requires=">=3.8",
     packages=find_packages(),
     install_requires=[
+        # Qt compatibility layer — works with PyQt5, PyQt6, PySide2 or PySide6.
+        # Install at least one Qt backend (e.g. PyQt5>=5.15) alongside qtpy.
+        "qtpy>=2.4.0",
         "PyQt5>=5.15.0",
         "moderngl>=5.8.0",
         "numpy>=1.21.0",
