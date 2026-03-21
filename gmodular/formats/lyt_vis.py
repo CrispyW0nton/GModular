@@ -295,7 +295,7 @@ class LYTParser:
             raw = lines[i].strip()
             i += 1
 
-            # Skip blank lines and comments
+            # Skip blank lines, comments, and layout bookmarks
             if not raw or raw.startswith('#'):
                 continue
 
@@ -304,6 +304,34 @@ class LYTParser:
                 continue
 
             keyword = parts[0]
+
+            # ── beginlayout / donelayout bookmarks (GModular / KotOR canonical) ──
+            if keyword in ('beginlayout', 'donelayout'):
+                continue
+
+            # ── room <N> <resref> <x> <y> <z>  (GModular extended format) ────
+            # Some writers emit "room 0 slem_ar 0.0 0.0 0.0" rather than the
+            # bare "slem_ar 0.0 0.0 0.0" that the classic KotOR parser expects.
+            if keyword == 'room':
+                # parts: ['room', '<N>', '<resref>', '<x>', '<y>', '<z>']
+                #     or: ['room', '<resref>', '<x>', '<y>', '<z>'] (no index)
+                try:
+                    if len(parts) >= 6:
+                        # Has index: room <N> <resref> <x> <y> <z>
+                        _idx   = parts[1]  # ignored
+                        resref = parts[2].lower()
+                        x, y, z = float(parts[3]), float(parts[4]), float(parts[5])
+                    elif len(parts) >= 5:
+                        # No index: room <resref> <x> <y> <z>
+                        resref = parts[1].lower()
+                        x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                    else:
+                        log.debug(f"LYT: malformed 'room' line: {raw!r}")
+                        continue
+                    layout.rooms.append(RoomPlacement(resref=resref, x=x, y=y, z=z))
+                except (ValueError, IndexError) as e:
+                    log.debug(f"LYT: room parse error {raw!r}: {e}")
+                continue
 
             # ── roomcount <N> ────────────────────────────────────────────────
             if keyword == 'roomcount':
@@ -314,9 +342,33 @@ class LYTParser:
                     row = lines[i].strip(); i += 1
                     if not row or row.startswith('#'):
                         continue
-                    rp = LYTParser._parse_room_line(row)
-                    if rp:
-                        layout.rooms.append(rp)
+                    # Skip GModular "room N resref x y z" lines — they are
+                    # handled by the 'room' keyword branch above on the NEXT
+                    # iteration; just peek and use the right parser.
+                    row_parts = row.lower().split()
+                    if row_parts and row_parts[0] == 'room':
+                        # "room N resref x y z" — parse inline
+                        try:
+                            if len(row_parts) >= 6:
+                                resref = row_parts[2].lower()
+                                x = float(row_parts[3])
+                                y = float(row_parts[4])
+                                z = float(row_parts[5])
+                            elif len(row_parts) >= 5:
+                                resref = row_parts[1].lower()
+                                x = float(row_parts[2])
+                                y = float(row_parts[3])
+                                z = float(row_parts[4])
+                            else:
+                                continue
+                            layout.rooms.append(
+                                RoomPlacement(resref=resref, x=x, y=y, z=z))
+                        except (ValueError, IndexError) as e:
+                            log.debug(f"LYT: room parse error {row!r}: {e}")
+                    else:
+                        rp = LYTParser._parse_room_line(row)
+                        if rp:
+                            layout.rooms.append(rp)
 
             # ── doorhookcount <N> ─────────────────────────────────────────────
             elif keyword == 'doorhookcount':

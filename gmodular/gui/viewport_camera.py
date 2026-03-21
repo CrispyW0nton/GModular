@@ -27,13 +27,25 @@ except ImportError:
 
 def _perspective(fov_deg: float, aspect: float,
                  near: float, far: float) -> "np.ndarray":
-    """Standard perspective projection matrix (column-major, row-major stored)."""
+    """Standard perspective projection matrix in row-major (Python/numpy) convention.
+
+    This matrix is used with row-major numpy math:
+        clip = proj @ view @ pos_homogeneous
+
+    The w-clip component is produced by row 3:  w_clip = -z_eye  (i.e. [3][2] = -1)
+    The z-clip component is produced by row 2:  z_clip = A*z_eye + B
+        where A = (far+near)/(near-far), B = 2*far*near/(near-far)
+
+    When writing to a GLSL uniform the matrix must be transposed so that the
+    column-major GLSL mat4 multiplication gives the same result:
+        prog["mvp"].write(mvp.T.astype("f4").tobytes())
+    """
     f = 1.0 / math.tan(math.radians(fov_deg) * 0.5)
     return np.array([
-        [f / aspect, 0,  0,                              0],
-        [0,          f,  0,                              0],
-        [0,          0, (far + near) / (near - far),    -1],
-        [0,          0, (2 * far * near) / (near - far), 0],
+        [f / aspect, 0,  0,                               0],
+        [0,          f,  0,                               0],
+        [0,          0, (far + near) / (near - far),     (2 * far * near) / (near - far)],
+        [0,          0, -1,                               0],
     ], dtype='f4')
 
 

@@ -122,6 +122,8 @@ class _EGLRenderer:
         self._prog_pick      = None   # alias for pick tests (points to _prog_picker)
         self._fbo = None         # current FBO
         self._fbo_size = (0, 0)  # (W, H) of current FBO
+        self._depth_rbo = None   # depth renderbuffer attached to _fbo
+        self._color_rbo = None   # color renderbuffer attached to _fbo
         self._pick_fbo = None    # separate FBO for picker pass
         self._pick_fbo_size = (0, 0)
         self._grid_vao   = None
@@ -301,24 +303,50 @@ class _EGLRenderer:
             return False
 
     def ensure_fbo(self, W: int, H: int):
-        """Resize FBO (and pick FBO) if dimensions changed."""
+        """Resize FBO (and pick FBO) if dimensions changed.
+
+        Uses a proper RGBA8 + D24 framebuffer so that DEPTH_TEST works
+        correctly during headless (EGL) rendering.  simple_framebuffer()
+        creates a colour-only FBO, which silently disables depth testing
+        and makes every face render as the same flat colour.
+        """
         if not self.ctx:
             return
         W, H = max(W, 1), max(H, 1)
         if (W, H) == self._fbo_size:
             return
-        if self._fbo:
-            try:
-                self._fbo.release()
-            except Exception:
-                pass
-        if self._pick_fbo:
-            try:
-                self._pick_fbo.release()
-            except Exception:
-                pass
-        self._fbo = self.ctx.simple_framebuffer((W, H), components=4)
-        # Pick FBO uses same size; RGBA8 is enough to encode 24-bit entity IDs
+
+        # Release old FBO and its backing renderbuffers
+        for attr in ('_fbo', '_pick_fbo'):
+            obj = getattr(self, attr, None)
+            if obj:
+                try: obj.release()
+                except Exception: pass
+        for attr in ('_depth_rbo', '_color_rbo'):
+            obj = getattr(self, attr, None)
+            if obj:
+                try: obj.release()
+                except Exception: pass
+        self._depth_rbo = None
+        self._color_rbo = None
+
+        # Build a proper FBO with colour + depth renderbuffers
+        try:
+            color_rbo = self.ctx.renderbuffer((W, H), components=4)
+            depth_rbo = self.ctx.depth_renderbuffer((W, H))
+            self._fbo = self.ctx.framebuffer(
+                color_attachments=[color_rbo],
+                depth_attachment=depth_rbo,
+            )
+            self._color_rbo = color_rbo
+            self._depth_rbo = depth_rbo
+        except Exception as exc:
+            # Fallback: colour-only (depth test won't work but at least renders)
+            log.warning("ensure_fbo: depth renderbuffer failed (%s) — "
+                        "falling back to colour-only FBO", exc)
+            self._fbo = self.ctx.simple_framebuffer((W, H), components=4)
+
+        # Pick FBO uses same size; colour-only is fine (depth not needed)
         try:
             self._pick_fbo = self.ctx.simple_framebuffer((W, H), components=4)
         except Exception:
@@ -980,8 +1008,12 @@ class _EGLRenderer:
             mdx_path = _resolve_mdx(mdl_path)
 
             # ── Load real MDL geometry ────────────────────────────────────
+            # Note: _HAS_MDL is injected by viewport.py; when this module is
+            # used directly (e.g. headless rendering) it may not be set.
+            # We use a try/except import guard instead so the MDL path is
+            # always attempted if the file exists on disk.
             loaded_mesh_count = 0
-            if mdl_path and _HAS_MDL:
+            if mdl_path:
                 try:
                     from ..formats.mdl_parser import MDLParser, get_model_cache
                     cache = get_model_cache()
@@ -1595,6 +1627,10 @@ class _EGLRenderer:
         try: self._fbo.release()
         except Exception: pass
         try: self._pick_fbo.release()
+        except Exception: pass
+        try: self._depth_rbo.release()
+        except Exception: pass
+        try: self._color_rbo.release()
         except Exception: pass
         try: self.ctx.release()
         except Exception: pass

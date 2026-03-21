@@ -133,6 +133,8 @@ and also adds `typing_extensions` to Step 6.
 | 1.7 | Add `ERFReaderMem.list_resources()` docstring clarifying string format | `archives.py` | 🟡 MEDIUM |
 | 1.8 | Wire animation scrubber to viewport keyframe stepping | `animation_panel.py`, `viewport.py` | 🔴 HIGH |
 | 1.9 | Fix `AnimationClipSignal` stubs (`emit`, `connect`, `__init__`) | `animation_panel.py` | 🔴 HIGH |
+| 1.10 | **Fix specular view_dir bug**: add `camera_pos` uniform to `_VERT_LIT`, `_VERT_LIT_NO_UV`, `_VERT_TEXTURED`; change `normalize(-v_world_pos)` → `normalize(camera_pos - v_world_pos)` | `viewport_shaders.py`, `viewport_renderer.py` | 🔴 HIGH *(McKesson §9)* |
+| 1.11 | Write `camera_pos` uniform in `render()` before each lit-shader draw call | `viewport_renderer.py` | 🔴 HIGH *(McKesson §9)* |
 
 ### Phase 2 — Walkmesh Editor Completion (v2.1.x)
 *Target: A modder can visually edit walkmesh face materials, fix broken faces, and export a game-ready .wok.*
@@ -147,6 +149,8 @@ and also adds `typing_extensions` to Step 6.
 | 2.6 | **Fix non-walkable island detection** | Auto-detect faces isolated from walkable regions |
 | 2.7 | **One-click repack to .mod** | After WOK edit → pack back into original .mod in-place |
 | 2.8 | **Material legend panel** | Show all KotOR surface materials with colors + walkable flag |
+| 2.9 | **Möller-Trumbore ray-triangle hit for face clicking** | Screen-ray → walkmesh triangles; required for item 2.1. Algorithm: Ericson §5.3.6 | *(Ericson §5.3.6)* |
+| 2.10 | **Room Assembly 2D AABB overlap detection** | When dragging room in grid, show red highlight if overlapping another room | *(Millington2 §18)* |
 
 **KotOR Surface Material Reference** (from PyKotor `SurfaceMaterial`, kotorblender, BWM spec):
 ```
@@ -181,6 +185,13 @@ and also adds `typing_extensions` to Step 6.
 | 3.5 | **Walkmesh overlay on 3D geometry** | Render WOK triangles above MDL floor with material colors |
 | 3.6 | **Room connection vertex painting** | Show/edit vertex color (0, G, 0) for room transitions |
 | 3.7 | **Minimap generation** | Top-down orthographic render → `lbl_mapXXXX.tga` (port from KotorBlender) |
+| 3.8 | **Frustum culling** | Extract 6 planes from MVP (Lengyel §8 formula); test each room AABB per frame before submitting draw call. Eliminates wasted GPU time on off-screen rooms *(Lengyel §8, Ericson §4, Eberly §3)* |
+| 3.9 | **Portal culling from .vis** | Load `.vis` file; traverse portal graph from camera's current room; only render reachable rooms. Matches KotOR's actual renderer *(Eberly §7, Ericson §7.6, Lengyel2 §5)* |
+| 3.10 | **Precompute normal matrix as `uniform mat3`** | Move `transpose(inverse(mat3(model)))` from GPU fragment → CPU at VAO build time. Room models are pure translations so `normal_matrix=I` always — skip computation entirely *(Lengyel §4, Varcholik §6)* |
+| 3.11 | **Add `camera_pos` to Phong shaders** | Correct specular view direction: `normalize(camera_pos - v_world_pos)` instead of `normalize(-v_world_pos)` *(McKesson §9)* |
+| 3.12 | **sRGB gamma correction** | Linearize TPC textures on sample (`pow(albedo, 2.2)`); gamma-encode output (`pow(result, 1/2.2)`). KotOR textures are sRGB-encoded *(McKesson §12)* |
+| 3.13 | **Shadow mapping** | Two-FBO approach: render from light's POV into depth texture; sample with PCF in main pass *(Varcholik §14)* |
+| 3.14 | **TBN tangent space for MDL bump maps** | Add `in_tangent` + `in_bitangent` to `_VERT_TEXTURED`; TBN matrix for `BUMP` node type *(Lengyel §7.8, Varcholik §8-9)* |
 
 **Technical references:**
 - MDL format: `gmodular/formats/mdl_parser.py` (1,819 lines, fully implemented)
@@ -198,6 +209,9 @@ and also adds `typing_extensions` to Step 6.
 | 4.3 | **Hermite/Bezier interpolation** | KotOR uses bezier-hermite splines for position/orientation controllers |
 | 4.4 | **Skinned mesh deformation** | `SKIN` node type: bone weights per vertex → GPU skinning shader |
 | 4.5 | **Animation list panel** | Dropdown showing all named animations in MDL (idle, walk, attack, etc.) |
+| 4.6 | **RK4 integration for spline evaluation** | Replace Euler integration with RK4 for Bezier-Hermite controller step — avoids keyframe snapping *(Millington §16, McKesson §10)* |
+| 4.7 | **Danglymesh damped spring** | Per-vertex damped spring with displacement constraint: `f = -k*x - b*v`; Euler step per frame. Models tree/hair oscillation *(Millington §5-7)* |
+| 4.8 | **Dual quaternion skinning** | Replace linear blend skinning (causes candy-wrapper artefacts at joints) with DQS *(Lengyel2 §6)* |
 
 ### Phase 5 — Game Installation Integration (v2.3.x)
 *Target: Modder can load resources directly from their KotOR installation.*
@@ -216,6 +230,20 @@ and also adds `typing_extensions` to Step 6.
 - PyKotor `Installation` class: handles all resource resolution, BIF decompression, override priority
 - KotorMCP `listResources` / `describeResource`: shows expected API surface
 - GhostRigger `game_detector.py` (v4.2, 2026-03-19): cross-platform installation detection
+
+### Phase 5b — Renderer Performance (v2.3.x)
+*Target: Viewport stays fast for large multi-room modules (20+ rooms, 100+ GIT objects).*
+*All items from textbook study — see TEXTBOOK_STUDY_REPORT.md.*
+
+| # | Task | Notes |
+|---|------|-------|
+| 5b.1 | **Uniform Buffer Objects (UBOs)** | Move per-frame matrices + light data into a `std140` UBO block. Reduces N×5 uniform API calls to 1 bind per frame *(Lengyel2 §1)* |
+| 5b.2 | **Instance batching for GIT objects** | When the same creature/placeable MDL appears N times, use `DrawInstanced` with per-instance transform buffer *(Varcholik §15)* |
+| 5b.3 | **LOD for distant rooms** | Rooms >50 units from camera use simplified index buffer (every other triangle). Eberly LOD node pattern *(Eberly §4)* |
+| 5b.4 | **FXAA post-process pass** | Screen-space edge detection → anti-aliased output. One additional full-screen quad render *(Lengyel2 §7)* |
+| 5b.5 | **Reverse-Z depth buffer** | For large outdoor modules (Dantooine, Kashyyyk): `near → 1.0, far → 0.0`, `glDepthFunc = GREATER`. Eliminates Z-fighting at distance *(McKesson §5)* |
+| 5b.6 | **Cull-before-draw pass split in `render()`** | Separate `_cull_rooms()` → `_draw_rooms()` passes. Cull pass populates `_visible_rooms` list; draw pass iterates that list *(Eberly §3)* |
+| 5b.7 | **Spatial coherence cache** | Cache `_last_camera_room` for walkmesh queries; only re-query AABB tree when camera moves >0.5 units *(Ericson §6.7)* |
 
 ### Phase 6 — Module Authoring Pipeline (v2.4.x)
 *Target: Create a new module from scratch inside GModular.*
@@ -299,31 +327,40 @@ and also adds `typing_extensions` to Step 6.
 
 | Version | Description | Test Target |
 |---------|-------------|-------------|
-| **v2.0.10** | Current (build.bat qtpy fix, walkmesh overlay fix, slem_ar scenario 11/12) | 2,378 ✅ |
-| **v2.1.0** | Bug fix sprint (save_are, GFF API, animation stubs) | ~2,450 |
-| **v2.1.x** | Walkmesh editor completion (visual paint, merge, one-click repack) | ~2,600 |
-| **v2.2.x** | MDL viewer + animation playback | ~2,800 |
-| **v2.3.x** | Game installation integration | ~3,000 |
-| **v2.4.x** | Module authoring pipeline | ~3,200 |
-| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,400 |
-| **v3.0.0** | Binary release + community launch | ~3,500 |
+| **v2.0.13** | Current (projection matrix fix, depth FBO, LYT parser, render tests) | 2,563 ✅ |
+| **v2.1.0** | Bug fix sprint (save_are, GFF API, animation stubs, **specular camera_pos fix**) | ~2,600 |
+| **v2.1.x** | Walkmesh editor completion (visual paint, Möller-Trumbore face click, merge, one-click repack) | ~2,750 |
+| **v2.2.x** | MDL viewer + animation playback + frustum/portal culling | ~3,000 |
+| **v2.3.x** | Game installation integration + renderer performance (UBOs, instancing, FXAA) | ~3,200 |
+| **v2.4.x** | Module authoring pipeline | ~3,400 |
+| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,600 |
+| **v3.0.0** | Binary release + community launch | ~3,800 |
 
 ---
 
 ## Priority Order for Next Session
 
-1. 🔴 **`save_are()` missing**: Can't write modified area properties back to GFF — add to `gff_writer.py`
-2. 🔴 **v2.1.0 bugs**: GFF `set_field()` overload, LYT room offset, animation stubs → fix and test
-3. 🔴 **MDL → GPU mesh**: The #1 thing missing from "working modding tool" is seeing the actual model
-4. 🔴 **Game install detection**: Modder needs to load real game files, not just their own .mod
-5. 🟠 **TPC texture loader**: Can't render models without textures
-6. 🟠 **Face-click walkmesh editing**: The walkmesh editor needs to be interactive in the viewport
-7. 🟡 **One-click .exe build**: Binary release is required for community adoption
+1. 🔴 **Fix specular `view_dir` bug** (McKesson §9): `normalize(-v_world_pos)` → `normalize(camera_pos - v_world_pos)` in all lit shaders. Small change, correct rendering.
+2. 🔴 **`save_are()` missing**: Can't write modified area properties back to GFF — add to `gff_writer.py`
+3. 🔴 **Möller-Trumbore ray hit** (Ericson §5.3.6): Foundation for walkmesh face clicking — ~30 lines Python, unblocks Phase 2.1
+4. 🔴 **v2.1.0 bugs**: GFF `set_field()` overload, LYT room offset, animation stubs → fix and test
+5. 🔴 **Frustum culling** (Lengyel §8 + Ericson §4): Extract planes from MVP, test room AABBs. Prevents performance collapse on large modules.
+6. 🔴 **MDL → GPU mesh**: The #1 thing missing from "working modding tool" is seeing the actual model
+7. 🟠 **Portal culling from .vis** (Eberly §7, Ericson §7.6): Load `.vis` and implement portal graph traversal — matches KotOR's own renderer
+8. 🟠 **Game install detection**: Modder needs to load real game files, not just their own .mod
+9. 🟠 **Precompute normal matrix** (Lengyel §4): Move `transpose(inverse(...))` GPU → CPU. Simple win.
+10. 🟠 **TPC texture loader**: Can't render models without textures
+11. 🟡 **One-click .exe build**: Binary release is required for community adoption
 
 ---
 
-*Generated from: full source audit of GModular v2.0.10, slem_ar.mod scenario testing (11/12 PASS),*
+*Updated 2026-03-21. Incorporates findings from eight foundational 3D engine textbooks:*
+*Eberly (3D Game Engine Design 2e), Varcholik (RT3D Rendering DirectX+HLSL), Ericson (RT Collision Detection),*
+*McKesson (Learning Modern 3D Graphics), Lengyel (Math for 3D Game Programming 3e),*
+*Lengyel (Foundations of GED Vol.2 Rendering), Millington (Game Physics Engine Development 2e).*
+*Full report: TEXTBOOK_STUDY_REPORT.md*
+
+*Generated from: full source audit of GModular v2.0.13, slem_ar.mod scenario testing (12/12 via EGL render),*
 *OldRepublicDevs/PyKotor BWM/GFF/LYT source review, OldRepublicDevs/kotorblender MDL/WOK reference,*
 *OldRepublicDevs/KotorMCP API patterns, CrispyW0nton/GhostRigger v4.2 game_detector review,*
 *CrispyW0nton/GhostScripter-K1-K2 v3.4.1 tool inventory.*
-*Key fix: build.bat now installs qtpy (critical missing dependency — was causing ModuleNotFoundError on launch).*

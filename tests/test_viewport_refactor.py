@@ -424,5 +424,299 @@ class TestViewportLineCount(unittest.TestCase):
         assert rend > 1000, f"viewport_renderer.py seems too small: {rend} lines"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Projection matrix convention tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestProjectionMatrixConvention(unittest.TestCase):
+    """
+    Verify the _perspective() helper produces a correct row-major projection
+    matrix where:
+      - w_clip = -z_eye   (proj[3][2] == -1)
+      - z_clip = A*z_eye + B  with B = 2fn/(n-f)  (proj[2][3] ≈ -2fn/(f-n))
+      - f/aspect in [0][0], f in [1][1]
+
+    With the row-major convention, computing clip = proj @ view @ pos
+    and then writing mvp.T.tobytes() to a GLSL mat4 uniform causes the
+    shader to compute the equivalent column-major multiplication.
+
+    The previous bug had proj[2][3] = -1 and proj[3][2] = 2fn/(n-f),
+    which is the COLUMN-major (OpenGL) layout.  When used as a row-major
+    matrix the w_clip component became ≈0.044 instead of 22, mapping all
+    geometry to NDC values > 400 (invisible).
+    """
+
+    def setUp(self):
+        from gmodular.gui.viewport_camera import OrbitCamera, _perspective
+        self.OrbitCamera  = OrbitCamera
+        self._perspective = _perspective
+
+    # ── Matrix layout checks ─────────────────────────────────────────────────
+
+    def test_w_clip_row_is_row3(self):
+        """Row 3 produces w_clip = -z_eye.  proj[3][2] must be -1."""
+        pm = self._perspective(60.0, 1.333, 0.001, 1000.0)
+        self.assertAlmostEqual(float(pm[3, 2]), -1.0, places=4,
+                               msg="proj[3][2] should be -1 (row-major convention)")
+
+    def test_w_clip_col3_is_zero(self):
+        """The homogeneous column should be zero for projection: proj[3][3] == 0."""
+        pm = self._perspective(60.0, 1.333, 0.001, 1000.0)
+        self.assertAlmostEqual(float(pm[3, 3]), 0.0, places=6)
+
+    def test_z_near_far_entry(self):
+        """proj[2][3] should be 2*far*near/(near-far) ≈ -0.002 for n=0.001, f=1000."""
+        near, far = 0.001, 1000.0
+        expected = (2 * far * near) / (near - far)
+        pm = self._perspective(60.0, 1.333, near, far)
+        self.assertAlmostEqual(float(pm[2, 3]), expected, places=4,
+                               msg="proj[2][3] should be 2fn/(n-f)")
+
+    def test_old_bug_absent(self):
+        """The OLD bug placed -1 at [2][3].  Verify it is NOT there any more."""
+        pm = self._perspective(60.0, 1.333, 0.001, 1000.0)
+        self.assertNotAlmostEqual(float(pm[2, 3]), -1.0, places=2,
+                                  msg="proj[2][3] == -1 is the old column-major bug")
+
+    # ── Target-point visibility check ────────────────────────────────────────
+
+    def test_camera_target_visible(self):
+        """
+        Camera looking at (5,5,1.5) from distance=22.
+        Target point must project to NDC within [-1,1] and w_clip ≈ 22.
+        """
+        cam = self.OrbitCamera()
+        cam.target   = np.array([5.0, 5.0, 1.5], dtype='f4')
+        cam.distance = 22.0
+        cam.yaw      = 45.0
+        cam.pitch    = 30.0
+
+        proj = cam.projection_matrix(800 / 600)
+        view = cam.view_matrix()
+        mvp  = np.array(proj, dtype='f4') @ np.array(view, dtype='f4')
+
+        target4 = np.array([5.0, 5.0, 1.5, 1.0], dtype='f4')
+        clip    = mvp @ target4
+        w_clip  = float(clip[3])
+        ndc     = clip[:3] / w_clip
+
+        self.assertAlmostEqual(w_clip, 22.0, delta=0.5,
+                               msg="w_clip for target should be ≈22 (= distance)")
+        self.assertAlmostEqual(float(ndc[0]), 0.0, delta=0.05,
+                               msg="target NDC.x should be ≈0 (centred)")
+        self.assertAlmostEqual(float(ndc[1]), 0.0, delta=0.05,
+                               msg="target NDC.y should be ≈0 (centred)")
+        self.assertAlmostEqual(float(ndc[2]), 1.0, delta=0.01,
+                               msg="target NDC.z should be ≈1.0 (at far end of room)")
+
+    def test_all_room_corners_visible(self):
+        """
+        For the slem_ar room (bounding box (0,0,0)→(10,10,3)) all 8 corners
+        must project to NDC within [-1,1] with w > 0.
+        """
+        cam = self.OrbitCamera()
+        cam.target   = np.array([5.0, 5.0, 1.5], dtype='f4')
+        cam.distance = 22.0
+        cam.yaw      = 45.0
+        cam.pitch    = 30.0
+
+        proj = cam.projection_matrix(800 / 600)
+        view = cam.view_matrix()
+        mvp  = np.array(proj, dtype='f4') @ np.array(view, dtype='f4')
+
+        corners = [
+            [0,  0,  0], [10,  0,  0], [10, 10,  0], [0, 10,  0],
+            [0,  0,  3], [10,  0,  3], [10, 10,  3], [0, 10,  3],
+        ]
+        failures = []
+        for c in corners:
+            clip = mvp @ np.array([*c, 1.0], dtype='f4')
+            w    = float(clip[3])
+            if w <= 0:
+                failures.append(f"{c}: w={w:.3f} (behind camera)")
+                continue
+            ndc = clip[:3] / w
+            if not ((-1 <= float(ndc[0]) <= 1) and
+                    (-1 <= float(ndc[1]) <= 1) and
+                    (-1 <= float(ndc[2]) <= 1)):
+                failures.append(f"{c}: ndc=({float(ndc[0]):.3f},"
+                                 f"{float(ndc[1]):.3f},{float(ndc[2]):.3f}) OUT")
+        self.assertEqual(failures, [],
+                         "All room corners should be inside the view frustum:\n" +
+                         "\n".join(failures))
+
+    def test_w_clip_formula(self):
+        """
+        w_clip = -z_eye for a point at z_eye=-10:
+        Using row-major proj: w_clip = proj[3][0]*x + proj[3][1]*y + proj[3][2]*(-10)
+        = 0 + 0 + (-1)*(-10) = 10.
+        """
+        pm = self._perspective(60.0, 1.0, 0.1, 100.0)
+        z_eye = -10.0
+        # Simulate eye-space point (x=0, y=0, z=z_eye, w=1)
+        pt = np.array([0.0, 0.0, z_eye, 1.0], dtype='f4')
+        clip = pm @ pt
+        self.assertAlmostEqual(float(clip[3]), 10.0, delta=0.001,
+                               msg=f"w_clip should be 10.0 for z_eye=-10, got {clip[3]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  EGL render test (requires GPU / EGL; skipped if unavailable)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEGLRendering(unittest.TestCase):
+    """
+    Integration test: loads the slem_ar.mod test fixture, builds room VAOs,
+    renders a frame with the EGL backend and verifies that geometry pixels
+    are present in the output.
+
+    Skipped automatically when:
+      - numpy is not available
+      - EGL/ModernGL cannot initialise (headless CI without GPU)
+      - The slem_ar.mod test fixture is missing
+    """
+
+    _TEST_MOD = "tests/test_data/slem_ar.mod"
+
+    def _skip_if_unavailable(self):
+        import os
+        if not os.path.isfile(self._TEST_MOD):
+            self.skipTest(f"Test fixture {self._TEST_MOD} not found")
+        try:
+            import numpy  # noqa
+        except ImportError:
+            self.skipTest("numpy not available")
+        # EGL check is deferred to setUp so we get a clean skip message
+
+    def setUp(self):
+        self._skip_if_unavailable()
+        import os, sys
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+        # Trigger helper injection before importing _EGLRenderer
+        try:
+            import gmodular.gui.viewport  # noqa
+        except Exception:
+            pass
+
+    # ── Smoke tests (no GL required) ─────────────────────────────────────────
+
+    def test_mod_loads_and_has_mdl(self):
+        """slem_ar.mod must contain slem_ar.mdl after the fixture rebuild."""
+        import os
+        from gmodular.core.module_io import ModuleIO
+        mio    = ModuleIO()
+        result = mio.load_from_mod(self._TEST_MOD)
+        self.assertIn("slem_ar.mdl", result.resources,
+                      "slem_ar.mod must contain slem_ar.mdl")
+        self.assertIn("slem_ar.mdx", result.resources,
+                      "slem_ar.mod must contain slem_ar.mdx")
+        # Extracted MDL must exist
+        self.assertTrue(os.path.isfile(
+            os.path.join(result.extract_dir, "slem_ar.mdl")),
+            "slem_ar.mdl must be extracted to extract_dir")
+
+    def test_lyt_parser_finds_one_room(self):
+        """LYTParser must return exactly 1 room from the slem_ar LYT."""
+        from gmodular.core.module_io import ModuleIO
+        from gmodular.formats.lyt_vis import LYTParser
+        result = ModuleIO().load_from_mod(self._TEST_MOD)
+        layout = LYTParser.from_string(result.lyt_text or "")
+        self.assertEqual(len(layout.rooms), 1,
+                         f"Expected 1 room, got {len(layout.rooms)}")
+        self.assertEqual(layout.rooms[0].resref, "slem_ar")
+
+    def test_projection_matrix_w_clip(self):
+        """OrbitCamera.projection_matrix must give w_clip ≈ distance for target."""
+        from gmodular.gui.viewport_camera import OrbitCamera
+        cam = OrbitCamera()
+        cam.target   = np.array([5.0, 5.0, 1.5], dtype='f4')
+        cam.distance = 22.0
+        cam.yaw      = 45.0
+        cam.pitch    = 30.0
+        proj = np.array(cam.projection_matrix(800 / 600), dtype='f4')
+        view = np.array(cam.view_matrix(), dtype='f4')
+        mvp  = proj @ view
+        t4   = np.array([5.0, 5.0, 1.5, 1.0], dtype='f4')
+        clip = mvp @ t4
+        self.assertAlmostEqual(float(clip[3]), 22.0, delta=0.5,
+                               msg="w_clip for camera target should be ≈ distance")
+
+    # ── Full EGL render test ─────────────────────────────────────────────────
+
+    def test_egl_geometry_renders(self):
+        """
+        Full EGL render: slem_ar room must produce > 1 % non-background pixels.
+        This test validates the complete pipeline: mod load → LYT parse →
+        VAO build → perspective projection → fragment output.
+        """
+        try:
+            import moderngl
+        except ImportError:
+            self.skipTest("moderngl not available")
+
+        import os, numpy as np
+        from gmodular.core.module_io import ModuleIO
+        from gmodular.formats.lyt_vis import LYTParser
+        from gmodular.gui.room_assembly import RoomInstance
+        from gmodular.gui.viewport_renderer import _EGLRenderer
+        from gmodular.gui.viewport_camera import OrbitCamera
+
+        # Load module
+        result = ModuleIO().load_from_mod(self._TEST_MOD)
+        extract_dir = result.extract_dir or ""
+        layout      = LYTParser.from_string(result.lyt_text or "")
+
+        dir_files = {f.lower(): f for f in os.listdir(extract_dir)}
+        rooms = []
+        for rp in layout.rooms:
+            ri = RoomInstance(mdl_name=rp.resref, grid_x=0, grid_y=0,
+                              world_x=rp.x, world_y=rp.y, world_z=rp.z)
+            mdl_lower = rp.resref.lower() + ".mdl"
+            actual = dir_files.get(mdl_lower)
+            if actual:
+                ri.mdl_path = os.path.join(extract_dir, actual)
+            rooms.append(ri)
+
+        # Init renderer
+        renderer = _EGLRenderer()
+        try:
+            renderer.init()
+        except Exception as exc:
+            self.skipTest(f"EGL init failed (no GPU?): {exc}")
+        if not renderer.ready:
+            self.skipTest("EGL renderer not ready (no GPU?)")
+
+        renderer.rebuild_room_vaos(rooms, game_dir=extract_dir)
+        self.assertGreater(len(renderer._room_vaos), 0,
+                           "rebuild_room_vaos must produce at least one VAO")
+
+        # Render
+        cam = OrbitCamera()
+        cam.target   = np.array([5.0, 5.0, 1.5], dtype='f4')
+        cam.distance = 22.0
+        cam.yaw      = 45.0
+        cam.pitch    = 30.0
+
+        W, H = 800, 600
+        data = renderer.render(W, H, cam)
+        renderer.release()
+
+        self.assertIsNotNone(data, "render() must return bytes, not None")
+        self.assertEqual(len(data), W * H * 4, "render output must be W×H×4 RGBA bytes")
+
+        pixels = np.frombuffer(data, dtype=np.uint8).reshape(H, W, 4)
+        bg     = np.array([18, 20, 36, 255])   # clear colour
+        non_bg = int(np.sum(~np.all(pixels.reshape(-1, 4) == bg, axis=1)))
+        pct    = 100.0 * non_bg / (W * H)
+
+        self.assertGreater(
+            non_bg, W * H * 0.01,   # at least 1 % of pixels must be geometry
+            f"Expected > 1 % non-background pixels, got {pct:.1f}% ({non_bg} px). "
+            "Projection matrix or shader may be broken."
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
