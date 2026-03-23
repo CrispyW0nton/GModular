@@ -71,6 +71,174 @@ def _box_wire(cx, cy, cz, hw, hh, hd, color):  # type: ignore
 def _translation(tx, ty, tz):  # type: ignore
     raise RuntimeError("_translation not yet injected by viewport.py")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Möller-Trumbore ray–triangle intersection (Ericson §5.3.6, p.190-194)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ray_tri_intersect(
+    ro: tuple, rd: tuple,
+    v0: tuple, v1: tuple, v2: tuple,
+    eps: float = 1e-7,
+) -> Optional[float]:
+    """
+    Möller-Trumbore ray-triangle intersection test.
+
+    Implements the algorithm from Ericson "Real-Time Collision Detection"
+    §5.3.6 (p.190-194): compute edge vectors e1/e2, cross-product h, dot a,
+    then u, v, t barycentric coords.
+
+    Args:
+        ro : ray origin (x, y, z)
+        rd : ray direction (x, y, z) — does NOT need to be normalised for this test
+        v0, v1, v2 : triangle vertices
+        eps : parallel / degenerate threshold
+
+    Returns:
+        float distance t along the ray where intersection occurs, or None.
+    """
+    if not _HAS_NUMPY:
+        # Pure-Python fallback (slower but always available)
+        def _dot(a, b): return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+        def _cross(a, b):
+            return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+        def _sub(a, b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+        e1 = _sub(v1, v0); e2 = _sub(v2, v0)
+        h  = _cross(rd, e2)
+        a  = _dot(e1, h)
+        if abs(a) < eps: return None
+        f  = 1.0 / a
+        s  = _sub(ro, v0)
+        u  = f * _dot(s, h)
+        if u < 0.0 or u > 1.0: return None
+        q  = _cross(s, e1)
+        v  = f * _dot(rd, q)
+        if v < 0.0 or u + v > 1.0: return None
+        t  = f * _dot(e2, q)
+        return t if t > eps else None
+
+    # NumPy path (fast vectorisable)
+    e1 = np.subtract(v1, v0, dtype='f8')
+    e2 = np.subtract(v2, v0, dtype='f8')
+    h  = np.cross(rd, e2)
+    a  = float(np.dot(e1, h))
+    if abs(a) < eps:
+        return None
+    f  = 1.0 / a
+    s  = np.subtract(ro, v0, dtype='f8')
+    u  = f * float(np.dot(s, h))
+    if u < 0.0 or u > 1.0:
+        return None
+    q  = np.cross(s, e1)
+    v  = f * float(np.dot(rd, q))
+    if v < 0.0 or u + v > 1.0:
+        return None
+    t  = f * float(np.dot(e2, q))
+    return t if t > eps else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Frustum plane extraction (Lengyel §8, Ericson §4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_frustum_planes(clip_matrix: 'np.ndarray') -> list:
+    """
+    Extract the six frustum half-planes from a combined clip matrix
+    (projection @ view, column-major layout: clip = M @ p_column_vector).
+
+    Reference: Lengyel "Mathematics for 3D Game Programming" §8,
+               Ericson "Real-Time Collision Detection" §4,
+               Gribb & Hartmann "Fast Extraction of Viewing Frustum Planes" (2001).
+
+    For a column-major matrix where clip_pos = M @ world_pos:
+      The rows of M directly yield the plane equations.
+      left   = row3 + row0
+      right  = row3 - row0
+      bottom = row3 + row1
+      top    = row3 - row1
+      near   = row3 + row2
+      far    = row3 - row2
+    Do NOT transpose first — that was the bug in the previous implementation.
+
+    Returns list of 6 planes, each (nx, ny, nz, d) normalised so that
+    a point p is *inside* the frustum if dot(n,p) + d >= 0 for all planes.
+    """
+    if not _HAS_NUMPY:
+        return []  # fallback: skip culling when numpy absent
+    m = clip_matrix   # column-major — rows give planes directly
+    planes_raw = [
+        m[3] + m[0],   # left
+        m[3] - m[0],   # right
+        m[3] + m[1],   # bottom
+        m[3] - m[1],   # top
+        m[3] + m[2],   # near
+        m[3] - m[2],   # far
+    ]
+    planes_norm = []
+    for p in planes_raw:
+        mag = float(np.linalg.norm(p[:3]))
+        if mag < 1e-10:
+            planes_norm.append((0.0, 0.0, 0.0, 0.0))
+        else:
+            pn = p / mag
+            planes_norm.append((float(pn[0]), float(pn[1]),
+                                 float(pn[2]), float(pn[3])))
+    return planes_norm
+
+
+def _aabb_inside_frustum(planes: list, aabb_min: tuple, aabb_max: tuple) -> bool:
+    """
+    Test an axis-aligned bounding box against six frustum planes.
+
+    Uses the positive-vertex method (Ericson §4, Lengyel §8):
+    for each plane, test only the vertex that is most in the positive
+    half-space (the 'positive vertex').  If it is outside any plane
+    the AABB is fully outside the frustum.
+
+    Returns True if the AABB *may* be visible (not conclusively outside),
+    False if it is definitely outside.
+    """
+    if not planes:
+        return True   # no frustum → always visible (frustum culling disabled)
+    x0, y0, z0 = aabb_min
+    x1, y1, z1 = aabb_max
+    for nx, ny, nz, d in planes:
+        # Positive vertex: choose component-wise max/min based on normal sign
+        px = x1 if nx >= 0 else x0
+        py = y1 if ny >= 0 else y0
+        pz = z1 if nz >= 0 else z0
+        if nx * px + ny * py + nz * pz + d < 0:
+            return False   # AABB is fully on the negative side of this plane
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CPU normal matrix helper (Lengyel §4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cpu_normal_matrix(model_mat: 'np.ndarray') -> 'np.ndarray':
+    """
+    Compute transpose(inverse(mat3(model))) on the CPU once per object.
+
+    This is the correct normal transform that preserves perpendicularity
+    after non-uniform scaling.  Computing it per-vertex in the shader is
+    expensive and imprecise on software rasterizers.
+
+    Reference: Lengyel "Mathematics for 3D Game Programming" §4
+               (Equation 4.35 — normal transform with inverse-transpose).
+
+    Returns a 3×3 float32 ndarray suitable for writing to the
+    'cpu_normal_mat' mat3 uniform via .tobytes().
+    """
+    if not _HAS_NUMPY:
+        return None  # type: ignore
+    m3 = model_mat[:3, :3].astype('f8')
+    try:
+        inv = np.linalg.inv(m3)
+        return inv.T.astype('f4')
+    except np.linalg.LinAlgError:
+        return np.eye(3, dtype='f4')
+
 # Colour constants — injected by viewport.py after loading
 _COLOR_PLACEABLE = (0.2, 0.6, 1.0)
 _COLOR_CREATURE  = (1.0, 0.4, 0.2)
@@ -147,6 +315,17 @@ class _EGLRenderer:
         self._render_time: float = 0.0
         # Grid visibility (G key toggles)
         self._show_grid: bool = True
+        # Portal / VIS culling: set of room names visible from the camera room.
+        # None = portal culling disabled (render everything).  Updated each frame
+        # by the viewport when a .vis file is loaded (Eberly §7, Ericson §7.6).
+        self._vis_rooms: Optional[set] = None
+        # AABB cache: room name → (min_xyz, max_xyz) for frustum culling.
+        # Populated lazily in rebuild_room_vaos, used in render().
+        self._room_aabbs: Dict[str, Tuple[tuple, tuple]] = {}
+        # Frustum culling toggle (F key in viewport)
+        self._enable_frustum_cull: bool = True
+        # Last camera position used for camera_pos uniform
+        self._last_camera_eye: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
@@ -610,6 +789,50 @@ class _EGLRenderer:
             except Exception: pass
         lst.clear()
 
+    def set_vis_rooms(self, visible_room_names: Optional[set]) -> None:
+        """
+        Set the portal-visible room names (from a .vis file parse).
+
+        Pass None to disable portal culling (render all rooms).
+        Pass a set of room name strings to enable VIS-based portal culling.
+
+        Reference: Eberly "3D Game Engine Design" §7 (portal rendering),
+                   Ericson "Real-Time Collision Detection" §7.6 (cells & portals).
+        """
+        self._vis_rooms = visible_room_names
+
+    def hit_test_walkmesh(
+        self,
+        ray_origin: tuple,
+        ray_dir: tuple,
+        walk_triangles: list,
+    ) -> Optional[Tuple[int, float]]:
+        """
+        Find the closest walkmesh triangle hit by a ray using Möller-Trumbore.
+
+        Reference: Ericson "Real-Time Collision Detection" §5.3.6 (p.190-194).
+
+        Args:
+            ray_origin  : (x, y, z) world-space ray origin
+            ray_dir     : (x, y, z) normalised ray direction
+            walk_triangles : list of ((x1,y1,z1),(x2,y2,z2),(x3,y3,z3)) triangles
+
+        Returns:
+            (face_index, t) for the closest hit, or None if no triangle was hit.
+        """
+        best_t   : Optional[float] = None
+        best_idx : Optional[int]   = None
+        for i, tri in enumerate(walk_triangles):
+            if not tri or len(tri) < 3:
+                continue
+            t = _ray_tri_intersect(ray_origin, ray_dir, tri[0], tri[1], tri[2])
+            if t is not None and (best_t is None or t < best_t):
+                best_t   = t
+                best_idx = i
+        if best_idx is None:
+            return None
+        return (best_idx, best_t)
+
     def render_thumbnail(self, W: int, H: int, camera: 'OrbitCamera') -> Optional[bytes]:
         """
         Render an isometric thumbnail of the current room geometry.
@@ -924,6 +1147,7 @@ class _EGLRenderer:
         a .mod import — the method searches for .mdl files in multiple locations.
         """
         self._release_list(self._room_vaos)
+        self._room_aabbs.clear()   # clear AABB cache for frustum culling
         if not self.ctx:
             return
 
@@ -999,9 +1223,34 @@ class _EGLRenderer:
                         try: return float(v)
                         except (TypeError, ValueError): pass
                 return 0.0
-            tx = _room_coord(ri, 'world_x', 'x') or _room_coord(ri, 'grid_x') * 10.0
-            ty = _room_coord(ri, 'world_y', 'y') or _room_coord(ri, 'grid_y') * 10.0
-            tz = _room_coord(ri, 'world_z', 'z')
+            # Use explicit None-checking sentinel — `or` treats 0.0 as falsy,
+            # which is wrong for rooms placed at the world origin (single-room modules).
+            # _room_coord_opt returns the float value OR None if the attribute is absent.
+            def _room_coord_opt(obj, attr):
+                v = getattr(obj, attr, None)
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+
+            _wx = _room_coord_opt(ri, 'world_x')
+            _wy = _room_coord_opt(ri, 'world_y')
+            _wz = _room_coord_opt(ri, 'world_z')
+            if _wx is None: _wx = _room_coord_opt(ri, 'x')
+            if _wy is None: _wy = _room_coord_opt(ri, 'y')
+            if _wz is None: _wz = _room_coord_opt(ri, 'z')
+            # Last resort: grid_x/grid_y in 10-unit steps
+            if _wx is None:
+                gx = _room_coord_opt(ri, 'grid_x')
+                _wx = (gx * 10.0) if gx is not None else 0.0
+            if _wy is None:
+                gy = _room_coord_opt(ri, 'grid_y')
+                _wy = (gy * 10.0) if gy is not None else 0.0
+            if _wz is None:
+                _wz = 0.0
+            tx, ty, tz = _wx, _wy, _wz
 
             color    = PALETTE[idx % len(PALETTE)]
             mdl_path = _resolve_mdl(name, getattr(ri, 'mdl_path', '') or '')
@@ -1135,6 +1384,15 @@ class _EGLRenderer:
                                 })
                                 self._room_vaos.append(e)
                                 loaded_mesh_count += 1
+                                # Update room AABB for frustum culling
+                                if positions and name not in self._room_aabbs:
+                                    xs = [p[0] for p in positions]
+                                    ys = [p[1] for p in positions]
+                                    zs = [p[2] for p in positions]
+                                    self._room_aabbs[name] = (
+                                        (min(xs), min(ys), min(zs)),
+                                        (max(xs), max(ys), max(zs)),
+                                    )
 
                         if loaded_mesh_count > 0:
                             total_mesh_count += loaded_mesh_count
@@ -1244,11 +1502,48 @@ class _EGLRenderer:
         # while still being clearly visible. Based on observed game lighting.
         ROOM_AMBIENT = 0.55
 
+        # ── Camera position for camera_pos uniform (specular fix, McKesson Ch.9) ─
+        cam_eye = camera.eye() if hasattr(camera, 'eye') else np.zeros(3, dtype='f4')
+        cam_eye_arr = np.array(cam_eye, dtype='f4').flatten()[:3]
+        cam_eye_bytes = cam_eye_arr.tobytes()
+        self._last_camera_eye = (float(cam_eye_arr[0]),
+                                 float(cam_eye_arr[1]),
+                                 float(cam_eye_arr[2]))
+
+        # ── Frustum planes extraction (Lengyel §8, Ericson §4) ──────────────────
+        frustum_planes: list = []
+        if self._enable_frustum_cull and _HAS_NUMPY:
+            frustum_planes = _extract_frustum_planes(vp)
+
+        rooms_drawn  = 0
+        rooms_culled = 0
+
         for e in self._room_vaos:
             vao, count = e["vao"], e["count"]
             if not vao or count == 0:
                 continue
             tx, ty, tz = e.get("tx", 0.), e.get("ty", 0.), e.get("tz", 0.)
+            room_name  = e.get("name", "")
+
+            # ── Portal (VIS) culling (Eberly §7, Ericson §7.6) ─────────────────
+            # KotOR .vis files list per-room visibility sets.  When loaded, only
+            # rooms in _vis_rooms are rendered, matching the in-game portal system.
+            if self._vis_rooms is not None and room_name:
+                if room_name.lower() not in self._vis_rooms:
+                    rooms_culled += 1
+                    continue
+
+            # ── Frustum AABB culling (Lengyel §8, Ericson §4) ──────────────────
+            if frustum_planes and room_name in self._room_aabbs:
+                aabb_min, aabb_max = self._room_aabbs[room_name]
+                # Translate AABB by room offset before testing
+                aabb_min_w = (aabb_min[0]+tx, aabb_min[1]+ty, aabb_min[2]+tz)
+                aabb_max_w = (aabb_max[0]+tx, aabb_max[1]+ty, aabb_max[2]+tz)
+                if not _aabb_inside_frustum(frustum_planes, aabb_min_w, aabb_max_w):
+                    rooms_culled += 1
+                    continue
+
+            rooms_drawn += 1
             model_m = _translation(tx, ty, tz)
             mvp_m   = proj @ view @ model_m
             color   = e.get("color", (.55,.52,.48))
@@ -1257,6 +1552,9 @@ class _EGLRenderer:
             is_textured = e.get("textured", False)
             lit_uv  = e.get("lit_uv", False)
             lit     = e.get("lit", False)
+
+            # ── Precompute CPU normal matrix (Lengyel §4) ───────────────────────
+            cpu_nm = _cpu_normal_matrix(model_m)  # 3x3 f4 ndarray or None
 
             # ── PRIMARY PATH: dual-sampler textured shader (_prog_textured) ────
             # This is the Kotor.NET approach: texture1 bound to tex0, lightmap
@@ -1271,6 +1569,17 @@ class _EGLRenderer:
                     prog["light_dir"].write(light_dir.tobytes())
                     prog["ambient"].value = ROOM_AMBIENT
                     prog["u_alpha"].value = alpha
+                    # camera_pos for correct specular (McKesson Ch.9)
+                    try:
+                        prog["camera_pos"].write(cam_eye_bytes)
+                    except Exception:
+                        pass
+                    # cpu_normal_mat: precomputed inverse-transpose (Lengyel §4)
+                    if cpu_nm is not None:
+                        try:
+                            prog["cpu_normal_mat"].write(cpu_nm.tobytes())
+                        except Exception:
+                            pass
 
                     # Bind diffuse / albedo texture (tex0, location 0)
                     tex_key = (e.get("tex_name", "") or e.get("tex_resref", "")).lower()
@@ -1318,6 +1627,15 @@ class _EGLRenderer:
                     prog["light_dir"].write(light_dir.tobytes())
                     prog["ambient"].value = ROOM_AMBIENT
                     prog["alpha"].value   = alpha
+                    try:
+                        prog["camera_pos"].write(cam_eye_bytes)
+                    except Exception:
+                        pass
+                    if cpu_nm is not None:
+                        try:
+                            prog["cpu_normal_mat"].write(cpu_nm.tobytes())
+                        except Exception:
+                            pass
                     tex_key = (e.get("tex_name", "") or e.get("tex_resref", "")).lower()
                     tex_obj = (self._tex_cache.get(tex_key) if tex_key else None)
                     if tex_obj is None and self._placeholder_tex:
@@ -1345,6 +1663,15 @@ class _EGLRenderer:
                     prog["light_dir"].write(light_dir.tobytes())
                     prog["ambient"].value = ROOM_AMBIENT
                     prog["alpha"].value   = alpha
+                    try:
+                        prog["camera_pos"].write(cam_eye_bytes)
+                    except Exception:
+                        pass
+                    if cpu_nm is not None:
+                        try:
+                            prog["cpu_normal_mat"].write(cpu_nm.tobytes())
+                        except Exception:
+                            pass
                     vao.render(moderngl.TRIANGLES, vertices=count)
                 except Exception as ex:
                     log.debug(f"room lit render: {ex}")
@@ -1455,6 +1782,11 @@ class _EGLRenderer:
                 _ent_prog["ambient"].value = 0.4
                 if "alpha" in _ent_prog:
                     _ent_prog["alpha"].value = 1.0
+                # camera_pos for correct specular (McKesson Ch.9)
+                try:
+                    _ent_prog["camera_pos"].write(cam_eye_bytes)
+                except Exception:
+                    pass
             except Exception:
                 pass
             for e in self._entity_vaos:
@@ -1519,6 +1851,10 @@ class _EGLRenderer:
                 _skin_prog["ambient"].value = 0.4
                 if "alpha" in _skin_prog:
                     _skin_prog["alpha"].value = 1.0
+                try:
+                    _skin_prog["camera_pos"].write(cam_eye_bytes)
+                except Exception:
+                    pass
             except Exception:
                 pass
             for e in self._skin_vaos:
@@ -1597,6 +1933,10 @@ class _EGLRenderer:
                 _play_prog["ambient"].value = 0.3
                 if "alpha" in _play_prog:
                     _play_prog["alpha"].value = 1.0
+                try:
+                    _play_prog["camera_pos"].write(cam_eye_bytes)
+                except Exception:
+                    pass
             except Exception:
                 pass
             self.ctx.disable(moderngl.CULL_FACE)

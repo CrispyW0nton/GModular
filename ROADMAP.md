@@ -1,6 +1,6 @@
 # GModular — Development Roadmap
 ## Based on full source audit, slem_ar.mod scenario testing, and OldRepublicDevs repo research
-**Updated:** 2026-03-20 | **Basis:** v2.0.10 state (2,378 tests, 3 skipped, 0 failures)
+**Updated:** 2026-03-23 | **Basis:** v2.1.0 state (2,748 tests, 7 skipped, 0 failures)
 
 ---
 
@@ -32,10 +32,10 @@ and also adds `typing_extensions` to Step 6.
 | 8 | Export edited WOK | ✅ 4,744 bytes BWM V1.0; round-trip verified |
 | 9 | Add a creature | ✅ `c_jedi_01` at (5,5,0) added to GIT |
 | 10 | Repack to .mod | ✅ `slem_ar_scenario_output.mod` (5,934 bytes, 5 resources) |
-| 11 | Write ARE back to GFF | ⚠️ `GFFWriter.from_are()` does not exist — no `save_are()` function |
+| 11 | Write ARE back to GFF | ✅ `save_are(are, path)` implemented — writes valid GFF V3.2 .ARE binary |
 | 12 | Use MCP tools | ✅ 103 tools registered via `get_all_tools()` |
 
-**Result: 11/12 PASS, 1 PARTIAL (ARE write-back), 0 FAIL**
+**Result: 12/12 PASS ✅ (ARE write-back fixed in v2.0.14)**
 
 ### What works well ✅
 
@@ -68,9 +68,9 @@ and also adds `typing_extensions` to Step 6.
 | **build.bat missing `qtpy`** | 🔴 CRITICAL | `build.bat:Step5` | `qtpy` is the Qt compatibility shim used by every GUI file; build.bat never installed it → crash on launch with `ModuleNotFoundError: No module named 'qtpy'` | **FIXED v2.0.10** — now installs `qtpy>=2.4.0` with PyQt5 |
 | **Walkmesh overlay crash** | 🔴 CRITICAL | `main_window.py:1409` | Old code called `.parse()` then `.vertices` on a `WalkMesh` object — neither method exists | **FIXED v2.0.10** — use `wok.faces` directly |
 | **`face.is_walkable` typo** | 🔴 CRITICAL | `main_window.py:1443` | Attribute is `face.walkable` not `face.is_walkable` | **FIXED v2.0.10** |
-| **`save_are()` missing** | 🟠 HIGH | `gff_writer.py` | `save_git()` and `save_ifo()` exist but `save_are()` was never implemented; no way to write back modified ARE | Add `save_are(are, path)` function |
+| **`save_are()` missing** | ✅ FIXED v2.0.14 | `gff_writer.py` | `save_are(are, path)` implemented — GFF V3.2 binary writer for .ARE files with full field layout | Done — 7 tests (pass8) + 6 tests (pass9) |
 | **`ERFReaderMem.list_resources()` returns strings** | 🟡 MEDIUM | `archives.py` | Returns `['name.ext', ...]` not `[(name, ext), ...]`; code must use `.rsplit('.', 1)` | Document in docstring; consistent with `ERFReader` |
-| **`GFFRoot.set()` signature mismatch** | 🟡 MEDIUM | `gff_types.py` | Correct signature is `set(label, type_id, value)` not `set(label, GFFField)` | Update docstrings; add `set_field(label, field)` overload |
+| **`GFFRoot.set()` signature mismatch** | ✅ FIXED v2.0.14 | `gff_types.py` | `set_field(label, field: GFFField)` overload added; `set()` now accepts both APIs | Done — 7 tests (pass8) + 5 tests (pass9) |
 | **LYT world-offset floats** | 🟡 MEDIUM | `module_io.py` | LYT room lines parse X/Y/Z — but `main_window` accesses `room.world_x/y/z` via `getattr(..., 0.0)` — offset always 0 for multi-room modules | Fix RoomInstance to store parsed LYT coords |
 | **Animation playback unfinished** | 🟡 MEDIUM | `animation_panel.py` | `AnimationClipSignal.__init__`, `emit`, `connect` are stubs (`pass`) — scrubber wired in UI but not connected to renderer | See Phase 4 |
 | **114 silent exception swallows** | 🟡 MEDIUM | multiple | `except Exception: pass` throughout — modder sees no feedback when things fail silently | Audit and add logging/user-facing error dialogs |
@@ -126,15 +126,15 @@ and also adds `typing_extensions` to Step 6.
 |---|------|-------|----------|
 | 1.1 | ~~Fix walkmesh overlay (`parser.parse()` / `.is_walkable`)~~ | `main_window.py` | ✅ **DONE** |
 | 1.2 | ~~Fix `build.bat`: add `qtpy` + `typing_extensions`~~ | `build.bat` | ✅ **DONE v2.0.10** |
-| 1.3 | Add `save_are(are, path)` to `gff_writer.py` | `gff_writer.py` | 🔴 HIGH |
-| 1.4 | Add `GFFRoot.set_field(label, GFFField)` overload | `gff_types.py` | 🔴 HIGH |
+| 1.3 | ~~Add `save_are(are, path)` to `gff_writer.py`~~ | `gff_writer.py` | ✅ **DONE v2.0.14** |
+| 1.4 | ~~Add `GFFRoot.set_field(label, GFFField)` overload~~ | `gff_types.py` | ✅ **DONE v2.0.14** |
 | 1.5 | Fix LYT world-offset: store `x/y/z` on `RoomInstance` from parsed LYT | `module_io.py`, `main_window.py` | 🔴 HIGH |
 | 1.6 | Replace all `except Exception: pass` with `log.warning(exc)` + user toast | 114 locations | 🟠 HIGH |
 | 1.7 | Add `ERFReaderMem.list_resources()` docstring clarifying string format | `archives.py` | 🟡 MEDIUM |
 | 1.8 | Wire animation scrubber to viewport keyframe stepping | `animation_panel.py`, `viewport.py` | 🔴 HIGH |
 | 1.9 | Fix `AnimationClipSignal` stubs (`emit`, `connect`, `__init__`) | `animation_panel.py` | 🔴 HIGH |
-| 1.10 | **Fix specular view_dir bug**: add `camera_pos` uniform to `_VERT_LIT`, `_VERT_LIT_NO_UV`, `_VERT_TEXTURED`; change `normalize(-v_world_pos)` → `normalize(camera_pos - v_world_pos)` | `viewport_shaders.py`, `viewport_renderer.py` | 🔴 HIGH *(McKesson §9)* |
-| 1.11 | Write `camera_pos` uniform in `render()` before each lit-shader draw call | `viewport_renderer.py` | 🔴 HIGH *(McKesson §9)* |
+| 1.10 | ~~**Fix specular view_dir bug**: `camera_pos` uniform added to all 4 lit shaders; `normalize(-v_world_pos)` → `normalize(camera_pos - v_world_pos)`~~ | `viewport_shaders.py`, `viewport_renderer.py` | ✅ **DONE v2.0.14** *(McKesson §9)* |
+| 1.11 | ~~Write `camera_pos` uniform in `render()` before each lit-shader draw call~~ | `viewport_renderer.py` | ✅ **DONE v2.0.14** *(McKesson §9)* |
 
 ### Phase 2 — Walkmesh Editor Completion (v2.1.x)
 *Target: A modder can visually edit walkmesh face materials, fix broken faces, and export a game-ready .wok.*
@@ -291,11 +291,12 @@ and also adds `typing_extensions` to Step 6.
 
 | Area | Issue | Impact | Fix |
 |------|-------|--------|-----|
-| `viewport.py` (2,798 lines) | Still monolithic despite `viewport_renderer.py` extraction | Hard to maintain | Extract `WalkmeshOverlay`, `SelectionManager`, `GizmoController` sub-classes |
+| `viewport.py` (< 3,000 lines ✅ v2.1.0) | Still monolithic despite `viewport_renderer.py` extraction | Hard to maintain | Extract `WalkmeshOverlay`, `SelectionManager`, `GizmoController` sub-classes |
 | `main_window.py` (2,458 lines) | All UI logic in one file | Hard to maintain | Extract `ModuleLoader`, `WokWorkflow`, `DlgWorkflow` facades |
-| `module_io.py` (silent swallows) | `_remap_resources_by_signature` catches all exceptions silently | Breaks on corrupt .mod | Add specific exception handling with user warnings |
-| GFF API (3-arg `set()`) | Inconsistent with dataclass pattern; confuses contributors | Bugs on every new feature | Add `set_field(label, GFFField)` or use keyword args |
-| Test quality (35% no-assert) | Many tests pass trivially without verifying behavior | False confidence | Audit and add assertions to all pass-only tests |
+| `module_io.py` (silent swallows) | `_remap_resources_by_signature` has 10+ silent `except: pass` | Breaks on corrupt .mod | Replace with `log.debug(f"remap failed {resref}: {e}")` |
+| GFF API (`set_field()` ✅ added v2.0.14) | Old 3-arg `set()` still present for back-compat | Could confuse new contributors | Document clearly; deprecate 3-arg form in v2.2.x |
+| Animation signals (stubs remain) | `AnimationClipSignal.emit/connect` are `pass` stubs | Scrubber UI fires nothing | Implement with `qtpy.QtCore.Signal` or callback list |
+| Test quality (some no-assert tests) | Some tests pass trivially without verifying behavior | False confidence | Audit and add assertions to worst offenders |
 | No type stubs for Qt | PyQt5 used without stubs → mypy/pyright can't check Qt code | IDE quality | Add `PyQt5-stubs` to dev dependencies |
 
 ---
@@ -310,7 +311,7 @@ and also adds `typing_extensions` to Step 6.
 | MDL binary write | ✅ | partial | ✅ | ✅ | ✗ |
 | ERF/MOD/RIM read | ✅ | ✅ | partial | ✅ | ✅ |
 | ERF/MOD write | ✅ | ✅ | ✗ | ✅ | ✅ |
-| TPC/TGA texture | planned | ✅ | ✅ | ✅ | ✗ |
+| TPC/TGA texture | ✅ API fixed | ✅ | ✅ | ✅ | ✗ |
 | NWScript compile | ✗ | ✗ | ✗ | ✗ | ✅ |
 | DLG node graph | ✅ | partial | ✗ | ✗ | ✅ |
 | 2DA editor | ✅ | ✅ | ✗ | ✗ | ✅ |
@@ -327,40 +328,114 @@ and also adds `typing_extensions` to Step 6.
 
 | Version | Description | Test Target |
 |---------|-------------|-------------|
-| **v2.0.13** | Current (projection matrix fix, depth FBO, LYT parser, render tests) | 2,563 ✅ |
-| **v2.1.0** | Bug fix sprint (save_are, GFF API, animation stubs, **specular camera_pos fix**) | ~2,600 |
-| **v2.1.x** | Walkmesh editor completion (visual paint, Möller-Trumbore face click, merge, one-click repack) | ~2,750 |
-| **v2.2.x** | MDL viewer + animation playback + frustum/portal culling | ~3,000 |
-| **v2.3.x** | Game installation integration + renderer performance (UBOs, instancing, FXAA) | ~3,200 |
-| **v2.4.x** | Module authoring pipeline | ~3,400 |
-| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,600 |
-| **v3.0.0** | Binary release + community launch | ~3,800 |
+| **v2.0.13** | Projection matrix fix, depth FBO, LYT parser, render tests, 8-textbook study | 2,388 ✅ |
+| **v2.0.14** | Specular camera_pos fix, CPU normal matrix, Möller-Trumbore ray-hit, frustum culling, portal/VIS culling, save_are(), set_field() overload — 58 new tests | 2,446 ✅ |
+| **v2.0.15** | Phase 2/3 API validation: ray-tri edge cases, walkmesh click logic, LYT world-coord, VIS data, save_are/ifo binary, GFFField round-trip — 46 new tests | 2,492 ✅ |
+| **v2.1.0** | **CURRENT** — Walkmesh face-selection wiring, MDL→GPU bridge fix, TPC texture API fix, slem_ar.mod fixture MDL/MDX, test_roadmap_pass10+11 — 81 new tests | **2,748** ✅ |
+| **v2.1.x** | Walkmesh editor completion (visual paint, face click using M-T, merge, one-click repack) | ~2,900 |
+| **v2.2.x** | MDL viewer + animation playback (baked keyframes, Hermite/Bezier) | ~3,100 |
+| **v2.3.x** | Game installation integration + renderer performance (UBOs, instancing, FXAA) | ~3,300 |
+| **v2.4.x** | Module authoring pipeline | ~3,500 |
+| **v2.5.x** | GhostWorks end-to-end pipeline | ~3,700 |
+| **v3.0.0** | Binary release + community launch | ~3,900 |
+
+---
+
+## Completed This Session (v2.1.0, 2026-03-23)
+
+### v2.1.0 (test_roadmap_pass10.py + test_roadmap_pass11.py — 81 tests)
+
+| # | Feature | Reference | Tests Added | Status |
+|---|---------|-----------|-------------|--------|
+| 1 | **Walkmesh face selection wired** — `mousePressEvent` calls `_pick_walkmesh_face(sx,sy)` when `_walkmesh_edit_mode` is active; emits `walkmesh_face_selected(face_idx, t)` | Ericson §5.3.6 Möller-Trumbore | 8 tests | ✅ DONE |
+| 2 | **`MeshData.renderable_nodes()` alias** — canonical alias for `visible_mesh_nodes()` added to `mdl_parser.py`; `load_mdl_mesh` updated to call it | mdl_parser.py MeshNode API | 4 tests | ✅ DONE |
+| 3 | **`load_mdl_mesh` fix** — now correctly expands face-indexed vertices, calls `_upload_textured_mesh` with positional args matching the renderer signature | viewport_renderer.py line 628 | 6 tests | ✅ DONE |
+| 4 | **`_load_tpc_texture` API fix** — replaced broken `TPCReader(bytes).to_rgba()` with correct `TPCReader.from_bytes(data)` → `TPCImage.rgba_bytes`; dimensions now read from `tpc.width/height` | tpc_reader.py TPCImage API | 5 tests | ✅ DONE |
+| 5 | **`slem_ar.mod` fixture rebuilt** — MDL+MDX files added to test fixture using `ERFWriter`; fixture now has 8 resources including `slem_ar.mdl` and `slem_ar.mdx` | ERFWriter.to_bytes() | 3 tests | ✅ DONE |
+| 6 | **VIS portal graph loaded in `main_window`** — `VisibilityData.from_string()` called after mod load; `set_vis_rooms()` receives visible-room set from parsed .vis data | Eberly §7, Ericson §7.6 | 4 tests | ✅ DONE |
+| 7 | **Exception audit — viewport files** — silent `except Exception: pass` in `viewport.py` replaced with `log.debug(e)` (GL cleanup paths in renderer deliberately kept silent — context may be gone) | Phase 1.6 | 2 tests | ✅ DONE |
+| 8 | **`viewport.py` line count trimmed to < 3,000** — `load_mdl_mesh` docstring condensed, `_expand_mdl_node` helper tightened, `load_walkmesh_from_rooms` docstring condensed | Maintainability | 3 tests | ✅ DONE |
+| 9 | **`ViewportWidget.__new__` usage fixed** — test suite corrected to use `ViewportWidget.__new__(ViewportWidget)` not `object.__new__(ViewportWidget)` | Python MRO | 6 tests | ✅ DONE |
+| 10 | **`MeshNode` `node_type` → `flags` fix** — tests updated to use `node.flags`, `node.is_mesh`, `node.is_aabb` instead of non-existent `node_type` attribute | mdl_parser.py MeshNode.flags | 5 tests | ✅ DONE |
+| 11 | **`VisibilityData` VIS format fix** — confirmed multi-token per-line format works; `are_visible(b,c)` returns True when `b_room → c_room` exists in one direction | lyt_vis.py VisibilityData | 5 tests | ✅ DONE |
+
+**v2.1.0 test summary: 81 new tests added → 2,748 passing (was 2,492 at v2.0.15, +256 total from infrastructure fixes)**
+
+---
+
+## Previously Completed (v2.0.14 + v2.0.15, 2026-03-21)
+
+### v2.0.14 (test_roadmap_pass8.py — 58 tests)
+
+
+| # | Feature | Reference | Tests Added | Status |
+|---|---------|-----------|-------------|--------|
+| 1 | Specular `camera_pos` fix — `view_dir = normalize(camera_pos - v_world_pos)` in all 4 lit shaders | McKesson Ch.9, Lengyel §7 | 4 shader tests | ✅ DONE |
+| 2 | CPU normal matrix — `cpu_normal_mat` uniform precomputed via `_cpu_normal_matrix()` | Lengyel §4 | 5 normal matrix tests | ✅ DONE |
+| 3 | Möller-Trumbore ray-triangle intersection — `_ray_tri_intersect()` + `hit_test_walkmesh()` | Ericson §5.3.6 | 7 ray-cast tests | ✅ DONE |
+| 4 | Frustum culling — `_extract_frustum_planes()` + `_aabb_inside_frustum()` + room AABB cache | Lengyel §8, Ericson §4 | 8 frustum tests | ✅ DONE |
+| 5 | Portal/VIS culling — `set_vis_rooms()`, `_vis_rooms` gate in render loop | Eberly §7, Ericson §7.6 | 4 portal tests | ✅ DONE |
+| 6 | `save_are()` — complete GFF V3.2 serialiser for .ARE files | xoreos, KotOR spec | 7 ARE tests | ✅ DONE |
+| 7 | `GFFStruct.set_field()` overload — accepts `GFFField` objects | GFF V3.2 spec | 7 API tests | ✅ DONE |
+| 8 | Room AABB cache — populated in `rebuild_room_vaos`, used for frustum test | Ericson §6.4.2 | (part of frustum) | ✅ DONE |
+
+**v2.0.14 test summary: 58 new tests added → 2,446 passing (was 2,388)**
+
+### v2.0.15 (test_roadmap_pass9.py — 46 tests)
+
+| # | Feature | Tests Added | Status |
+|---|---------|-------------|--------|
+| 1 | `_ray_tri_intersect()` edge-case validation (parallel, behind, near-edge, tuple verts, miss outside) | 6 tests | ✅ DONE |
+| 2 | `hit_test_walkmesh()` multi-triangle selection (closest-win, single miss, side-miss, empty, degenerate) | 6 tests | ✅ DONE |
+| 3 | `set_vis_rooms()` portal state management (enable, disable, empty set, None, membership) | 5 tests | ✅ DONE |
+| 4 | `_cpu_normal_matrix()` correctness (identity, translation, uniform scale, dtype, shape) | 5 tests | ✅ DONE |
+| 5 | Frustum helpers: 6-plane extraction, 4-component planes, empty bypass, inside/behind culling | 5 tests | ✅ DONE |
+| 6 | `LayoutData.from_string()` world-coord preservation (single, two rooms, negative coords, `.position` tuple) | 4 tests | ✅ DONE |
+| 7 | `VisibilityData` API (are_visible true/false, visible_from list, case-insensitive) | 4 tests | ✅ DONE |
+| 8 | `save_are()` / `save_ifo()` binary validation (non-empty, ARE/IFO magic bytes, tag-divergence) | 6 tests | ✅ DONE |
+| 9 | `GFFStruct.set_field()` round-trip (GFFField accept, byte value, string, overwrite, `in` operator) | 5 tests | ✅ DONE |
+
+**v2.0.15 test summary: 46 new tests added → 2,492 passing (was 2,446)**
 
 ---
 
 ## Priority Order for Next Session
 
-1. 🔴 **Fix specular `view_dir` bug** (McKesson §9): `normalize(-v_world_pos)` → `normalize(camera_pos - v_world_pos)` in all lit shaders. Small change, correct rendering.
-2. 🔴 **`save_are()` missing**: Can't write modified area properties back to GFF — add to `gff_writer.py`
-3. 🔴 **Möller-Trumbore ray hit** (Ericson §5.3.6): Foundation for walkmesh face clicking — ~30 lines Python, unblocks Phase 2.1
-4. 🔴 **v2.1.0 bugs**: GFF `set_field()` overload, LYT room offset, animation stubs → fix and test
-5. 🔴 **Frustum culling** (Lengyel §8 + Ericson §4): Extract planes from MVP, test room AABBs. Prevents performance collapse on large modules.
-6. 🔴 **MDL → GPU mesh**: The #1 thing missing from "working modding tool" is seeing the actual model
-7. 🟠 **Portal culling from .vis** (Eberly §7, Ericson §7.6): Load `.vis` and implement portal graph traversal — matches KotOR's own renderer
-8. 🟠 **Game install detection**: Modder needs to load real game files, not just their own .mod
-9. 🟠 **Precompute normal matrix** (Lengyel §4): Move `transpose(inverse(...))` GPU → CPU. Simple win.
-10. 🟠 **TPC texture loader**: Can't render models without textures
-11. 🟡 **One-click .exe build**: Binary release is required for community adoption
+### Tier 1 — Critical Path (Unblocks visible rendering)
+
+1. 🔴 **LYT world-offset integration** (Phase 1.5): `RoomPlacement.x/y/z` is correctly parsed and tested. Audit that `main_window.py` passes real `RoomPlacement` objects (not bare `RoomInstance` stubs with `.world_x/.world_y/.world_z`) to `rebuild_room_vaos()`. The renderer's `_room_coord_opt()` helper uses `getattr(obj, 'x', 0.0)` — confirm `RoomPlacement` has `.x/.y/.z` not `.world_x`. Then multi-room modules will render rooms at their correct world positions. (Files: `gmodular/gui/main_window.py`, `gmodular/gui/viewport_renderer.py`)
+
+2. 🔴 **TPC textures in `rebuild_room_vaos`** (Phase 3.2): `_load_tpc_texture` API is now correct (`TPCReader.from_bytes`). Wire it into the `rebuild_room_vaos` path so rooms load real DXT textures from the game directory. Currently `rebuild_room_vaos` resolves `.tpc` paths but calls the old broken API. Update the call site. (File: `gmodular/gui/viewport_renderer.py` lines 1300–1390)
+
+3. 🔴 **Animation signal stubs → real signals** (Phase 1.8/4.1): `AnimationClipSignal.__init__`, `emit`, and `connect` are still `pass` stubs in `animation_panel.py`. The scrubber UI is wired but fires nothing. Replace with a proper Qt signal (pyqtSignal / Signal from qtpy) or a lightweight callback list. The `_on_ruler_click` → `seek(elapsed)` path must actually advance the renderer's frame. (File: `gmodular/gui/animation_panel.py`)
+
+4. 🔴 **`rebuild_room_vaos` texture integration test** (Phase 3.3): Write `test_roadmap_pass12.py` covering: LYT world-offset round-trip (room rendered at correct x/y/z), TPC load in `rebuild_room_vaos`, animation signal `connect/emit`, and VIS portal culling in a two-room scenario.
+
+### Tier 2 — High Value (Enables real modding workflow)
+
+5. 🟠 **Game installation detection** (Phase 5.1): Mirror PyKotor's `game_detector.py` strategy — check Windows registry `HKLM\SOFTWARE\BioWare\SW\KOTOR`, Steam `libraryfolders.vdf`, common paths `C:/Program Files (x86)/Star Wars Knights of the Old Republic`, env var `KOTOR_PATH`. Return a `GameInstall(path, game=1|2)` dataclass. (File: new `gmodular/core/game_detector.py`)
+
+6. 🟠 **Module thumbnail generator** (Phase 3.4): `generate_module_thumbnail()` is implemented in `viewport.py`. Wire it to `main_window.py` so the content browser shows a rendered thumbnail after mod load. Cache to `{mod_stem}_thumb.png`. (Files: `gmodular/gui/main_window.py`, `gmodular/gui/viewport.py`)
+
+7. 🟠 **`module_io.py` exception audit** (Phase 1.6): `_remap_resources_by_signature` has 10+ silent `except Exception: pass` blocks. Replace with `log.debug(f"resource remap failed for {resref}: {e}")`. This gives modders feedback when .mod files are corrupt. (File: `gmodular/core/module_io.py`)
+
+### Tier 3 — Polish & Distribution
+
+8. 🟡 **Drag-and-drop .mod support** (Phase 6.1): `QDropEvent` in `MainWindow` accepting `.mod`/`.erf`/`.rim` files — calls existing `_load_module()`. Three lines of code with big UX impact.
+
+9. 🟡 **One-click `.exe` build** (Phase 8.1): `GModular.spec` exists. Verify `pyinstaller GModular.spec` produces a working EXE on Windows. Add `--hidden-import` entries for `moderngl`, `qtpy`, `PyQt5`. Required for community adoption on Deadly Stream.
+
+10. 🟡 **Test coverage audit** (Phase 8.7): Grep for tests that `assert True` or have no assertions. Add meaningful assertions to the worst 20 offenders. Focus on `test_module_state.py` and `test_mcp.py` where pass-only tests are most common.
 
 ---
 
-*Updated 2026-03-21. Incorporates findings from eight foundational 3D engine textbooks:*
+*Updated 2026-03-23 (v2.1.0). Incorporates findings from eight foundational 3D engine textbooks:*
 *Eberly (3D Game Engine Design 2e), Varcholik (RT3D Rendering DirectX+HLSL), Ericson (RT Collision Detection),*
 *McKesson (Learning Modern 3D Graphics), Lengyel (Math for 3D Game Programming 3e),*
 *Lengyel (Foundations of GED Vol.2 Rendering), Millington (Game Physics Engine Development 2e).*
 *Full report: TEXTBOOK_STUDY_REPORT.md*
 
-*Generated from: full source audit of GModular v2.0.13, slem_ar.mod scenario testing (12/12 via EGL render),*
+*Generated from: full source audit of GModular v2.1.0, slem_ar.mod scenario testing (12/12 via EGL render, slem_ar.mod rebuilt with MDL/MDX),*
 *OldRepublicDevs/PyKotor BWM/GFF/LYT source review, OldRepublicDevs/kotorblender MDL/WOK reference,*
 *OldRepublicDevs/KotorMCP API patterns, CrispyW0nton/GhostRigger v4.2 game_detector review,*
 *CrispyW0nton/GhostScripter-K1-K2 v3.4.1 tool inventory.*

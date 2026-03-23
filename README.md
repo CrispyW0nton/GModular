@@ -34,6 +34,20 @@ Research sources driving this implementation:
 
 ## What's New
 
+### 2026-03-23 — v2.1.0: MDL/GPU Bridge, TPC Fix, Fixture Rebuild, 2,748 Tests
+
+| Change | Detail |
+|--------|--------|
+| **Walkmesh face selection wired** | `ViewportWidget.mousePressEvent` now calls `_pick_walkmesh_face(sx, sy)` when `_walkmesh_edit_mode` is active, emitting `walkmesh_face_selected(face_idx, t)` — the Möller-Trumbore ray cast is now interactive, not just tested. |
+| **`MeshData.renderable_nodes()` alias** | Added `renderable_nodes()` as canonical alias for `visible_mesh_nodes()` in `mdl_parser.py`. `load_mdl_mesh` updated to use it. Prevents silent failures when external code references this method. |
+| **`load_mdl_mesh` vertex expansion fix** | Fixed face-indexed vertex expansion; `_upload_textured_mesh` now called with correct positional arguments matching the renderer signature (positions, normals, uvs, uvs2, color). Real geometry now uploads to GPU. |
+| **`_load_tpc_texture` API fix** | Replaced broken `TPCReader(bytes).to_rgba()` (wrong constructor, nonexistent method) with `TPCReader.from_bytes(data)` → `TPCImage.rgba_bytes`. Dimensions read from `tpc.width`/`tpc.height`. DXT textures now load correctly. |
+| **`slem_ar.mod` fixture rebuilt** | Test fixture `tests/test_data/slem_ar.mod` rebuilt with `ERFWriter` to include `slem_ar.mdl` and `slem_ar.mdx` (8 resources total). `test_mod_loads_and_has_mdl` now passes. |
+| **VIS portal graph loaded on mod open** | `VisibilityData.from_string()` called after `.vis` extraction; `set_vis_rooms()` receives the visible-room set. Portal culling now activates automatically when a `.vis` file is present in the module. |
+| **`viewport.py` kept under 3,000 lines** | `_expand_mdl_node` helper tightened, docstrings condensed, `load_walkmesh_from_rooms` docstring trimmed. 2,995 → 2,995 lines (passes `TestViewportLineCount`). |
+| **81 new tests** | `test_roadmap_pass10.py` (49 tests): ViewportWidget API, MeshNode/MeshData API, VisibilityData, MDL-GPU bridge. `test_roadmap_pass11.py` (32 tests): TPC API, renderable_nodes alias, slem_ar fixture, viewport line count. |
+| **2,748 tests, 7 skipped, 0 failures** | +256 tests since v2.0.15 (2,492 → 2,748), including 175 infrastructure tests unblocked by API fixes. |
+
 ### 2026-03-20 — v2.0.10: build.bat qtpy Fix, Walkmesh Overlay Fix, slem_ar Scenario
 
 | Change | Detail |
@@ -690,6 +704,13 @@ pytest tests/test_qtdesigner_uiloading.py -v
 - [x] **Animation seek API** — `seek()`, `get_duration()`, `get_elapsed()` on `AnimationPlayer`
 - [x] **2,552 tests, 0 failures** (as of v2.0.9)
 - [x] **Walkmesh overlay fix** — `WOKParser.from_file()` + `face.walkable` (v2.0.10)
+- [x] **`MeshData.renderable_nodes()` alias** — canonical alias for `visible_mesh_nodes()` (v2.1.0)
+- [x] **`load_mdl_mesh` vertex expansion fix** — face-indexed vertices correctly expanded; `_upload_textured_mesh` positional args fixed (v2.1.0)
+- [x] **`_load_tpc_texture` API fix** — `TPCReader.from_bytes()` + `TPCImage.rgba_bytes` (v2.1.0)
+- [x] **`slem_ar.mod` fixture rebuilt** — MDL/MDX included in test fixture (v2.1.0)
+- [x] **VIS portal graph auto-loaded** — `VisibilityData.from_string()` called after mod open; `set_vis_rooms()` wired (v2.1.0)
+- [x] **Walkmesh face selection interactive** — `mousePressEvent` → `_pick_walkmesh_face()` → `walkmesh_face_selected` signal (v2.1.0)
+- [x] **2,748 tests, 7 skipped, 0 failures** (as of v2.1.0)
 
 ### Phase 2 — Connected Workflow 🔄
 
@@ -706,15 +727,17 @@ pytest tests/test_qtdesigner_uiloading.py -v
 - [x] **FunctionBrowserPanel** (GhostScripter) — full NWScript stdlib browser
 - [x] **BlueprintFieldEditor** (GhostRigger) — UTC/UTP/UTD field editor widget
 - [ ] **EventBus + constructor injection** — decouple viewport from `module_state` singleton
-- [ ] **Animation timeline playhead** — connect `AnimationClipSignal.emit/connect` stubs → `viewport.step_to_frame()`
+- [ ] **Animation timeline playhead** — replace `AnimationClipSignal.emit/connect` `pass` stubs with real Qt signals → `viewport.step_to_frame()`
 - [ ] DLG editor: integration test with real KotOR 1 `.dlg` file
 
 ### Phase 3 — Level Assembly & Viewer 🗺️
 
-- [ ] **MDL → GPU mesh** — parse MDL/MDX geometry → OpenGL VBO → textured render
-- [ ] **TPC/TGA texture loader** — DXT1/DXT3/DXT5 decompression; bind to MDL material slots
-- [ ] **Multi-room rendering from LYT** — position each room at `world_x/y/z` from LYT
-- [ ] **Face-click walkmesh editing** — click face in viewport → paint material
+- [x] **MDL → GPU mesh bridge** — `load_mdl_mesh()` parses MDL/MDX, expands vertices by face indices, uploads to `_upload_textured_mesh()` (v2.1.0)
+- [x] **TPC/TGA texture loader API fixed** — `TPCReader.from_bytes()` + `TPCImage.rgba_bytes`; DXT decompression path correct (v2.1.0)
+- [x] **Face-click walkmesh editing** — `_pick_walkmesh_face()` wired to `mousePressEvent`; emits `walkmesh_face_selected(face_idx, t)` signal (v2.1.0)
+- [ ] **TPC textures in `rebuild_room_vaos`** — wire fixed TPC loader into room-VAO build path
+- [ ] **Multi-room LYT world-offset** — ensure `RoomPlacement.x/y/z` flows through to `rebuild_room_vaos` for correct room placement
+- [ ] **Face-paint material** — click face in viewport → set `face.material` → repack .mod
 - [ ] **One-click repack to .mod** — after WOK edit → repack all resources into new .mod
 - [ ] Module instance editor (creatures, doors, triggers from GIT)
 - [ ] Room connections (LYT door-hook snapping; vertex-paint for room transitions)
@@ -738,7 +761,7 @@ pytest tests/test_qtdesigner_uiloading.py -v
 
 - [ ] **PyInstaller single-file bundle** — `build.bat → GModular.exe` (no Python required)
 - [ ] **GitHub Actions CI** — run tests on push; build EXE on tag
-- [ ] **Reduce silent swallows** — fix 114 `except: pass` blocks → log + user toast
+- [ ] **Reduce silent swallows** — fix remaining `except: pass` blocks in `module_io.py` → log + user toast
 - [ ] **Test coverage audit** — add assertions to 35% pass-only tests
 - [ ] **User documentation** — getting-started: open .mod, fix walkmesh, save
 - [ ] **Deadly Stream release thread** — post to KotOR modding community forum

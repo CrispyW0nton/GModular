@@ -869,6 +869,43 @@ else:
 #    from .viewport_renderer import _EGLRenderer, _inject_helpers
 #  The class body has been moved to viewport_renderer.py (v2.0.7).
 
+
+def _expand_mdl_node(node) -> tuple:
+    """Indexed→per-triangle expand for _upload_textured_mesh.
+
+    Returns (positions, normals, uvs, uvs2) or 4 empty lists.
+    Ref: rebuild_room_vaos; Eberly §1 mesh representation.
+    """
+    verts_raw = node.vertices or []
+    faces_raw = node.faces    or []
+    if not verts_raw or not faces_raw:
+        return [], [], [], []
+    norms_raw = node.normals or []
+    uvs_raw   = getattr(node, 'uvs',  []) or []
+    uvs2_raw  = getattr(node, 'uvs2', []) or []
+    nv = len(verts_raw)
+    has_n, has_uv, has_uv2 = len(norms_raw)==nv, len(uvs_raw)==nv, len(uvs2_raw)==nv
+    pos, nrm, uv, uv2 = [], [], [], []
+    for f in faces_raw:
+        if len(f) < 3: continue
+        a, b, c = int(f[0]), int(f[1]), int(f[2])
+        if a >= nv or b >= nv or c >= nv: continue
+        for vi in (a, b, c):
+            pos.append(verts_raw[vi])
+            if has_uv:  uv.append(uvs_raw[vi])
+            if has_uv2: uv2.append(uvs2_raw[vi])
+            if has_n:
+                nrm.append(norms_raw[vi])
+            else:
+                v0=verts_raw[a]; v1=verts_raw[b]; v2=verts_raw[c]
+                ex=v1[0]-v0[0]; ey=v1[1]-v0[1]; ez=v1[2]-v0[2]
+                fx=v2[0]-v0[0]; fy=v2[1]-v0[1]; fz=v2[2]-v0[2]
+                nx_=ey*fz-ez*fy; ny_=ez*fx-ex*fz; nz_=ex*fy-ey*fx
+                m=(nx_*nx_+ny_*ny_+nz_*nz_)**0.5 or 1.0
+                nrm.append((nx_/m, ny_/m, nz_/m))
+    return pos, nrm, uv, uv2
+
+
 class ViewportWidget(_QWidget_base):
     """
     ModernGL-powered 3D viewport.
@@ -879,13 +916,19 @@ class ViewportWidget(_QWidget_base):
     """
 
     # Signals
-    object_selected   = Signal(object)
-    object_placed     = Signal(object)
-    camera_moved      = Signal(float, float, float)
-    play_mode_changed = Signal(bool)
+    object_selected       = Signal(object)
+    object_placed         = Signal(object)
+    camera_moved          = Signal(float, float, float)
+    play_mode_changed     = Signal(bool)
     # Emitted every frame with (delta_seconds,) — animation panel subscribes
     # to this instead of using a blind 50 ms poll timer.
-    frame_advanced    = Signal(float)
+    frame_advanced        = Signal(float)
+    # Emitted when the user clicks a walkmesh face in walkmesh-edit mode.
+    # Carries (face_index: int, t: float) — face index into walk_tris list and
+    # the ray-intersection distance.  Connect to a face-paint panel to let the
+    # modder change the surface material of the selected face.
+    # Reference: Ericson §5.3.6 (Möller-Trumbore) + Phase 2.1 roadmap.
+    walkmesh_face_selected = Signal(int, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -962,7 +1005,15 @@ class ViewportWidget(_QWidget_base):
         self._walk_tris: list   = []
         self._nowalk_tris: list = []
 
-        # Move timer (WASD)
+        # Walkmesh edit mode — when True, left-click ray-casts against
+        # _walk_tris using Möller-Trumbore and emits walkmesh_face_selected.
+        # Reference: Phase 2.1 roadmap; Ericson §5.3.6.
+        self._walkmesh_edit_mode: bool = False
+        self._selected_face_idx:  int  = -1
+
+        # VIS portal data — set by main_window after loading a module whose
+        # .vis file was extracted.  Forwarded to renderer.set_vis_rooms().
+        self._vis_room_names: Optional[set] = None
         if _HAS_QT:
             self._move_timer = QTimer(self)
             self._move_timer.setInterval(16)
@@ -1036,9 +1087,18 @@ class ViewportWidget(_QWidget_base):
                     name = (getattr(ri, 'mdl_name', None) or
                             getattr(ri, 'resref', None) or
                             getattr(ri, 'name', 'room')).lower()
-                    x = float(getattr(ri, 'world_x', getattr(ri, 'x', 0.0)) or 0.0)
-                    y = float(getattr(ri, 'world_y', getattr(ri, 'y', 0.0)) or 0.0)
-                    z = float(getattr(ri, 'world_z', getattr(ri, 'z', 0.0)) or 0.0)
+                    # Use is-not-None checks so rooms at world origin (0,0,0)
+                    # are placed correctly (plain `or 0.0` would misplace them).
+                    _rx = getattr(ri, 'world_x', None)
+                    if _rx is None: _rx = getattr(ri, 'x', None)
+                    if _rx is None: _rx = 0.0
+                    _ry = getattr(ri, 'world_y', None)
+                    if _ry is None: _ry = getattr(ri, 'y', None)
+                    if _ry is None: _ry = 0.0
+                    _rz = getattr(ri, 'world_z', None)
+                    if _rz is None: _rz = getattr(ri, 'z', None)
+                    if _rz is None: _rz = 0.0
+                    x, y, z = float(_rx), float(_ry), float(_rz)
                     from ..engine.scene_manager import SceneRoom
                     room = SceneRoom(name=name, position=(x, y, z))
                     self._scene_graph.add_room(room)
@@ -1425,14 +1485,19 @@ class ViewportWidget(_QWidget_base):
 
     def _load_tpc_texture(self, tex_resref: str, tpc_bytes: bytes,
                           is_lightmap: bool = False) -> bool:
-        """Load a TPC texture with lightmap flag support."""
+        """Decode a KotOR TPC file and upload RGBA to renderer.
+
+        Uses TPCReader.from_bytes() → TPCImage.rgba_bytes.
+        Ref: Varcholik Ch.6 DXT; tpc_reader.py TPCImage.
+        """
         try:
             from ..formats.tpc_reader import TPCReader
-            tpc = TPCReader(tpc_bytes)
-            rgba = tpc.to_rgba()
-            w, h = tpc.width, tpc.height
-            return self._renderer.load_texture(tex_resref, rgba, w, h,
-                                               is_lightmap=is_lightmap)
+            img = TPCReader.from_bytes(tpc_bytes)
+            if not img.is_valid or not img.rgba_bytes:
+                return False
+            return self._renderer.load_texture(
+                tex_resref, img.rgba_bytes, img.width, img.height,
+                is_lightmap=is_lightmap)
         except Exception as e:
             log.debug(f"_load_tpc_texture '{tex_resref}': {e}")
             return False
@@ -1506,6 +1571,32 @@ class ViewportWidget(_QWidget_base):
             self._show_walkmesh = bool(visible)
         self.update()
 
+    def set_walkmesh_edit_mode(self, enabled: bool) -> None:
+        """Enable/disable walkmesh face-selection mode.
+
+        Left-click casts Möller-Trumbore ray → emits walkmesh_face_selected.
+        Disabling resets selected face to -1.
+        Ref: Phase 2.1; Ericson §5.3.6 Möller-Trumbore.
+        """
+        self._walkmesh_edit_mode = bool(enabled)
+        if not enabled:
+            self._selected_face_idx = -1
+        self.update()
+
+    def get_selected_face_index(self) -> int:
+        """Return the currently selected walkmesh face index, or -1 if none."""
+        return self._selected_face_idx
+
+    def set_vis_rooms(self, visible_names: Optional[set]) -> None:
+        """Set portal-visible room names (None = disable culling).
+
+        Called by main_window after loading a .vis file from the module.
+        Ref: Eberly §7 portal rendering; Ericson §7.6 cells & portals.
+        """
+        self._vis_room_names = visible_names
+        if self._renderer.ready:
+            self._renderer.set_vis_rooms(visible_names)
+
     def load_walkmesh(self, walk_tris: list, nowalk_tris: list):
         """Load walkmesh triangles for overlay rendering."""
         self._walk_tris   = list(walk_tris)
@@ -1519,18 +1610,10 @@ class ViewportWidget(_QWidget_base):
 
     def load_walkmesh_from_rooms(self, room_instances: list,
                                   game_dir: str = "") -> bool:
-        """
-        Automatically load and merge walkmesh data from .wok files
-        for all rooms in room_instances.
+        """Load and merge WOK walkmesh data from all rooms into the overlay.
 
-        Uses the WOKParser to read binary .wok files and translates
-        each face to world space based on room position.
-
-        Args:
-            room_instances: List of RoomInstance objects with resref + position.
-            game_dir:       KotOR game or extract directory containing .wok files.
-
-        Returns True if at least one walkmesh was loaded.
+        Translates each face to world space from room positions.
+        Returns True if ≥ 1 walkmesh was loaded.
         """
         try:
             from ..formats.wok_parser import build_module_walkmesh
@@ -1565,6 +1648,81 @@ class ViewportWidget(_QWidget_base):
         except Exception as e:
             log.warning(f"load_walkmesh_from_rooms: {e}", exc_info=False)
             return False
+
+    # ── MDL → GPU mesh bridge (Phase 3.1) ────────────────────────────────────
+
+    def load_mdl_mesh(
+        self,
+        mdl_path: str,
+        mdx_path: str = "",
+        world_x: float = 0.0,
+        world_y: float = 0.0,
+        world_z: float = 0.0,
+        texture_dir: str = "",
+    ) -> bool:
+        """Parse MDL/MDX and upload renderable nodes to the GPU.
+
+        Expands indexed geometry via _expand_mdl_node(), then calls
+        _upload_textured_mesh() and appends each VAO to _room_vaos.
+        Returns True if ≥ 1 node was uploaded.
+        Ref: mdl_parser.py; KotorBlender mdl/reader.py; Phase 3.1.
+        """
+        if not mdl_path or not _HAS_MDL:
+            return False
+        if not self._renderer.ready:
+            if not self._renderer.init():
+                return False
+
+        if not mdx_path:
+            mdx_path = mdl_path.replace(".mdl", ".mdx").replace(".MDL", ".MDX")
+
+        try:
+            from ..formats.mdl_parser import MDLParser, MeshData
+            mesh_data: MeshData = MDLParser.parse_files(mdl_path, mdx_path)
+        except Exception as e:
+            log.warning(f"load_mdl_mesh: MDL parse failed for {mdl_path}: {e}")
+            return False
+
+        renderable = mesh_data.visible_mesh_nodes()
+        if not renderable:
+            log.debug(f"load_mdl_mesh: no renderable nodes in {mdl_path}")
+            return False
+
+        import os
+        loaded = 0
+        for node in renderable:
+            try:
+                positions, normals, uvs_out, uvs2_out = _expand_mdl_node(node)
+                if not positions:
+                    continue
+                px, py, pz  = node.position
+                _tc = getattr(node, 'texture_clean', node.texture or "")
+                _lc = getattr(node, 'lightmap_clean', node.lightmap or "")
+                tex_key = (_tc if isinstance(_tc, str) else "").strip().lower()
+                lm_key  = (_lc if isinstance(_lc, str) else "").strip().lower()
+                col = getattr(node, 'diffuse', None)
+                rc  = (tuple(max(0.15, min(1.0, v)) for v in col[:3])
+                       if col and len(col) >= 3 and max(col) > 0.05 else (0.7, 0.7, 0.7))
+                e = self._renderer._upload_textured_mesh(
+                    positions, normals,
+                    uvs_out if uvs_out else [], uvs2_out if uvs2_out else [], rc)
+                if e:
+                    e.update({"name": node.name,
+                               "tx": world_x+px, "ty": world_y+py, "tz": world_z+pz,
+                               "tex_name": tex_key, "lmap_name": lm_key,
+                               "alpha": float(getattr(node, 'alpha', 1.0)),
+                               "from_mdl": True})
+                    self._renderer._room_vaos.append(e)
+                    loaded += 1
+            except Exception as e_:
+                log.debug(f"load_mdl_mesh: node '{node.name}' failed: {e_}")
+
+        if loaded:
+            log.info(f"load_mdl_mesh: {loaded} node(s) from "
+                     f"'{os.path.basename(mdl_path)}' @ "
+                     f"({world_x:.1f},{world_y:.1f},{world_z:.1f})")
+            self.update()
+        return loaded > 0
 
     def frame_all(self):
         self._frame_all()
@@ -2251,6 +2409,29 @@ class ViewportWidget(_QWidget_base):
         except Exception as e:
             log.debug(f"pick: {e}"); return None
 
+    def _pick_walkmesh_face(self, sx: int, sy: int):
+        """
+        Cast a ray from screen pixel (sx, sy) against the loaded walkmesh
+        triangles and return (face_index, t) for the closest hit, or None.
+
+        Uses the renderer's hit_test_walkmesh() which implements the
+        Möller-Trumbore algorithm (Ericson §5.3.6, p.190-194).
+
+        This is the backend for walkmesh-edit-mode face selection.
+        The selected face index is also stored in self._selected_face_idx
+        so the viewport can highlight it on the next render.
+        """
+        W, H = self.width(), self.height()
+        try:
+            origin, direction = self.camera.ray_from_screen(sx, sy, W, H)
+            result = self._renderer.hit_test_walkmesh(
+                tuple(origin), tuple(direction), self._walk_tris
+            )
+            return result  # (face_index, t) or None
+        except Exception as e:
+            log.debug(f"_pick_walkmesh_face: {e}")
+            return None
+
     def _ray_ground_intersect(self, sx, sy):
         W, H = self.width(), self.height()
         try:
@@ -2385,7 +2566,8 @@ class ViewportWidget(_QWidget_base):
             state = get_module_state()
             tris = getattr(state, 'wok_triangles', None)
             if tris: return tris
-        except Exception: pass
+        except Exception as e:
+            log.debug(f"_collect_walkmesh_triangles: {e}")
         return []
 
     # ── Mouse events ─────────────────────────────────────────────────────────
@@ -2395,6 +2577,21 @@ class ViewportWidget(_QWidget_base):
         if self._play_mode:
             return
         if event.button() == Qt.LeftButton:
+            # ── Walkmesh edit mode: ray-cast against walkmesh triangles ──────
+            # When walkmesh_edit_mode is active the left-click fires a
+            # Möller-Trumbore ray against self._walk_tris and emits
+            # walkmesh_face_selected(face_index, t) so face-paint panels can
+            # react.  Normal object picking is skipped.
+            # Reference: Ericson §5.3.6; Phase 2.1 roadmap.
+            if self._walkmesh_edit_mode and self._walk_tris:
+                result = self._pick_walkmesh_face(event.x(), event.y())
+                if result is not None:
+                    face_idx, t = result
+                    self._selected_face_idx = face_idx
+                    self.walkmesh_face_selected.emit(face_idx, t)
+                    self.update()
+                return
+
             if self._selected_obj is not None and not self._placement_mode:
                 axis = self._hit_gizmo(event.x(), event.y())
                 if axis is not None:

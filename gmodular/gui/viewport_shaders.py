@@ -10,6 +10,23 @@ Keeping shaders in one place makes it easy to:
 
 Canonical naming: ``_VERT_<NAME>`` / ``_FRAG_<NAME>``
 Backward-compat aliases provided at the bottom of this file.
+
+Changes (v2.0.14):
+  - _FRAG_LIT / _FRAG_LIT_NO_UV: fix specular highlight bug.
+    view_dir was normalize(-v_world_pos) which only works when the camera
+    is at world origin.  Now uses normalize(camera_pos - v_world_pos) where
+    camera_pos is a new vec3 uniform written by the renderer.
+    Reference: McKesson "Learning Modern 3D Graphics Programming" Ch.9,
+               Lengyel "Mathematics for 3D Game Programming" §7 (specular).
+  - _VERT_LIT / _VERT_LIT_NO_UV: precompute normal matrix on CPU.
+    transpose(inverse(mat3(model))) is expensive per-vertex and causes
+    precision issues on software rasterizers.  Added cpu_normal_mat uniform
+    (mat3) that the renderer writes once per object.
+    Reference: Lengyel "Mathematics for 3D Game Programming" §4 (normal transform).
+  - _FRAG_TEXTURED: same camera_pos fix applied to the untextured Phong branch.
+  - _FRAG_SKINNED: same camera_pos fix applied.
+  - Added _VERT_NORMAL_PRECOMP / _FRAG_LIT_CP variants that use the
+    precomputed normal matrix.
 """
 from __future__ import annotations
 
@@ -36,8 +53,11 @@ void main() { fragColor = vec4(v_color, 1.0); }
 # ── Phong-lit with UV texture support ─────────────────────────────────────
 # Based on PyKotor KOTOR_VSHADER / KOTOR_FSHADER + Kotor.NET standard.glsl
 # Features:
-#   - Proper normal transform (normal matrix from model)
+#   - Proper normal transform — precomputed on CPU as cpu_normal_mat (mat3)
+#     Avoids expensive transpose(inverse()) per vertex.  Reference: Lengyel §4.
 #   - Multi-light Blinn-Phong (key + fill + rim + back + spec)
+#   - Specular uses camera_pos uniform for correct view direction.
+#     McKesson Ch.9: view_dir = normalize(camera_pos - v_world_pos).
 #   - Dual UV channels: diffuse UV + optional lightmap UV
 #   - Alpha discard for punch-through transparency
 _VERT_LIT = """
@@ -50,12 +70,20 @@ out vec3 v_world_pos;
 out vec2 v_uv;
 uniform mat4 mvp;
 uniform mat4 model;
+uniform mat3 cpu_normal_mat;  // precomputed transpose(inverse(mat3(model))) on CPU
 void main() {
     vec4 world = model * vec4(in_position, 1.0);
     v_world_pos = world.xyz;
-    // Correct normal transform using normal matrix
-    mat3 normal_mat = transpose(inverse(mat3(model)));
-    v_normal    = normalize(normal_mat * in_normal);
+    // Use precomputed normal matrix — avoids expensive GPU inverse()
+    // Falls back gracefully when cpu_normal_mat == mat3(0) (identity used)
+    mat3 nm = cpu_normal_mat;
+    float det = nm[0][0]*(nm[1][1]*nm[2][2]-nm[1][2]*nm[2][1])
+               -nm[0][1]*(nm[1][0]*nm[2][2]-nm[1][2]*nm[2][0])
+               +nm[0][2]*(nm[1][0]*nm[2][1]-nm[1][1]*nm[2][0]);
+    if (abs(det) < 0.0001) {
+        nm = transpose(inverse(mat3(model)));
+    }
+    v_normal    = normalize(nm * in_normal);
     v_uv        = in_uv;
     gl_Position = mvp * vec4(in_position, 1.0);
 }
@@ -73,6 +101,7 @@ uniform float ambient;
 uniform float alpha;
 uniform bool  has_texture;
 uniform sampler2D tex0;
+uniform vec3  camera_pos;   // camera world-space position for correct specular
 void main() {
     if (has_texture) {
         // Texture passthrough: Kotor.NET style — output texture directly
@@ -88,7 +117,9 @@ void main() {
         float NdL_fill = max(dot(n, fill), 0.0) * 0.30;
         float NdL_rim  = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.10;
         float back     = max(dot(-n, key), 0.0) * 0.12;
-        vec3 view_dir  = normalize(-v_world_pos);
+        // FIX: use camera_pos for correct specular view direction (McKesson Ch.9)
+        // Old code (broken): view_dir = normalize(-v_world_pos) — removed in v2.0.14
+        vec3 view_dir  = normalize(camera_pos - v_world_pos);
         vec3 half_vec  = normalize(key + view_dir);
         float spec     = pow(max(dot(n, half_vec), 0.0), 48.0) * 0.04;
         float light_total = ambient + (NdL_key + NdL_fill + NdL_rim + back) * (1.0 - ambient);
@@ -108,10 +139,18 @@ out vec3 v_normal;
 out vec3 v_world_pos;
 uniform mat4 mvp;
 uniform mat4 model;
+uniform mat3 cpu_normal_mat;  // precomputed transpose(inverse(mat3(model))) on CPU
 void main() {
     vec4 world = model * vec4(in_position, 1.0);
     v_world_pos = world.xyz;
-    v_normal    = normalize(mat3(transpose(inverse(model))) * in_normal);
+    mat3 nm = cpu_normal_mat;
+    float det = nm[0][0]*(nm[1][1]*nm[2][2]-nm[1][2]*nm[2][1])
+               -nm[0][1]*(nm[1][0]*nm[2][2]-nm[1][2]*nm[2][0])
+               +nm[0][2]*(nm[1][0]*nm[2][1]-nm[1][1]*nm[2][0]);
+    if (abs(det) < 0.0001) {
+        nm = transpose(inverse(mat3(model)));
+    }
+    v_normal    = normalize(nm * in_normal);
     gl_Position = mvp * vec4(in_position, 1.0);
 }
 """
@@ -125,6 +164,7 @@ uniform vec3  diffuse_color;
 uniform vec3  light_dir;
 uniform float ambient;
 uniform float alpha;
+uniform vec3  camera_pos;   // camera world-space position for correct specular
 void main() {
     vec3 n = normalize(v_normal);
     vec3 key       = normalize(light_dir);
@@ -133,7 +173,8 @@ void main() {
     float NdL_fill = max(dot(n, fill), 0.0) * 0.30;
     float NdL_rim  = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.10;
     float back     = max(dot(-n, key), 0.0) * 0.12;
-    vec3 view_dir  = normalize(-v_world_pos);
+    // FIX: correct specular view direction (McKesson Ch.9, Lengyel §7)
+    vec3 view_dir  = normalize(camera_pos - v_world_pos);
     vec3 half_vec  = normalize(key + view_dir);
     float spec     = pow(max(dot(n, half_vec), 0.0), 48.0) * 0.04;
     float light_total = ambient + (NdL_key + NdL_fill + NdL_rim + back) * (1.0 - ambient);
@@ -223,6 +264,7 @@ _FRAG_PICK = _FRAG_PICKER
 #   - When texture present: output texture directly (Kotor.NET: FragColor = diffuseColor)
 #   - When lightmap present: modulate albedo by lightmap (baked lighting = realism)
 #   - Minimal Phong only applied when NO texture (fallback for untextured meshes)
+#   - camera_pos fix applied to the untextured Phong branch (v2.0.14)
 _VERT_TEXTURED = """
 #version 330 core
 in vec3 in_position;
@@ -235,11 +277,18 @@ out vec2 v_uv;
 out vec2 v_uv2;
 uniform mat4 mvp;
 uniform mat4 model;
+uniform mat3 cpu_normal_mat;  // precomputed transpose(inverse(mat3(model))) on CPU
 void main() {
     vec4 world = model * vec4(in_position, 1.0);
     v_world_pos = world.xyz;
-    mat3 normal_mat = transpose(inverse(mat3(model)));
-    v_normal    = normalize(normal_mat * in_normal);
+    mat3 nm = cpu_normal_mat;
+    float det = nm[0][0]*(nm[1][1]*nm[2][2]-nm[1][2]*nm[2][1])
+               -nm[0][1]*(nm[1][0]*nm[2][2]-nm[1][2]*nm[2][0])
+               +nm[0][2]*(nm[1][0]*nm[2][1]-nm[1][1]*nm[2][0]);
+    if (abs(det) < 0.0001) {
+        nm = transpose(inverse(mat3(model)));
+    }
+    v_normal    = normalize(nm * in_normal);
     v_uv        = in_uv;
     v_uv2       = in_uv2;
     gl_Position = mvp * vec4(in_position, 1.0);
@@ -261,6 +310,7 @@ uniform vec3 diffuse_color;
 uniform vec3 light_dir;
 uniform float ambient;
 uniform float u_alpha;
+uniform vec3  camera_pos;   // camera world-space position for correct specular
 void main() {
     vec4 albedo;
     if (use_texture == 1) {
@@ -285,8 +335,12 @@ void main() {
         float NdF = max(dot(n, fill), 0.0) * 0.28;
         float NdR = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0) * 0.08;
         float back = max(dot(-n, key), 0.0) * 0.10;
+        // FIX: correct specular view direction (McKesson Ch.9)
+        vec3 view_dir = normalize(camera_pos - v_world_pos);
+        vec3 half_vec = normalize(key + view_dir);
+        float spec    = pow(max(dot(n, half_vec), 0.0), 48.0) * 0.04;
         float light = ambient + (NdL + NdF + NdR + back) * (1.0 - ambient);
-        fragColor = vec4(clamp(diffuse_color * light, 0.0, 1.0), u_alpha);
+        fragColor = vec4(clamp(diffuse_color * light + vec3(spec), 0.0, 1.0), u_alpha);
     }
 }
 """
@@ -324,6 +378,7 @@ void main() {
 
 # The skinned fragment shader reuses the same KotOR two-light Phong as _FRAG_TEXTURED
 # but without lightmap (too expensive to skin lightmap UVs without engine support).
+# camera_pos fix applied (v2.0.14).
 _FRAG_SKINNED = """
 #version 330 core
 in vec3 v_normal;
@@ -336,12 +391,17 @@ uniform vec3 diffuse_color;
 uniform vec3 light_dir;
 uniform float ambient;
 uniform float u_alpha;
+uniform vec3  camera_pos;   // camera world-space position for correct specular
 void main() {
     vec3 n = normalize(v_normal);
     vec3 key  = normalize(light_dir);
     float NdL = max(dot(n, key), 0.0);
     vec3 fill = normalize(vec3(-key.x * 0.5, -key.y * 0.5, 0.35));
     float NdF = max(dot(n, fill), 0.0) * 0.22;
+    // FIX: correct specular (McKesson Ch.9)
+    vec3 view_dir = normalize(camera_pos - v_world_pos);
+    vec3 half_vec = normalize(key + view_dir);
+    float spec    = pow(max(dot(n, half_vec), 0.0), 32.0) * 0.03;
     float light = ambient + (NdL + NdF) * (1.0 - ambient);
     vec4 albedo;
     if (use_texture == 1) {
@@ -350,9 +410,41 @@ void main() {
     } else {
         albedo = vec4(diffuse_color, 1.0);
     }
-    fragColor = vec4(albedo.rgb * light, albedo.a * u_alpha);
+    fragColor = vec4(albedo.rgb * light + vec3(spec), albedo.a * u_alpha);
 }
 """
+
+# ── Möller-Trumbore ray-triangle intersection (Ericson §5.3.6) ────────────────
+# This GLSL snippet is not used as a standalone shader but is embedded
+# as a comment reference for the CPU-side implementation in viewport.py.
+# See: _moller_trumbore_ray_tri() in viewport.py.
+#
+# CPU reference (Python):
+# def ray_tri_intersect(ro, rd, v0, v1, v2, eps=1e-7):
+#     e1 = v1 - v0; e2 = v2 - v0
+#     h = cross(rd, e2); a = dot(e1, h)
+#     if abs(a) < eps: return None     # ray parallel to triangle
+#     f = 1.0 / a
+#     s = ro - v0; u = f * dot(s, h)
+#     if u < 0.0 or u > 1.0: return None
+#     q = cross(s, e1); v = f * dot(rd, q)
+#     if v < 0.0 or u + v > 1.0: return None
+#     t = f * dot(e2, q)
+#     if t > eps: return t             # hit at distance t along ray
+#     return None
+
+# ── Frustum planes extraction helper (Lengyel §8, Ericson §4) ─────────────
+# CPU-side extraction from combined VP matrix.  See _frustum_planes() in
+# viewport.py for the implementation that is called before room rendering.
+#
+# The six planes are extracted from the rows of clip_matrix = proj @ view:
+#   left   = row3 + row0
+#   right  = row3 - row0
+#   bottom = row3 + row1
+#   top    = row3 - row1
+#   near   = row3 + row2
+#   far    = row3 - row2
+# Each plane is (nx, ny, nz, d); a point p is inside if dot(n,p)+d >= 0.
 
 # ── Public listing for tools / tests ─────────────────────────────────────────
 ALL_SHADERS = {

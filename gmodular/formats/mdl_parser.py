@@ -339,6 +339,10 @@ class MeshData:
                 result.append(n)
         return result
 
+    def renderable_nodes(self) -> List[MeshNode]:
+        """Alias for visible_mesh_nodes() — used by the GPU mesh bridge."""
+        return self.visible_mesh_nodes()
+
     def walkmesh_nodes(self) -> List[MeshNode]:
         """AABB walkmesh nodes (flags & NODE_AABB). Faces have material IDs."""
         return [n for n in self.all_nodes() if n.is_aabb and n.vertices]
@@ -949,7 +953,8 @@ class MDLParser:
             # supermodel_name at BASE+136 = M+_SUPERMODEL_OFF = M+56
             _sm_off = self._SUPERMODEL_OFF
             self.data.supermodel = _rstrip(d[M + _sm_off: M + _sm_off + 32])
-        except Exception:
+        except Exception as e:
+            log.debug(f"MDL: supermodel name parse failed: {e}")
             self.data.supermodel = "NULL"
 
         # ── Name string_array at BASE+184 ─────────────────────────────────────
