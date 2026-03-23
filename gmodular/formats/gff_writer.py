@@ -590,3 +590,76 @@ def save_ifo(ifo: "IFOData", path: str):
     writer = GFFWriter(root)
     writer.write_file(path)
     log.info(f"Saved IFO: {path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ARE Serialiser
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_are(are: "AREData", path: str):
+    """
+    Write an AREData object to a .ARE binary file (GFF V3.2).
+
+    The .ARE file stores area metadata: tag, name, room list, fog settings,
+    ambient/diffuse colors, tileset reference, sky box, and misc flags.
+
+    Reference: xoreos src/aurora/gff3writer.cpp
+               KotOR module format specification (BioWare ARE V3.2)
+               kotorblender are_reader.py (room list parsing)
+
+    Field layout follows the KotOR ARE spec:
+      - Tag           : CExoString
+      - Name          : CExoLocString
+      - Rooms         : LIST of structs { RoomName: CExoString, EnvAudio: DWORD }
+      - FogOn         : BYTE
+      - FogNear/Far   : FLOAT
+      - FogColor      : DWORD (packed 0xRRGGBB)
+      - AmbientColor  : DWORD
+      - DiffuseColor  : DWORD
+      - Tileset       : CExoString (ResRef)
+      - SkyBox        : CExoString
+      - DayNightCycle : BYTE
+      - ShadowOpacity : BYTE
+      - WindPower     : BYTE
+    """
+    root = GFFRoot(file_type="ARE ")
+    root.struct_id = 0xFFFFFFFF
+
+    # Identity
+    root.fields["Tag"]  = _string_field("Tag",  are.tag)
+    root.fields["Name"] = _locstring_field("Name", are.name)
+
+    # Room list: each room is a struct with RoomName + EnvAudio
+    room_structs = []
+    for i, room_name in enumerate(are.rooms):
+        rs = GFFStruct(struct_id=i)
+        rs.fields["RoomName"] = _string_field("RoomName", str(room_name))
+        rs.fields["EnvAudio"] = _dword_field("EnvAudio", 0)
+        room_structs.append(rs)
+    root.fields["Rooms"] = GFFField("Rooms", GFFFieldType.LIST, room_structs)
+
+    # Fog
+    root.fields["FogOn"]   = _byte_field("FogOn",  are.fog_enabled)
+    root.fields["FogNear"] = _float_field("FogNear", are.fog_near)
+    root.fields["FogFar"]  = _float_field("FogFar",  are.fog_far)
+    root.fields["FogColor"]= _dword_field("FogColor", are.fog_color)
+
+    # Lighting
+    root.fields["AmbientColor"]  = _dword_field("AmbientColor",  are.ambient_color)
+    root.fields["DiffuseColor"]  = _dword_field("DiffuseColor",  are.diffuse_color)
+
+    # Tileset / sky
+    root.fields["Tileset"] = _string_field("Tileset", are.tileset_resref)
+    root.fields["SkyBox"]  = _string_field("SkyBox",  are.sky_box)
+
+    # Misc flags
+    root.fields["DayNightCycle"] = _byte_field("DayNightCycle", are.dynamic_day_night)
+    root.fields["ShadowOpacity"] = _byte_field("ShadowOpacity", are.shadow_opacity)
+    root.fields["WindPower"]     = _byte_field("WindPower",      are.wind_power)
+
+    # Number of rooms (informational — KotOR reads from the list)
+    root.fields["Rooms_Num"]     = _dword_field("Rooms_Num", len(are.rooms))
+
+    writer = GFFWriter(root)
+    writer.write_file(path)
+    log.info(f"Saved ARE: {path} ({len(are.rooms)} rooms, tag='{are.tag}')")

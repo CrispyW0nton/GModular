@@ -53,7 +53,9 @@ try:
     from qtpy.QtGui import QPainter, QColor, QFontMetrics, QPen, QBrush
     _HAS_QT = True
 except ImportError:
-    # Headless / test environment — provide minimal stubs
+    # Headless / test environment — provide minimal stubs.
+    # The Signal stub is functional: emit() calls all connected callbacks.
+    # This lets headless tests verify animation_changed / time_scrubbed fire.
     class _Stub:
         def __init__(self, *a, **kw): pass
         def __call__(self, *a, **kw): return self
@@ -64,9 +66,40 @@ except ImportError:
     Qt = _Stub()
     QTimer = _Stub
     class Signal:
-        def __init__(self, *a): pass
-        def emit(self, *a): pass
-        def connect(self, f): pass
+        """
+        Functional headless Signal stub.
+
+        Mirrors the Qt Signal interface:
+          - connect(callable)  — register a callback
+          - disconnect(callable) — remove a callback (no error if absent)
+          - emit(*args)        — call all connected callbacks with *args
+
+        Used in the headless test environment so that animation_changed and
+        time_scrubbed signals work correctly without a Qt event loop.
+        """
+        def __init__(self, *type_args):
+            self._callbacks: list = []
+
+        def connect(self, f):
+            if callable(f) and f not in self._callbacks:
+                self._callbacks.append(f)
+
+        def disconnect(self, f=None):
+            if f is None:
+                self._callbacks.clear()
+            else:
+                try:
+                    self._callbacks.remove(f)
+                except ValueError:
+                    pass  # already disconnected — Qt silently ignores this
+
+        def emit(self, *args):
+            for cb in list(self._callbacks):
+                try:
+                    cb(*args)
+                except Exception:
+                    pass  # match Qt behaviour: exceptions in slots don't propagate
+
     QSize = _Stub
     QPainter = QColor = QFontMetrics = QPen = QBrush = _Stub
 

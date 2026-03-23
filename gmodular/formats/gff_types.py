@@ -241,8 +241,28 @@ class GFFStruct:
         f = self.fields.get(label)
         return f.value if f is not None else default
 
-    def set(self, label: str, type_id: int, value: Any):
-        self.fields[label] = GFFField(label=label, type_id=type_id, value=value)
+    def set(self, label: str, type_id_or_field=None, value: Any = None):
+        """Set a field on this struct.
+
+        Accepts two call signatures:
+          set(label, type_id: int, value: Any)     — original API
+          set(label, field: GFFField)               — new overload (GFFField object)
+          set(label, field: GFFField, None)         — same as above, extra arg ignored
+
+        Reference: GFF V3.2 BioWare specification.
+        Added overload to fix GFFRoot.set signature mismatch (v2.0.14).
+        """
+        if isinstance(type_id_or_field, GFFField):
+            # New overload: set(label, GFFField)
+            f = type_id_or_field
+            self.fields[label] = GFFField(label=label, type_id=f.type_id, value=f.value)
+        else:
+            # Original API: set(label, type_id, value)
+            self.fields[label] = GFFField(label=label, type_id=type_id_or_field, value=value)
+
+    def set_field(self, label: str, field_or_type=None, value: Any = None):
+        """Alias for set() — explicit set_field name preferred by new code."""
+        self.set(label, field_or_type, value)
 
     def __contains__(self, label: str) -> bool:
         return label in self.fields

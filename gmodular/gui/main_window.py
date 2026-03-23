@@ -1334,6 +1334,33 @@ class MainWindow(QMainWindow):
                 self.log(f"  ⚠ LYT parse error: {e}")
                 log.warning(f"LYT parse from MOD: {e}", exc_info=True)
 
+        # ── Parse and apply .vis portal-visibility data ───────────────────
+        # The .vis file lists which rooms are visible from each room — it maps
+        # directly to the renderer's portal culling system (set_vis_rooms).
+        # Reference: Eberly §7 (portal rendering), Ericson §7.6 (cells & portals).
+        vis_text = summary.get("vis_text")
+        if vis_text:
+            try:
+                from ..formats.lyt_vis import VisibilityData
+                vis_data = VisibilityData.from_string(vis_text)
+                # Build the union of all rooms listed in the VIS file so that
+                # all known rooms are initially visible.  The viewport can
+                # later call set_vis_rooms() with a narrower set as the camera
+                # moves between rooms.
+                all_vis_rooms: set = set()
+                for room_name, visible_list in vis_data.visibility.items():
+                    all_vis_rooms.add(room_name.lower())
+                    for v in visible_list:
+                        all_vis_rooms.add(v.lower())
+                self._viewport.set_vis_rooms(all_vis_rooms)
+                self.log(f"  VIS: {len(all_vis_rooms)} rooms in portal graph")
+            except Exception as e:
+                self.log(f"  ⚠ VIS parse error: {e}")
+                log.warning(f"VIS parse from MOD: {e}", exc_info=False)
+        else:
+            # No .vis file — disable portal culling so all rooms render.
+            self._viewport.set_vis_rooms(None)
+
         # ── Auto-load WOK walkmesh overlays ───────────────────────────────
         if extract_dir and os.path.isdir(extract_dir):
             self._auto_load_walkmesh_from_dir(extract_dir, lyt_rooms)
